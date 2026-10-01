@@ -17,8 +17,7 @@ namespace MyPlugin
         {
             _manager = manager;
 
-            // 설정 탭이 필요하면 여기서 등록하고 plugin.json의 "hasSettings"를 true로 바꾼다.
-            // manager.AddSettingsPage(new MySettingsPage(manager));
+            manager.AddSettingsPage(new ConnectionSettingsPage(manager));
         }
 
         /// <summary>

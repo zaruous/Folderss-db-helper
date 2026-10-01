@@ -58,6 +58,9 @@ jobs:
             exit 1
           fi
 
+      - name: 테스트
+        run: dotnet test tests/MyPlugin.Tests -c Release --nologo
+
       - name: publish
         run: dotnet publish "${{ steps.plugin.outputs.dir }}" -c Release --nologo
 

@@ -1,0 +1,108 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Oracle.ManagedDataAccess.Client;
+
+namespace MyPlugin
+{
+    /// <summary>Oracle 접속 정보 하나. 비밀번호는 DPAPI(현재 Windows 사용자)로 암호화한 값만 저장한다.</summary>
+    public sealed class OracleConnectionProfile
+    {
+        public string Name { get; set; }
+        public string Host { get; set; }
+        public int Port { get; set; } = 1521;
+        public string ServiceName { get; set; }
+        public string UserId { get; set; }
+
+        /// <summary>DPAPI로 암호화한 비밀번호(Base64). 없으면 null.</summary>
+        public string ProtectedPassword { get; set; }
+    }
+
+    /// <summary>접속 정보 직렬화·검증·연결 문자열·비밀번호 암호화. 플러그인 설정의 <see cref="SettingKey"/> 하나에 JSON으로 저장한다.</summary>
+    public static class OracleConnectionStore
+    {
+        public const string SettingKey = "connections";
+
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+        // DPAPI 추가 엔트로피. 바꾸면 이미 저장한 비밀번호를 풀 수 없다.
+        private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("Folderss.OracleHelper.v1");
+
+        public static List<OracleConnectionProfile> Deserialize(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return new List<OracleConnectionProfile>();
+            return JsonSerializer.Deserialize<List<OracleConnectionProfile>>(json, JsonOptions) ?? new List<OracleConnectionProfile>();
+        }
+
+        public static string Serialize(IEnumerable<OracleConnectionProfile> profiles)
+        {
+            return JsonSerializer.Serialize(profiles.ToList(), JsonOptions);
+        }
+
+        /// <summary>저장할 수 없는 항목을 사람이 읽을 문장으로 돌려준다. 문제가 없으면 빈 목록.</summary>
+        public static List<string> Validate(IReadOnlyList<OracleConnectionProfile> profiles)
+        {
+            var errors = new List<string>();
+            for (var i = 0; i < profiles.Count; i++)
+            {
+                var p = profiles[i];
+                var label = string.IsNullOrWhiteSpace(p.Name) ? (i + 1) + "번째 접속" : "'" + p.Name.Trim() + "'";
+                if (string.IsNullOrWhiteSpace(p.Name))
+                    errors.Add(label + ": 이름을 입력하세요.");
+                if (string.IsNullOrWhiteSpace(p.Host))
+                    errors.Add(label + ": 호스트를 입력하세요.");
+                if (p.Port < 1 || p.Port > 65535)
+                    errors.Add(label + ": 포트는 1~65535여야 합니다.");
+                if (string.IsNullOrWhiteSpace(p.ServiceName))
+                    errors.Add(label + ": 서비스명을 입력하세요.");
+                if (string.IsNullOrWhiteSpace(p.UserId))
+                    errors.Add(label + ": 사용자를 입력하세요.");
+            }
+            foreach (var dup in profiles.Where(p => !string.IsNullOrWhiteSpace(p.Name))
+                                        .GroupBy(p => p.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+                                        .Where(g => g.Count() > 1))
+                errors.Add("'" + dup.Key + "': 같은 이름의 접속이 여러 개입니다.");
+            return errors;
+        }
+
+        /// <summary>
+        /// 접속 정보로 연결 문자열을 만든다. 값은 빌더가 따옴표 처리하므로 비밀번호에 ';' 등이 있어도 다른 키로 해석되지 않는다.
+        /// 풀링은 끈다(접속 테스트가 백그라운드 풀 스레드를 남기지 않게).
+        /// </summary>
+        public static string BuildConnectionString(OracleConnectionProfile profile, string password, int timeoutSeconds)
+        {
+            var errors = Validate(new[] { profile });
+            if (string.IsNullOrEmpty(password))
+                errors.Add("비밀번호를 입력하세요.");
+            if (errors.Count > 0)
+                throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+
+            var builder = new OracleConnectionStringBuilder
+            {
+                DataSource = profile.Host.Trim() + ":" + profile.Port + "/" + profile.ServiceName.Trim(),
+                UserID = profile.UserId.Trim(),
+                Password = password,
+                ConnectionTimeout = timeoutSeconds,
+                Pooling = false
+            };
+            return builder.ConnectionString;
+        }
+
+        public static string ProtectPassword(string password)
+        {
+            var data = ProtectedData.Protect(Encoding.UTF8.GetBytes(password), Entropy, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(data);
+        }
+
+        /// <summary>다른 PC나 다른 Windows 사용자가 저장한 값이면 <see cref="CryptographicException"/>.</summary>
+        public static string UnprotectPassword(string protectedPassword)
+        {
+            var data = ProtectedData.Unprotect(Convert.FromBase64String(protectedPassword), Entropy, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(data);
+        }
+    }
+}

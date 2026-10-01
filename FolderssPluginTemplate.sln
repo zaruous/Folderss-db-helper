@@ -11,6 +11,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "contract", "contract", "{F4
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Folderss.PluginContract", "contract\Folderss.PluginContract\Folderss.PluginContract.csproj", "{8ED01681-CC73-4C1B-8E9C-38DB58FB385E}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{8337252B-E00E-445A-9A01-D5073E88EC66}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyPlugin.Tests", "tests\MyPlugin.Tests\MyPlugin.Tests.csproj", "{565337DD-43D7-4D48-8F56-F1BCAEB6763E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -28,9 +32,14 @@ Global
 		{8ED01681-CC73-4C1B-8E9C-38DB58FB385E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8ED01681-CC73-4C1B-8E9C-38DB58FB385E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8ED01681-CC73-4C1B-8E9C-38DB58FB385E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{565337DD-43D7-4D48-8F56-F1BCAEB6763E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{565337DD-43D7-4D48-8F56-F1BCAEB6763E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{565337DD-43D7-4D48-8F56-F1BCAEB6763E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{565337DD-43D7-4D48-8F56-F1BCAEB6763E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{EC83FC6F-894A-4E51-800F-072EBEFE2385} = {41BA522C-BE77-44EB-A5D9-166E8A3C69F4}
 		{8ED01681-CC73-4C1B-8E9C-38DB58FB385E} = {F4FBAACA-8410-42CE-8013-811D763ACF48}
+		{565337DD-43D7-4D48-8F56-F1BCAEB6763E} = {8337252B-E00E-445A-9A01-D5073E88EC66}
 	EndGlobalSection
 EndGlobal

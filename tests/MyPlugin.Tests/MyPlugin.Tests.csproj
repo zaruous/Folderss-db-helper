@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    플러그인 프로젝트는 WPF(net8.0-windows)라 Linux에서 테스트를 실행할 수 없다.
+    화면과 무관한 OracleConnections.cs만 링크해 net8.0으로 테스트한다 (CI의 Ubuntu에서도 실행됨).
+    DPAPI(ProtectedData)는 Windows에서만 동작하므로 여기서는 테스트하지 않는다.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- 링크한 파일의 DPAPI 호출은 Windows 전용 경고(CA1416)가 나지만 테스트에서는 호출하지 않는다 -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\MyPlugin\OracleConnections.cs" Link="OracleConnections.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.26.301" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

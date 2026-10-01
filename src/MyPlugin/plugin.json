@@ -5,5 +5,5 @@
   "description": "Folderss 플러그인 템플릿",
   "assembly": "MyPlugin.dll",
   "type": "MyPlugin.MyPlugin",
-  "hasSettings": false
+  "hasSettings": true
 }
