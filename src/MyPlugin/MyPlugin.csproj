@@ -6,6 +6,9 @@
     <Nullable>disable</Nullable>
     <!-- Windows가 아닌 곳(CI 등)에서도 컴파일만은 되게 한다. 실행은 Windows에서만 -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- publish할 때 NuGet 패키지의 Windows용 DLL(runtimes/win/...)을 골라 출력 폴더에 펼친다. 런타임은 Folderss 것을 쓴다 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,15 +17,21 @@
   </ItemGroup>
 
   <!--
-    빌드할 때마다 bin\<구성>\net8.0-windows\<AssemblyName>.zip 을 만든다.
-    NuGet 패키지 등 다른 DLL을 쓰면 SourceFiles에 추가한다 (예: $(OutDir)Newtonsoft.Json.dll).
+    dotnet publish 할 때마다 publish 결과 전체(.deps.json, NuGet 패키지 DLL 포함)와 plugin.json을
+    bin\<구성>\net8.0-windows\win-x64\<AssemblyName>.zip 으로 묶는다.
+    Folderss는 .deps.json으로 플러그인 폴더의 DLL을 찾으므로, NuGet 패키지는 PackageReference만 추가하면 된다.
   -->
-  <Target Name="PackPlugin" AfterTargets="Build">
+  <Target Name="PackPlugin" AfterTargets="Publish">
     <PropertyGroup>
       <PluginStage>$(IntermediateOutputPath)plugin-stage\</PluginStage>
     </PropertyGroup>
+    <ItemGroup>
+      <!-- publish 폴더를 통째로 묶지 않고 이번 publish 대상만 묶는다 (지운 패키지의 DLL이 남아 섞이지 않게) -->
+      <PluginFiles Include="@(ResolvedFileToPublish)" Condition="'%(Extension)' != '.pdb'" />
+    </ItemGroup>
     <RemoveDir Directories="$(PluginStage)" />
-    <Copy SourceFiles="plugin.json;$(TargetPath)" DestinationFolder="$(PluginStage)" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFiles="@(PluginFiles->'$(PluginStage)%(RelativePath)')" />
+    <Copy SourceFiles="plugin.json;$(PublishDir)$(TargetFileName);$(PublishDir)$(ProjectDepsFileName)" DestinationFolder="$(PluginStage)" />
     <ZipDirectory SourceDirectory="$(PluginStage)" DestinationFile="$(OutDir)$(AssemblyName).zip" Overwrite="true" />
     <Message Importance="high" Text="Folderss 플러그인: $(OutDir)$(AssemblyName).zip" />
   </Target>
