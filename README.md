@@ -33,7 +33,7 @@ Folderss에서 `⋯ 메뉴 > 플러그인 > My Plugin`을 누르면 플러그인
 GitHub에서 **Use this template**를 누르거나, 직접 복제합니다.
 
 ```powershell
-git clone https://github.com/zaruous/Foderss-db-helper.git MyFolderssPlugin
+git clone https://github.com/zaruous/Folderss-db-helper.git MyFolderssPlugin
 cd MyFolderssPlugin
 ```
 

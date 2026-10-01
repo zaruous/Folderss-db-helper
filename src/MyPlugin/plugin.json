@@ -1,6 +1,6 @@
 {
-  "id": "yourname.my-plugin",
-  "name": "My Plugin",
+  "id": "zaruous.folderss-db-helper",
+  "name": "DB Helper",
   "version": "1.0.0",
   "description": "Folderss 플러그인 템플릿",
   "assembly": "MyPlugin.dll",
