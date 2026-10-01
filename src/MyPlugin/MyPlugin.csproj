@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <!-- Windows가 아닌 곳(CI 등)에서도 컴파일만은 되게 한다. 실행은 Windows에서만 -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 계약 DLL은 Folderss 본체의 것을 쓰므로 zip에 넣지 않는다 (Private=false) -->
+    <ProjectReference Include="..\..\contract\Folderss.PluginContract\Folderss.PluginContract.csproj" Private="false" />
+  </ItemGroup>
+
+  <!--
+    빌드할 때마다 bin\<구성>\net8.0-windows\<AssemblyName>.zip 을 만든다.
+    NuGet 패키지 등 다른 DLL을 쓰면 SourceFiles에 추가한다 (예: $(OutDir)Newtonsoft.Json.dll).
+  -->
+  <Target Name="PackPlugin" AfterTargets="Build">
+    <PropertyGroup>
+      <PluginStage>$(IntermediateOutputPath)plugin-stage\</PluginStage>
+    </PropertyGroup>
+    <RemoveDir Directories="$(PluginStage)" />
+    <Copy SourceFiles="plugin.json;$(TargetPath)" DestinationFolder="$(PluginStage)" />
+    <ZipDirectory SourceDirectory="$(PluginStage)" DestinationFile="$(OutDir)$(AssemblyName).zip" Overwrite="true" />
+    <Message Importance="high" Text="Folderss 플러그인: $(OutDir)$(AssemblyName).zip" />
+  </Target>
+
+</Project>
