@@ -1,12 +1,14 @@
 # Folderss 플러그인 템플릿
 
 [Folderss](https://github.com/zaruous/Folderss) 파일 관리자의 플러그인을 바로 만들 수 있는 기본 틀입니다.
-이 저장소를 복사해 이름만 바꾸고 빌드하면, Folderss에 등록할 수 있는 플러그인 zip이 만들어집니다.
+이 저장소를 복사해 이름만 바꾸고 `dotnet publish`하면, Folderss에 등록할 수 있는 플러그인 zip이 만들어집니다.
 
 ```
-빌드 결과: src/MyPlugin/bin/Debug/net8.0-windows/MyPlugin.zip
-├── plugin.json     ← 메뉴 이름, 진입점 정보
-└── MyPlugin.dll    ← 플러그인 코드
+결과: src/MyPlugin/bin/Release/net8.0-windows/win-x64/MyPlugin.zip
+├── plugin.json         ← 메뉴 이름, 진입점 정보
+├── MyPlugin.dll        ← 플러그인 코드
+├── MyPlugin.deps.json  ← 의존성 목록 (Folderss가 이걸로 DLL을 찾음)
+└── (NuGet 패키지 DLL)  ← PackageReference로 추가한 라이브러리
 ```
 
 Folderss에서 `⋯ 메뉴 > 플러그인 > My Plugin`을 누르면 플러그인 화면이 팝업 창으로 뜹니다.
@@ -57,13 +59,13 @@ cd MyFolderssPlugin
 ### 3. 빌드
 
 ```powershell
-dotnet build
+dotnet publish src/MyPlugin
 ```
 
-마지막 줄 근처에 zip 경로가 나옵니다.
+마지막 줄 근처에 zip 경로가 나옵니다. `dotnet build`만 해서는 zip이 만들어지지 않습니다.
 
 ```
-Folderss 플러그인: bin/Debug/net8.0-windows/MyPlugin.zip
+Folderss 플러그인: bin/Release/net8.0-windows/win-x64/MyPlugin.zip
 ```
 
 ### 4. Folderss에 등록하고 실행
@@ -74,7 +76,7 @@ Folderss 플러그인: bin/Debug/net8.0-windows/MyPlugin.zip
 
 ### 5. 코드를 고친 뒤
 
-1. `dotnet build`
+1. `dotnet publish src/MyPlugin`
 2. `플러그인 찾기…`로 같은 zip을 다시 등록합니다(같은 `id`라 교체됩니다).
 3. **Folderss를 재시작합니다.** 한 번 로드한 플러그인 DLL은 종료할 때까지 내릴 수 없어서, 재시작해야 새 버전이 로드됩니다.
 
@@ -89,7 +91,7 @@ Folderss 플러그인: bin/Debug/net8.0-windows/MyPlugin.zip
 ├── .github/workflows/build.yml  ← 빌드·릴리스 자동화
 ├── src/
 │   └── MyPlugin/
-│       ├── MyPlugin.csproj      ← 빌드하면 zip까지 만든다 (PackPlugin 타깃)
+│       ├── MyPlugin.csproj      ← publish하면 zip까지 만든다 (PackPlugin 타깃)
 │       ├── plugin.json          ← 플러그인 정보
 │       └── MyPlugin.cs          ← 진입점 (IFolderssPlugin 구현)
 └── contract/
@@ -195,6 +197,19 @@ namespace MyPlugin
 
 설정 탭은 **플러그인을 한 번 실행한 뒤** 설정 창을 열어야 나타납니다. 플러그인은 사용자가 메뉴에서 실행할 때만 로드되기 때문입니다.
 
+### NuGet 패키지 쓰기
+
+`PackageReference`만 추가하면 됩니다. publish할 때 패키지 DLL과 `.deps.json`이 zip에 함께 들어갑니다.
+
+```powershell
+dotnet add src/MyPlugin package Oracle.ManagedDataAccess.Core
+```
+
+- 플러그인마다 따로 로드되므로, Folderss나 다른 플러그인이 쓰는 같은 라이브러리의 버전과 관계없이 동작합니다.
+- 패키지는 **.NET 8(`net8.0`) 이하를 지원**해야 합니다. Folderss가 .NET 8에서 실행되기 때문입니다.
+- `csproj`의 `RuntimeIdentifier`(`win-x64`)는 지우지 마세요. 패키지의 Windows용 DLL(`runtimes/win/...`)이 이 설정으로 골라집니다.
+- 패키지의 형식(예: `OracleConnection`)은 플러그인 안에서만 쓰세요. 다른 플러그인과 같은 형식으로 취급되지 않습니다.
+
 ### 테마 색 맞추기
 
 색을 고정값으로 넣지 말고 Folderss 테마 리소스 키에 연결하세요.
@@ -280,7 +295,7 @@ UI 스레드에서 난 예외와 `Initialize`/`CreateView`의 예외는 Folderss
 
 | 언제 | 하는 일 |
 |---|---|
-| `main` 푸시, PR | 빌드하고 플러그인 zip을 Actions 실행 결과의 **Artifacts**에 올린다 (확인용) |
+| `main` 푸시, PR | publish하고 플러그인 zip을 Actions 실행 결과의 **Artifacts**에 올린다 (확인용) |
 | `v*` 태그 푸시 | `plugin.json`의 `version`과 태그가 같은지 확인한 뒤, **GitHub 릴리스**를 만들고 `<id>-<version>.zip`을 첨부한다 |
 
 릴리스 순서:
@@ -300,9 +315,9 @@ git push origin v1.1.0
 
 ## 디버깅
 
-1. 빌드하고 zip을 등록합니다.
+1. `dotnet publish src/MyPlugin -c Debug`로 만든 zip(`bin/Debug/net8.0-windows/win-x64/MyPlugin.zip`)을 등록합니다.
 2. Visual Studio에서 **디버그 > 프로세스에 연결 > `Folderss.exe`** 를 고릅니다.
-3. `⋯ 메뉴 > 플러그인`에서 실행하면 중단점에 걸립니다. 심볼이 안 잡히면 `MyPlugin.csproj`의 `Copy SourceFiles`에 `$(OutDir)$(AssemblyName).pdb`를 추가하세요.
+3. `⋯ 메뉴 > 플러그인`에서 실행하면 중단점에 걸립니다. 심볼이 안 잡히면 `MyPlugin.csproj`의 `PluginFiles`에서 `.pdb`를 빼는 조건을 지우세요.
 
 로그와 파일 위치(`%LOCALAPPDATA%\Folderss\` 기준):
 

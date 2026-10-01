@@ -1,5 +1,5 @@
 # 플러그인 빌드와 릴리스.
-# - main 푸시·PR: 빌드해서 플러그인 zip을 Actions 아티팩트로 올린다 (확인용)
+# - main 푸시·PR: publish해서 플러그인 zip을 Actions 아티팩트로 올린다 (확인용)
 # - v* 태그 푸시(예: v1.0.0): 태그 버전과 plugin.json의 version이 같은지 확인한 뒤 GitHub 릴리스에 zip을 첨부한다
 # 플러그인 폴더 이름을 바꿔도(src/<이름>/) 그대로 동작한다. src 아래 plugin.json은 하나여야 한다.
 name: build
@@ -58,15 +58,15 @@ jobs:
             exit 1
           fi
 
-      - name: 빌드
-        run: dotnet build -c Release --nologo
+      - name: publish
+        run: dotnet publish "${{ steps.plugin.outputs.dir }}" -c Release --nologo
 
       - name: zip 찾기
         id: zip
         shell: bash
         run: |
           shopt -s nullglob
-          zips=("${{ steps.plugin.outputs.dir }}"/bin/Release/net8.0-windows/*.zip)
+          zips=("${{ steps.plugin.outputs.dir }}"/bin/Release/net8.0-windows/win-x64/*.zip)
           if [ "${#zips[@]}" -ne 1 ]; then
             echo "::error::플러그인 zip을 찾지 못했습니다"
             exit 1
