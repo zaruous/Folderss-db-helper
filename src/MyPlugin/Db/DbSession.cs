@@ -114,7 +114,7 @@ namespace MyPlugin
     /// - LOCK TABLE은 트랜잭션 안에서 실행하고 커밋 대기(잠금 보유)로 표시한다.
     /// - OracleConnection은 연 뒤 AutoCommit = false: 트랜잭션 객체가 없는 동안에도 ODP.NET이 명령마다 커밋하지 않게.
     /// - 커밋·롤백이 실패하면 ODP.NET이 끝내 버린 트랜잭션 객체를 버리고, 서버에 트랜잭션이 남았으면 새 객체로 이어 받는다.
-    /// - COMMIT·ROLLBACK 문장은 SQL로 보내지 않고 CommitAsync·RollbackAsync와 같게 처리한다.
+    /// - COMMIT·ROLLBACK 문장은 SQL로 보내지 않고 CommitAsync·RollbackAsync와 같게 처리한다(트랜잭션 객체가 없어도 서버 트랜잭션까지 끝낸다).
     /// - Query: fetchCount+1행을 읽어 HasMore 판단. 끝까지 읽었으면 리더를 닫는다. 같은 연결의 다른 열린 커서는 그대로 둔다.
     /// - 값: OracleDataReader면 GetProviderSpecificValue(큰 NUMBER·TIMESTAMP WITH TIME ZONE 보존), 아니면 GetValue → ValueFormatter.Format.
     ///   IDisposable 값(OracleClob·OracleBlob 등)은 형식화 직후 Dispose한다.
@@ -162,6 +162,8 @@ namespace MyPlugin
         private volatile bool _hasPending;
         private volatile bool _countUnknown;
         private volatile bool _locksHeld;
+        // 이 트랜잭션에서 LOCK TABLE을 실행했다. 그 잠금(TM)은 트랜잭션 ID 없이 잡혀 서버 확인(LOCAL_TRANSACTION_ID)이 NULL이어도 남아 있을 수 있다.
+        private volatile bool _tableLocked;
         private volatile int _pendingRows;
         private int _disposed;
 
@@ -702,6 +704,7 @@ namespace MyPlugin
                             ExecuteNonQuery(statement.Text);
                             _hasPending = true;
                             _locksHeld = true;
+                            _tableLocked = true;
                             result.Summary = "실행함 (잠금 보유 — 커밋·롤백하면 풀림)";
                             break;
                         }
@@ -785,12 +788,12 @@ namespace MyPlugin
             {
                 // 커밋한 뒤 오류를 낸 블록도 앞서 대기하던 변경을 이미 끝냈다(대기 표시만 남지 않게)
                 NoteFailure(ex);
-                if (_hasPending && !IsCancellation(ex) && ServerTransactionActive() == false)
+                if (_hasPending && !IsCancellation(ex) && TransactionAfterBlock() == false)
                     EndTransaction();
                 throw;
             }
             // 블록 안의 COMMIT·ROLLBACK·EXECUTE IMMEDIATE DDL은 앞서 대기하던 변경까지 끝낸다. 무엇을 했는지는 서버에 물어야 안다.
-            if (ServerTransactionActive() == false)
+            if (TransactionAfterBlock() == false)
             {
                 EndTransaction();
                 result.TransactionEnded = true;
@@ -801,6 +804,15 @@ namespace MyPlugin
             _hasPending = true;
             _countUnknown = true;
             result.Summary = "실행함 (커밋 전)";
+        }
+
+        /// <summary>
+        /// PL/SQL 블록 뒤 서버 트랜잭션(<see cref="ServerTransactionActive"/>). LOCK TABLE 잠금이 있으면 묻지 않고 모름(null):
+        /// 그 잠금은 트랜잭션 ID가 없어 확인 값이 NULL이므로 블록이 커밋해 풀었는지 그대로인지 가릴 수 없다.
+        /// </summary>
+        private bool? TransactionAfterBlock()
+        {
+            return _tableLocked ? null : ServerTransactionActive();
         }
 
         /// <summary>서버에 열린 트랜잭션이 있으면 true, 없으면 false, 알 수 없으면(묻는 문장 없음·끊김·실패·취소) null.</summary>
@@ -1173,43 +1185,41 @@ namespace MyPlugin
 
         private void CommitCore()
         {
+            // 트랜잭션 객체가 없어도 서버 트랜잭션은 있을 수 있다(자동 커밋을 끈 ODP.NET 연결의 DB 링크 조회·EXPLAIN PLAN 등) — 언제나 서버까지 보낸다
+            EnsureTransaction();
             var transaction = _transaction;
-            if (transaction != null)
+            try
             {
-                try
-                {
-                    transaction.Commit();
-                }
-                catch (Exception ex)
-                {
-                    if (AfterFailedEnd(transaction, ex))
-                        throw new TransactionEndedException(ex);
-                    throw;
-                }
-                _transaction = null;
-                DisposeQuietly(transaction);
+                transaction.Commit();
             }
+            catch (Exception ex)
+            {
+                if (AfterFailedEnd(transaction, ex))
+                    throw new TransactionEndedException(ex);
+                throw;
+            }
+            _transaction = null;
+            DisposeQuietly(transaction);
             EndTransaction();
         }
 
         private void RollbackCore()
         {
+            // CommitCore와 같은 까닭으로 트랜잭션 객체가 없어도 서버까지 롤백한다
+            EnsureTransaction();
             var transaction = _transaction;
-            if (transaction != null)
+            try
             {
-                try
-                {
-                    transaction.Rollback();
-                }
-                catch (Exception ex)
-                {
-                    if (AfterFailedEnd(transaction, ex))
-                        throw new TransactionEndedException(ex);
-                    throw;
-                }
-                _transaction = null;
-                DisposeQuietly(transaction);
+                transaction.Rollback();
             }
+            catch (Exception ex)
+            {
+                if (AfterFailedEnd(transaction, ex))
+                    throw new TransactionEndedException(ex);
+                throw;
+            }
+            _transaction = null;
+            DisposeQuietly(transaction);
             EndTransaction();
         }
 
@@ -1251,6 +1261,7 @@ namespace MyPlugin
             _hasPending = false;
             _countUnknown = false;
             _locksHeld = false;
+            _tableLocked = false;
             _pendingRows = 0;
             foreach (var cursor in SnapshotCursors())
             {
@@ -1300,6 +1311,7 @@ namespace MyPlugin
             _hasPending = false;
             _countUnknown = false;
             _locksHeld = false;
+            _tableLocked = false;
             _pendingRows = 0;
             var oracle = _connection as OracleConnection;
             if (oracle != null)

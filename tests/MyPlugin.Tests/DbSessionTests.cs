@@ -1201,6 +1201,33 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public async Task CommitAndRollback_ReachServerTransactionStartedWithoutTransactionObject()
+        {
+            // 자동 커밋을 끈 ODP.NET 연결에서는 DB 링크 조회·EXPLAIN PLAN처럼 트랜잭션 객체 없이 서버 트랜잭션이 시작된다.
+            // COMMIT·ROLLBACK을 서버에 보내지 않으면 그 트랜잭션은 끊을 때까지 남는다(SET TRANSACTION의 ORA-01453 등)
+            var odp = new OdpLikeConnection(new SqliteConnection(Memory));
+            using (var session = await OpenAsync(odp))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                odp.Server = odp.Inner.BeginTransaction();
+                await session.ExecuteAsync(new SqlStatement { Text = "INSERT INTO t VALUES (1)", Kind = SqlKind.Other, Verb = "EXPLAIN" }, 0);
+
+                var commit = await session.ExecuteAsync(Transaction("COMMIT", SqlTransactionAction.Commit), 0);
+
+                Assert.True(commit.TransactionEnded);
+                Assert.Null(odp.Server);
+                Assert.Equal(1, await CountAsync(session, "t"));
+
+                odp.Server = odp.Inner.BeginTransaction();
+                await session.ExecuteAsync(new SqlStatement { Text = "INSERT INTO t VALUES (2)", Kind = SqlKind.Other, Verb = "EXPLAIN" }, 0);
+                await session.RollbackAsync();
+
+                Assert.Null(odp.Server);
+                Assert.Equal(1, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
         public async Task CommitFailure_ProviderKeepsTransaction_CanStillRollBack()
         {
             using (var session = await OpenAsync(new SqliteConnection(Memory)))
@@ -1302,6 +1329,29 @@ namespace MyPlugin.Tests
 
                 Assert.False(session.HasPendingChanges);
                 Assert.False(session.IsBroken);
+            }
+        }
+
+        [Fact]
+        public async Task PlSql_AfterLockTable_KeepsLockPendingEvenIfServerShowsNoTransaction()
+        {
+            // Oracle의 LOCK TABLE은 트랜잭션 ID 없이 잠금(TM)만 잡아 LOCAL_TRANSACTION_ID가 NULL이다 — 잠금이 남았는데 대기 표시를 지우면 안 된다
+            var probe = new TransactionProbe { Active = false };
+            using (var session = await OpenAsync(probe.Attach(new SqliteConnection(Memory))))
+            {
+                session.TransactionProbeSql = TransactionProbe.Sql;
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(new SqlStatement { Text = "INSERT INTO t VALUES (1)", Kind = SqlKind.Other, Verb = "LOCK" }, 0);
+
+                var result = await session.ExecuteAsync(PlSql("SELECT 1"), 0);
+
+                Assert.False(result.TransactionEnded);
+                Assert.Equal("커밋 대기(행 수 모름) · 잠금", session.PendingText);
+                await Assert.ThrowsAsync<SqliteException>(() => session.ExecuteAsync(PlSql("INSERT INTO missing VALUES (1)"), 0));
+                Assert.True(session.HasPendingChanges);
+                await session.RollbackAsync();
+                Assert.Null(session.PendingText);
+                Assert.Equal(0, await CountAsync(session, "t"));
             }
         }
 

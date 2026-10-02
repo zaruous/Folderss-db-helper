@@ -337,6 +337,29 @@ namespace MyPlugin.Tests
             Assert.All(statements.Take(2), s => Assert.True(s.IsPlSqlBlock));
         }
 
+        [Theory]
+        [InlineData("CREATE OR REPLACE PACKAGE BODY pkg AS\nPROCEDURE p1 IS\nBEGIN\n  NULL;\nEND p1;\n\ng_last DATE;\n\n"
+            + "FUNCTION f RETURN NUMBER IS\nBEGIN\n  RETURN 1;\nEND f;\n\nBEGIN\n  g_last := SYSDATE;\nEND pkg;")]
+        [InlineData("CREATE OR REPLACE PACKAGE BODY pkg AS\nPROCEDURE p1 IS\nBEGIN\n  NULL;\nEND;\n\nPROCEDURE p2 IS\nBEGIN\n  NULL;\nEND;\n\nEND;")]
+        [InlineData("CREATE OR REPLACE TYPE BODY t_obj AS\nMEMBER FUNCTION f RETURN NUMBER IS\nBEGIN\n  RETURN 1;\nEND;\n\n"
+            + "STATIC FUNCTION g RETURN NUMBER IS\nBEGIN\n  RETURN 2;\nEND g;\n\nEND;")]
+        [InlineData("CREATE OR REPLACE PROCEDURE outer_p IS\nPROCEDURE inner_p IS\nBEGIN\n  NULL;\nEND inner_p;\n\nBEGIN\n  inner_p;\nEND outer_p;")]
+        [InlineData("DECLARE\nPROCEDURE log(m VARCHAR2) IS\nBEGIN\n  DBMS_OUTPUT.PUT_LINE(m);\nEND log;\n\nBEGIN\n  log('x');\nEND;")]
+        public void Split_UnindentedInnerEndsWithoutSlash_DoNotEndTheBlock(string block)
+        {
+            // 들여쓰지 않은 서브프로그램의 "END p1;"·"END;" 뒤 빈 줄은 블록의 끝이 아니다
+            // (잘라서 실행하면 CREATE는 본문만 남아 INVALID가 되고, 익명 블록은 컴파일 오류)
+            foreach (var nl in new[] { "\n", "\r\n" })
+            {
+                var text = block.Replace("\n", nl);
+
+                var whole = Assert.Single(SqlScript.Split(text + nl));
+                Assert.Equal(text, whole.Text);
+                Assert.Null(whole.Danger);
+                Assert.Equal(new[] { text, "SELECT 1 FROM dual" }, Texts(text + nl + nl + "SELECT 1 FROM dual;"));
+            }
+        }
+
         [Fact]
         public void Split_BlockWithSlashLater_StillEndsOnlyAtSlash()
         {

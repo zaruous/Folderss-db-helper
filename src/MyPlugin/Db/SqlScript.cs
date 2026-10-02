@@ -88,7 +88,8 @@ namespace MyPlugin
     /// - PL/SQL 블록이 아닌 문장은 ';', 공백만 있는 빈 줄, 또는 '/'만 있는 줄에서 끝난다.
     /// - PL/SQL 블록은 '/'만 있는 줄에서 끝난다(안의 ';'·빈 줄로는 안 끝남). '/' 줄 없이 스크립트 끝까지 가면 SQL Developer처럼
     ///   들여쓰지 않은 줄이 END [이름];으로 끝나고 바로 빈 줄이 오며 그 뒤에 문장이 더 있을 때 그 빈 줄에서 끝낸다
-    ///   (패키지 본문 안의 "  END p;" 뒤 빈 줄처럼 들여쓴 END에서는 끝내지 않는다). 그런 곳이 없으면 스크립트 끝까지.
+    ///   (패키지 본문 안의 "  END p;" 뒤 빈 줄처럼 들여쓴 END에서는 끝내지 않는다). 이름은 블록 자신의 이름이어야 하고(익명 블록은 이름 없는 END;),
+    ///   빈 줄 뒤가 PROCEDURE·FUNCTION·END 등 블록 안에서만 이어지는 낱말이면 끝내지 않는다. 그런 곳이 없으면 스크립트 끝까지.
     /// - 주석·공백만 있는 조각은 문장으로 내지 않는다.
     /// </summary>
     public static class SqlScript
@@ -210,7 +211,12 @@ namespace MyPlugin
         {
             if (string.IsNullOrEmpty(sql))
                 return null;
-            var sig = Tokenize(sql).FindAll(t => !t.IsComment && !t.IsMarker);
+            return CompileTargetOf(sql, Tokenize(sql).FindAll(t => !t.IsComment && !t.IsMarker));
+        }
+
+        // sig: 주석·표시 토큰을 뺀 문장 토큰(sig[0]이 첫 낱말)
+        private static CompileTarget CompileTargetOf(string sql, List<Token> sig)
+        {
             var verb = WordText(sql, sig, 0);
             var k = 1;
             if (verb == "CREATE")
@@ -532,19 +538,26 @@ namespace MyPlugin
         /// <summary>
         /// '/' 줄 없이 스크립트 끝까지 가는 블록(tokens[first]부터)의 끝으로 볼 빈 줄: 들여쓰지 않은 줄이 END [이름];로 끝나고(뒤 주석은 무시)
         /// 바로 다음이 빈 줄이며 그 뒤에 문장이 더 있는 첫 곳. 없으면 -1. 들여쓴 END(패키지 본문 안의 서브프로그램 등)에서는 끝내지 않는다.
+        /// 들여쓰지 않은 안쪽 END도 끝으로 보지 않는다: END 뒤 이름은 블록 자신의 이름이어야 하고(CREATE … 이름, 익명 블록은 이름 없는 END;만),
+        /// 빈 줄 뒤가 PROCEDURE·FUNCTION·END처럼 블록 안에서만 이어지는 낱말이면 끝이 아니다(패키지·형식 본문, 로컬 서브프로그램).
         /// </summary>
         private static int UnterminatedBlockEnd(string s, List<Token> tokens, int first)
         {
+            var own = BlockName(s, tokens, first);
             for (var k = first + 1; k < tokens.Count; k++)
             {
-                if (tokens[k].Type == TokenType.BlankLine && EndsWithBlockEnd(s, tokens, first, k) && HasStatementAfter(s, tokens, k + 1))
+                if (tokens[k].Type != TokenType.BlankLine || !EndsWithBlockEnd(s, tokens, first, k, own))
+                    continue;
+                var next = NextStatementToken(s, tokens, k + 1);
+                if (next >= 0 && !ContinuesBlock(s, tokens[next]))
                     return k;
             }
             return -1;
         }
 
-        // tokens[blank] 바로 앞 줄이 들여쓰지 않은 줄이고 END [이름] ; 로 끝나는지(END IF·LOOP·CASE는 블록 끝이 아니다)
-        private static bool EndsWithBlockEnd(string s, List<Token> tokens, int first, int blank)
+        // tokens[blank] 바로 앞 줄이 들여쓰지 않은 줄이고 END [own] ; 로 끝나는지(END IF·LOOP·CASE는 블록 끝이 아니다).
+        // 이름이 다른 END(패키지 본문 안의 "END p1;")는 안쪽 서브프로그램의 끝이다. own이 null(익명 블록·이름 모름)이면 이름 없는 END만.
+        private static bool EndsWithBlockEnd(string s, List<Token> tokens, int first, int blank, string own)
         {
             var m = blank - 1;
             while (m > first && tokens[m].IsComment)
@@ -553,10 +566,16 @@ namespace MyPlugin
                 return false;
             var e = m - 1;
             var name = tokens[e];
+            var named = false;
             if (e > first && (name.Type == TokenType.QuotedIdentifier
                 || (name.Type == TokenType.Word && !IsWord(s, name, "END") && !IsWord(s, name, "IF") && !IsWord(s, name, "LOOP") && !IsWord(s, name, "CASE"))))
+            {
+                named = true;
                 e--;
+            }
             if (e <= first || !IsWord(s, tokens[e], "END"))
+                return false;
+            if (named && (own == null || !string.Equals(NameText(s, tokens, e + 1), own, StringComparison.Ordinal)))
                 return false;
             var lineStart = tokens[e].Start;
             while (lineStart > 0 && s[lineStart - 1] != '\n' && s[lineStart - 1] != '\r')
@@ -564,15 +583,58 @@ namespace MyPlugin
             return !char.IsWhiteSpace(s[lineStart]);
         }
 
-        private static bool HasStatementAfter(string s, List<Token> tokens, int from)
+        // CREATE 블록이 만드는 객체 이름(CompileTargetOf와 같은 규칙). 익명 블록이거나 알 수 없으면 null.
+        private static string BlockName(string s, List<Token> tokens, int first)
+        {
+            if (!IsWord(s, tokens[first], "CREATE"))
+                return null;
+            // CREATE [OR REPLACE] [EDITIONABLE …] 종류 [BODY] [스키마.]이름 — 머리 토큰 몇 개면 된다
+            var header = new List<Token>();
+            for (var i = first; i < tokens.Count && header.Count < 16; i++)
+            {
+                if (!tokens[i].IsComment && !tokens[i].IsMarker)
+                    header.Add(tokens[i]);
+            }
+            var target = CompileTargetOf(s, header);
+            return target == null ? null : target.Name;
+        }
+
+        // from부터 처음 나오는 문장 토큰(주석·표시·';'가 아닌 것). 없으면 -1.
+        private static int NextStatementToken(string s, List<Token> tokens, int from)
         {
             for (var i = from; i < tokens.Count; i++)
             {
                 var t = tokens[i];
                 if (!t.IsComment && !t.IsMarker && !IsSymbol(s, t, ';'))
-                    return true;
+                    return i;
             }
-            return false;
+            return -1;
+        }
+
+        // 블록 안에서만 이어지는 낱말(다음 서브프로그램·선언·형식 본문의 멤버, 마지막 END). 이런 낱말로 시작하는 SQL 문장은 없다.
+        private static bool ContinuesBlock(string s, Token t)
+        {
+            if (t.Type != TokenType.Word)
+                return false;
+            switch (Upper(s, t))
+            {
+                case "PROCEDURE":
+                case "FUNCTION":
+                case "END":
+                case "CURSOR":
+                case "TYPE":
+                case "SUBTYPE":
+                case "PRAGMA":
+                case "MEMBER":
+                case "STATIC":
+                case "CONSTRUCTOR":
+                case "MAP":
+                case "ORDER":
+                case "OVERRIDING":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         // 문장 앞의 주석·빈 줄과 빈 조각의 구분자(';', '/' 줄)를 건너뛴다
