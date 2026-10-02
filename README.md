@@ -1,4 +1,42 @@
-# Folderss 플러그인 템플릿
+# DB Helper
+
+[Folderss](https://github.com/zaruous/Folderss) 파일 관리자 안에서 Oracle DB에 접속해 객체를 찾아보고 SQL을 실행하는 플러그인입니다.
+`⋯ 메뉴 > 플러그인 > DB Helper`를 누르면 팝업 창으로 열립니다.
+
+## 설치
+
+1. Folderss `설정 > 플러그인 > GitHub에서 설치…`에 이 저장소 주소(`https://github.com/zaruous/Folderss-oracle-db-helper`)를 넣습니다.
+   GitHub 설치 기능이 없는 Folderss라면 [Releases](https://github.com/zaruous/Folderss-oracle-db-helper/releases)에서 zip을 받아 `플러그인 찾기…`로 등록합니다.
+2. `⋯ 메뉴 > 플러그인 > DB Helper`를 열고 `접속 관리…`에서 접속을 추가합니다(호스트·포트·서비스명·사용자·비밀번호).
+3. 트리의 DB 앞 ▶를 누르거나 DB를 두 번 눌러 연결합니다.
+
+## 기능
+
+| 영역 | 내용 |
+|---|---|
+| 접속 관리 | 추가·복제·삭제·편집, 접속 테스트, 비밀번호는 DPAPI로 암호화해 저장(저장 안 하고 연결 때마다 입력도 가능), 읽기 전용, 색 표시(개발 초록 · 검증 노랑 · 운영 빨강) |
+| DB 트리 | DB → 스키마(내 스키마 먼저, 내장 스키마는 숨김) → 테이블·뷰·시퀀스·프로시저/함수/패키지 → 열. 펼칠 때 불러오고, 처음 1,000개를 보인 뒤 [더 보기]로 더 불러옴 |
+| 트리 검색 | 서버에서 스키마·객체(·열) 이름을 찾아 일치하는 계층만 보여 줌. Enter·Shift+Enter로 이동, Esc로 지우기 |
+| 여러 DB | 여러 DB에 동시에 연결. SQL 탭마다 대상 DB를 정하고, 트리에서 다른 DB의 테이블을 두 번 누르면 그 DB용 탭으로 SELECT를 넣음 |
+| SQL 실행 | 커서가 있는 문장 또는 선택 영역을 `Ctrl+Enter`로 실행, 취소, 결과는 처음 200행(1,000·5,000 선택)만 가져오고 [다음 행 가져오기]로 이어 읽기(다시 조회하지 않음) |
+| 트랜잭션 | 자동 커밋 끔. DML은 커밋 전까지 "커밋 대기"로 표시하고 [커밋]·[롤백]으로 끝냄. 연결을 끊거나 창을 닫을 때 커밋 대기가 있으면 물어봄 |
+| 안전장치 | WHERE 없는 UPDATE·DELETE, DROP·TRUNCATE·ALTER 등은 확인 체크 후 실행. 커밋 대기 중 DDL 실행(자동 커밋됨) 경고. 컴파일 오류가 있는 PL/SQL은 메시지 탭에 오류 목록 표시 |
+| 결과 | NULL·숫자 구분, 열 머리에 Oracle 형식, TSV 복사(`Ctrl+C`·[복사]), 메시지·실행 기록 |
+
+## 알아 둘 점
+
+- **DB마다 세션 1개**: 같은 DB를 대상으로 하는 탭들은 트랜잭션을 함께 씁니다(한 탭의 커밋이 다른 탭의 변경도 커밋). 같은 DB에서는 한 번에 한 문장만 실행합니다.
+- **읽기 전용은 플러그인 쪽 차단**입니다. 운영 DB는 DB 계정 권한도 읽기 전용으로 두세요.
+- **비밀번호**는 이 PC의 이 Windows 사용자만 풀 수 있게 저장합니다. 다른 PC로 옮기면 다시 입력해야 합니다.
+- **문장 구분**: `;`, 빈 줄, `/`만 있는 줄. PL/SQL 블록(BEGIN·DECLARE·CREATE PROCEDURE 등)은 `/` 줄로 끝내세요.
+- **접속 방식**: 호스트·포트·서비스명(EZConnect)만 지원합니다. TNS 별칭과 Wallet(mTLS)은 아직 지원하지 않습니다.
+- **확인 상태**: 문장 분석·조회 SQL·세션·트리 로직은 Linux에서 단위 테스트(900개)로 확인했습니다. Windows 화면과 실제 Oracle 서버 접속은 아직 확인 전입니다.
+
+---
+
+# 플러그인 개발 안내
+
+이 저장소는 Folderss 플러그인 템플릿에서 시작했습니다. 아래는 그 템플릿의 개발 안내입니다(프로젝트·클래스 이름은 아직 템플릿 이름 `MyPlugin`).
 
 [Folderss](https://github.com/zaruous/Folderss) 파일 관리자의 플러그인을 바로 만들 수 있는 기본 틀입니다.
 이 저장소를 복사해 이름만 바꾸고 `dotnet publish`하면, Folderss에 등록할 수 있는 플러그인 zip이 만들어집니다.
@@ -33,7 +71,7 @@ Folderss에서 `⋯ 메뉴 > 플러그인 > My Plugin`을 누르면 플러그인
 GitHub에서 **Use this template**를 누르거나, 직접 복제합니다.
 
 ```powershell
-git clone https://github.com/zaruous/Folderss-db-helper.git MyFolderssPlugin
+git clone https://github.com/zaruous/Folderss-oracle-db-helper.git MyFolderssPlugin
 cd MyFolderssPlugin
 ```
 
