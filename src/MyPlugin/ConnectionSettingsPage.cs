@@ -1,35 +1,18 @@
 using Folderss.Plugins;
-using Oracle.ManagedDataAccess.Client;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 
 namespace MyPlugin
 {
     /// <summary>
-    /// 설정 창의 "Oracle 접속" 탭. 편집은 메모리 사본에 하고 [저장]을 누를 때만 플러그인 설정에 쓴다(취소하면 버려짐).
+    /// 설정 창의 "Oracle 접속" 탭: 저장된 접속 목록(읽기 전용)과 [접속 관리 열기].
+    /// 편집은 접속 관리 대화상자에서만 한다(두 곳에서 편집하면 나중에 저장한 쪽이 다른 쪽 변경을 덮어쓰므로).
     /// </summary>
     public sealed class ConnectionSettingsPage : IPluginSettingsPage
     {
-        private const int TestTimeoutSeconds = 10;
-
         private readonly IPluginManager _manager;
-        private List<OracleConnectionProfile> _profiles;
-        private Dictionary<OracleConnectionProfile, string> _newPasswords; // 이번에 입력한 비밀번호. 저장할 때 암호화한다
-        private string _loadError;
-
-        private ListBox _list;
-        private TextBox _name, _host, _port, _service, _user;
-        private PasswordBox _password;
-        private TextBlock _passwordHint, _status;
-        private FrameworkElement _editor;
-        private Button _test, _cancel;
-        private bool _filling;
-        private int _testRun;
 
         public ConnectionSettingsPage(IPluginManager manager)
         {
@@ -40,290 +23,172 @@ namespace MyPlugin
 
         public FrameworkElement CreateView()
         {
-            _newPasswords = new Dictionary<OracleConnectionProfile, string>();
-            _loadError = null;
-            try
-            {
-                _profiles = OracleConnectionStore.Deserialize(_manager.GetSetting(OracleConnectionStore.SettingKey));
-            }
-            catch (Exception ex)
-            {
-                _profiles = new List<OracleConnectionProfile>();
-                _loadError = "저장된 접속 정보를 읽지 못했습니다: " + ex.Message;
-            }
-
-            var root = new Grid { Margin = new Thickness(8) };
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-            root.Children.Add(BuildListPane());
-            var editor = BuildEditor();
-            Grid.SetColumn(editor, 1);
-            root.Children.Add(editor);
-
-            foreach (var p in _profiles)
-                _list.Items.Add(new ListBoxItem { Content = p.Name, Tag = p });
-            if (_list.Items.Count > 0)
-                _list.SelectedIndex = 0;
-            else
-                FillEditor(null);
-            if (_loadError != null)
-                SetStatus(_loadError + Environment.NewLine + "이 상태에서는 덮어쓰지 않도록 저장을 막습니다.");
-            return root;
+            return new ConnectionList(_manager).Root;
         }
 
+        /// <summary>접속 관리에서 [저장]할 때 이미 저장했으므로 여기서 쓸 것이 없다.</summary>
         public void Save()
         {
-            if (_profiles == null)
-                return;
-            if (_loadError != null)
-                throw new InvalidOperationException("Oracle 접속: " + _loadError + " 기존 설정을 덮어쓰지 않았습니다.");
-            var errors = OracleConnectionStore.Validate(_profiles);
-            if (errors.Count > 0)
-                throw new InvalidOperationException("Oracle 접속: " + string.Join(" ", errors));
-
-            foreach (var pair in _newPasswords)
-                pair.Key.ProtectedPassword = OracleConnectionStore.ProtectPassword(pair.Value);
-            _manager.SetSetting(OracleConnectionStore.SettingKey, OracleConnectionStore.Serialize(_profiles));
-            _newPasswords.Clear();
         }
 
-        private FrameworkElement BuildListPane()
+        /// <summary>설정 창을 열 때마다 새로 만드는 목록 화면. 보이는 동안만 접속 목록 변경 알림을 받는다.</summary>
+        private sealed class ConnectionList
         {
-            var pane = new DockPanel { Margin = new Thickness(0, 0, 8, 0) };
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
-            var add = new Button { Content = "추가", Padding = new Thickness(12, 2, 12, 2) };
-            var remove = new Button { Content = "삭제", Padding = new Thickness(12, 2, 12, 2), Margin = new Thickness(6, 0, 0, 0) };
-            add.Click += (s, e) => AddProfile();
-            remove.Click += (s, e) => RemoveSelected();
-            buttons.Children.Add(add);
-            buttons.Children.Add(remove);
-            DockPanel.SetDock(buttons, Dock.Bottom);
-            pane.Children.Add(buttons);
+            private readonly IPluginManager _manager;
+            private readonly StackPanel _rows = new StackPanel();
+            private bool _subscribed;
 
-            _list = new ListBox();
-            _list.SelectionChanged += (s, e) => FillEditor(Selected);
-            pane.Children.Add(_list);
-            return pane;
-        }
-
-        private FrameworkElement BuildEditor()
-        {
-            var panel = new StackPanel();
-            _name = AddField(panel, "이름");
-            _host = AddField(panel, "호스트");
-            _port = AddField(panel, "포트");
-            _service = AddField(panel, "서비스명");
-            _user = AddField(panel, "사용자");
-
-            panel.Children.Add(Label("비밀번호"));
-            _password = new PasswordBox();
-            _password.PasswordChanged += (s, e) =>
+            public ConnectionList(IPluginManager manager)
             {
-                var p = Selected;
-                if (_filling || p == null)
+                _manager = manager;
+
+                var hint = Theme.Secondary("접속 추가·변경·삭제는 [접속 관리]에서 합니다. 접속 관리에서 [저장]하면 바로 적용되며, 이 설정 창의 [저장]·[취소]와는 관계없습니다.");
+                hint.TextWrapping = TextWrapping.Wrap;
+                hint.FontSize = 12;
+                var open = new Button { Content = "접속 관리 열기", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0) };
+                open.Click += Open_Click;
+                var frame = new Border
+                {
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(8, 6, 8, 6),
+                    Margin = new Thickness(0, 8, 0, 0),
+                    Child = new ScrollViewer
+                    {
+                        Content = _rows,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                        Focusable = false
+                    }
+                };
+                frame.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+                frame.SetResourceReference(Border.BackgroundProperty, Theme.PanelBackground);
+
+                var root = new DockPanel { Margin = new Thickness(8) };
+                DockPanel.SetDock(hint, Dock.Top);
+                root.Children.Add(hint);
+                DockPanel.SetDock(open, Dock.Bottom);
+                root.Children.Add(open);
+                root.Children.Add(frame);
+                root.Loaded += Root_Loaded;
+                root.Unloaded += Root_Unloaded;
+                Root = root;
+                Refresh();
+            }
+
+            public FrameworkElement Root { get; }
+
+            private void Root_Loaded(object sender, RoutedEventArgs e)
+            {
+                if (!_subscribed)
+                {
+                    ConnectionRepository.Changed += Repository_Changed;
+                    _subscribed = true;
+                }
+                Refresh(); // 안 보이는 동안 바뀌었을 수 있다
+            }
+
+            private void Root_Unloaded(object sender, RoutedEventArgs e)
+            {
+                Unsubscribe();
+            }
+
+            private void Repository_Changed(object sender, EventArgs e)
+            {
+                // 설정 창이 Unloaded 없이 사라진 경우에도 정적 이벤트에 붙어 남지 않게 한다.
+                if (!Root.IsLoaded)
+                {
+                    Unsubscribe();
                     return;
-                if (_password.Password.Length > 0)
-                    _newPasswords[p] = _password.Password;
-                else
-                    _newPasswords.Remove(p);
-            };
-            panel.Children.Add(_password);
-            _passwordHint = Label("");
-            _passwordHint.SetResourceReference(TextBlock.ForegroundProperty, "SecondaryText");
-            panel.Children.Add(_passwordHint);
-
-            _name.TextChanged += (s, e) => Edit(p =>
-            {
-                p.Name = _name.Text;
-                ((ListBoxItem)_list.SelectedItem).Content = p.Name;
-            });
-            _host.TextChanged += (s, e) => Edit(p => p.Host = _host.Text);
-            _port.TextChanged += (s, e) => Edit(p =>
-            {
-                int port;
-                p.Port = int.TryParse(_port.Text.Trim(), out port) ? port : 0;
-            });
-            _service.TextChanged += (s, e) => Edit(p => p.ServiceName = _service.Text);
-            _user.TextChanged += (s, e) => Edit(p => p.UserId = _user.Text);
-
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
-            _test = new Button { Content = "접속 테스트", Padding = new Thickness(12, 2, 12, 2) };
-            _cancel = new Button { Content = "취소", Padding = new Thickness(12, 2, 12, 2), Margin = new Thickness(6, 0, 0, 0), IsEnabled = false };
-            _test.Click += Test_Click;
-            _cancel.Click += (s, e) => CancelTest("테스트를 취소했습니다.");
-            buttons.Children.Add(_test);
-            buttons.Children.Add(_cancel);
-            panel.Children.Add(buttons);
-
-            _editor = panel;
-
-            var outer = new StackPanel();
-            outer.Children.Add(panel);
-            _status = Label("");
-            _status.Margin = new Thickness(0, 8, 0, 0);
-            outer.Children.Add(_status);
-            return outer;
-        }
-
-        private TextBox AddField(Panel panel, string label)
-        {
-            panel.Children.Add(Label(label));
-            var box = new TextBox();
-            panel.Children.Add(box);
-            return box;
-        }
-
-        private static TextBlock Label(string text)
-        {
-            var block = new TextBlock { Text = text, Margin = new Thickness(0, 6, 0, 2), TextWrapping = TextWrapping.Wrap };
-            block.SetResourceReference(TextBlock.ForegroundProperty, "PrimaryText");
-            return block;
-        }
-
-        private OracleConnectionProfile Selected
-        {
-            get
-            {
-                var item = _list.SelectedItem as ListBoxItem;
-                return item == null ? null : (OracleConnectionProfile)item.Tag;
+                }
+                Refresh();
             }
-        }
 
-        private void Edit(Action<OracleConnectionProfile> apply)
-        {
-            var p = Selected;
-            if (!_filling && p != null)
-                apply(p);
-        }
-
-        private void FillEditor(OracleConnectionProfile p)
-        {
-            CancelTest(null);
-            _filling = true;
-            try
+            private void Unsubscribe()
             {
-                _editor.IsEnabled = p != null;
-                _name.Text = p == null ? "" : p.Name;
-                _host.Text = p == null ? "" : p.Host;
-                _port.Text = p == null ? "" : p.Port.ToString();
-                _service.Text = p == null ? "" : p.ServiceName;
-                _user.Text = p == null ? "" : p.UserId;
-                string typed;
-                _password.Password = p != null && _newPasswords.TryGetValue(p, out typed) ? typed : "";
-                _passwordHint.Text = p != null && p.ProtectedPassword != null
-                    ? "저장된 비밀번호가 있습니다. 바꾸려면 새로 입력하세요."
-                    : "";
-            }
-            finally
-            {
-                _filling = false;
-            }
-        }
-
-        private void AddProfile()
-        {
-            var name = "새 접속";
-            for (var n = 2; _profiles.Any(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)); n++)
-                name = "새 접속 " + n;
-            var profile = new OracleConnectionProfile { Name = name };
-            _profiles.Add(profile);
-            var item = new ListBoxItem { Content = name, Tag = profile };
-            _list.Items.Add(item);
-            _list.SelectedItem = item;
-            _host.Focus();
-        }
-
-        private void RemoveSelected()
-        {
-            var item = _list.SelectedItem as ListBoxItem;
-            if (item == null)
-                return;
-            var index = _list.SelectedIndex;
-            var profile = (OracleConnectionProfile)item.Tag;
-            _profiles.Remove(profile);
-            _newPasswords.Remove(profile);
-            _list.Items.Remove(item);
-            if (_list.Items.Count > 0)
-                _list.SelectedIndex = Math.Min(index, _list.Items.Count - 1);
-        }
-
-        private string PasswordFor(OracleConnectionProfile p)
-        {
-            string typed;
-            if (_newPasswords.TryGetValue(p, out typed))
-                return typed;
-            if (p.ProtectedPassword == null)
-                return null;
-            try
-            {
-                return OracleConnectionStore.UnprotectPassword(p.ProtectedPassword);
-            }
-            catch (CryptographicException)
-            {
-                throw new InvalidOperationException("저장된 비밀번호를 풀 수 없습니다(다른 PC나 다른 Windows 사용자가 저장함). 비밀번호를 다시 입력하세요.");
-            }
-        }
-
-        // async void 이벤트 처리기라 예외가 밖으로 나가면 Folderss가 종료된다. 전체를 try/catch로 감싼다.
-        private async void Test_Click(object sender, RoutedEventArgs e)
-        {
-            var run = ++_testRun;
-            try
-            {
-                var p = Selected;
-                if (p == null)
+                if (!_subscribed)
                     return;
-                var connectionString = OracleConnectionStore.BuildConnectionString(p, PasswordFor(p), TestTimeoutSeconds);
+                ConnectionRepository.Changed -= Repository_Changed;
+                _subscribed = false;
+            }
 
-                _test.IsEnabled = false;
-                _cancel.IsEnabled = true;
-                SetStatus("접속하는 중… (최대 " + TestTimeoutSeconds + "초)");
-
-                string result;
+            private void Open_Click(object sender, RoutedEventArgs e)
+            {
+                var owner = Window.GetWindow(Root);
                 try
                 {
-                    // 드라이버 버전에 따라 OpenAsync가 동기로 동작할 수 있어 Task.Run으로 UI 스레드를 비운다.
-                    await Task.Run(() =>
-                    {
-                        using (var connection = new OracleConnection(connectionString))
-                            connection.Open();
-                    });
-                    result = "접속 성공";
+                    ConnectionManager.Show(owner, _manager);
                 }
                 catch (Exception ex)
                 {
-                    result = "접속 실패: " + ex.Message;
+                    Dialogs.Show(owner, "Oracle 접속", "접속 관리를 열지 못했습니다: " + ex.Message, true);
                 }
-
-                if (run != _testRun)
-                    return; // 취소했거나 다른 접속을 골랐음
-                _test.IsEnabled = true;
-                _cancel.IsEnabled = false;
-                SetStatus(result);
+                Refresh();
             }
-            catch (Exception ex)
+
+            private void Refresh()
             {
-                if (run != _testRun)
-                    return;
-                _test.IsEnabled = true;
-                _cancel.IsEnabled = false;
-                SetStatus(ex.Message);
+                _rows.Children.Clear();
+                try
+                {
+                    List<OracleConnectionProfile> profiles;
+                    try
+                    {
+                        profiles = ConnectionRepository.Load(_manager);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        // 손상된 값은 목록 대신 이유를 보인다. 접속 관리도 이 값을 덮어쓰지 않는다.
+                        AddMessage(ex.Message + Environment.NewLine + "접속 관리에서도 이 값을 덮어쓰지 않습니다.", true);
+                        return;
+                    }
+                    if (profiles.Count == 0)
+                    {
+                        AddMessage("등록된 접속이 없습니다. [접속 관리 열기]로 추가하세요.", false);
+                        return;
+                    }
+                    foreach (var profile in profiles)
+                        _rows.Children.Add(Row(profile));
+                }
+                catch (Exception ex)
+                {
+                    _rows.Children.Clear();
+                    AddMessage("접속 목록을 표시하지 못했습니다: " + ex.Message, true);
+                }
             }
-        }
 
-        /// <summary>진행 중인 테스트의 결과를 버린다. 접속 시도 자체는 시간 제한까지 백그라운드에서 끝난다.</summary>
-        private void CancelTest(string message)
-        {
-            _testRun++;
-            _test.IsEnabled = true;
-            _cancel.IsEnabled = false;
-            SetStatus(message ?? "");
-        }
+            private void AddMessage(string text, bool error)
+            {
+                var block = error
+                    ? new TextBlock { Text = text, Foreground = Theme.Danger }
+                    : Theme.Text(text, Theme.SecondaryText);
+                block.TextWrapping = TextWrapping.Wrap;
+                _rows.Children.Add(block);
+            }
 
-        private void SetStatus(string text)
-        {
-            _status.Text = text;
+            private static FrameworkElement Row(OracleConnectionProfile profile)
+            {
+                var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
+                var badge = Theme.DbBadge(profile);
+                badge.Margin = new Thickness(0, 0, 8, 0);
+                DockPanel.SetDock(badge, Dock.Left);
+                row.Children.Add(badge);
+                if (profile.ReadOnly)
+                {
+                    var readOnly = Theme.Secondary("읽기 전용");
+                    readOnly.Margin = new Thickness(8, 0, 0, 0);
+                    readOnly.VerticalAlignment = VerticalAlignment.Center;
+                    DockPanel.SetDock(readOnly, Dock.Right);
+                    row.Children.Add(readOnly);
+                }
+                var address = Theme.Text(ConnectionManagerLogic.Address(profile), Theme.SecondaryText);
+                address.FontFamily = Theme.Mono;
+                address.FontSize = 11.5;
+                address.TextTrimming = TextTrimming.CharacterEllipsis;
+                address.VerticalAlignment = VerticalAlignment.Center;
+                row.Children.Add(address);
+                return row;
+            }
         }
     }
 }
