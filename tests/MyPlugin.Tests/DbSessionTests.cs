@@ -1074,6 +1074,56 @@ namespace MyPlugin.Tests
             Assert.Null(DbSession.SchemaInt(null, SchemaTableColumn.ColumnSize));
         }
 
+        [Fact]
+        public async Task QueryAsync_BindsNamedParameters_AndReadsRows()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 20);
+                var query = new SqlQuery { Sql = "SELECT x FROM nums WHERE x > :low AND x <= :high ORDER BY x" };
+                query.Parameters.Add(new KeyValuePair<string, object>("low", 5));
+                query.Parameters.Add(new KeyValuePair<string, object>("high", 8));
+
+                var rows = await session.QueryAsync(query, r => Convert.ToInt32(r.GetValue(0), CultureInfo.InvariantCulture));
+
+                Assert.Equal(new[] { 6, 7, 8 }, rows);
+                Assert.False(session.IsBusy);
+            }
+        }
+
+        [Fact]
+        public async Task QueryAsync_NullParameterBindsDbNull_EmptyResultIsEmptyList()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 3);
+                var query = new SqlQuery { Sql = "SELECT x FROM nums WHERE x = :v" };
+                query.Parameters.Add(new KeyValuePair<string, object>("v", null));
+
+                var rows = await session.QueryAsync(query, r => r.GetValue(0));
+
+                Assert.Empty(rows);
+            }
+        }
+
+        [Fact]
+        public async Task QueryAsync_CancelledToken_ThrowsAndReleasesLock()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 3);
+                var query = new SqlQuery { Sql = "SELECT x FROM nums" };
+                using (var cts = new CancellationTokenSource())
+                {
+                    cts.Cancel();
+                    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.QueryAsync(query, r => r.GetValue(0), cts.Token));
+                }
+
+                Assert.False(session.IsBusy);
+                Assert.Equal(3, (await session.QueryAsync(query, r => r.GetValue(0))).Count);
+            }
+        }
+
         private static async Task<DbSession> OpenAsync(DbConnection connection)
         {
             var session = new DbSession(connection);

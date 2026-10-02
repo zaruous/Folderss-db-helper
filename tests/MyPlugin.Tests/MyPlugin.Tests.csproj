@@ -18,6 +18,8 @@
     <Compile Include="..\..\src\MyPlugin\OracleConnections.cs" Link="OracleConnections.cs" />
     <Compile Include="..\..\src\MyPlugin\Db\*.cs" Link="Db\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\MyPlugin\Ui\TreeModel.cs" Link="Ui\TreeModel.cs" />
+    <!-- 화면 쪽 순수 로직(WPF 없음)은 Ui/*Logic.cs 이름으로 두면 여기서 함께 테스트한다 -->
+    <Compile Include="..\..\src\MyPlugin\Ui\*Logic.cs" Link="Ui\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

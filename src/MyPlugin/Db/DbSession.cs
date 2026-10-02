@@ -272,6 +272,55 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>
+        /// 메타데이터 조회(트리·검색): 잠금을 기다린 뒤 query를 실행하고 행마다 read로 읽는다.
+        /// 명령 설정(Oracle BindByName 등)·트랜잭션은 사용자 실행과 같다. 바인드 이름은 ':' 없이(SqlQuery.Parameters).
+        /// cancellationToken은 잠금 기다림과 실행 중인 명령(DbCommand.Cancel)을 모두 취소한다.
+        /// </summary>
+        public Task<List<T>> QueryAsync<T>(SqlQuery query, Func<IDataRecord, T> read, CancellationToken cancellationToken = default)
+        {
+            if (query == null)
+                throw new ArgumentNullException(nameof(query));
+            if (read == null)
+                throw new ArgumentNullException(nameof(read));
+            return RunAsync((connection, transaction) =>
+            {
+                using (var command = CreateCommand(query.Sql))
+                {
+                    foreach (var pair in query.Parameters)
+                    {
+                        var parameter = command.CreateParameter();
+                        parameter.ParameterName = pair.Key;
+                        parameter.Value = pair.Value ?? DBNull.Value;
+                        command.Parameters.Add(parameter);
+                    }
+                    using (cancellationToken.Register(() => CancelQuietly(command)))
+                    using (var reader = command.ExecuteReader())
+                    {
+                        var rows = new List<T>();
+                        while (reader.Read())
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            rows.Add(read(reader));
+                        }
+                        return rows;
+                    }
+                }
+            }, cancellationToken);
+        }
+
+        private static void CancelQuietly(DbCommand command)
+        {
+            try
+            {
+                command.Cancel();
+            }
+            catch (Exception)
+            {
+                // 이미 끝났거나 정리된 명령 — 취소할 것이 없다
+            }
+        }
+
         /// <summary>실행 중인 명령을 취소한다. 실행 중이 아니면 아무것도 안 함.</summary>
         public void Cancel()
         {
