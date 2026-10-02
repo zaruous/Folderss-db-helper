@@ -23,8 +23,11 @@ namespace MyPlugin
     /// <summary>DbTreePanel이 셸(DbHelperView)에게 받는 기능. 모든 호출은 UI 스레드에서.</summary>
     internal interface ITreeHost
     {
-        /// <summary>접속 목록(프로필 순서). 트리 맨 위 DB 행들.</summary>
+        /// <summary>접속 목록(프로필 순서). 트리 맨 위 DB 행들. 연결 중인 접속은 연결할 때의 값.</summary>
         IReadOnlyList<OracleConnectionProfile> Profiles { get; }
+
+        /// <summary>연결 중인 접속의 저장 값이 연결할 때와 달라졌음(다시 연결하면 적용).</summary>
+        bool ProfileChanged(string dbId);
 
         /// <summary>접속 목록을 읽지 못한 이유(트리에 보임). 없으면 null.</summary>
         string ProfilesError { get; }
@@ -481,6 +484,7 @@ namespace MyPlugin
                 badges.Pending = session == null ? null : session.PendingText;
                 badges.ReadOnly = profile != null && profile.ReadOnly;
                 badges.Color = profile == null ? null : profile.Color;
+                badges.ProfileChanged = session != null && _host.ProfileChanged(row.DbId);
                 stripe = Theme.ConnectionColor(badges.Color);
             }
             badges.Current = searching && _currentHit != null && row.Key == _currentHit;
@@ -593,8 +597,8 @@ namespace MyPlugin
         {
             if (row == null || !row.Expandable)
                 return;
-            // 연결 안 된 DB를 펼치면 연결한다(연결되면 셸이 OnConnected로 펼친다)
-            if (expand && row.Kind == TreeRowKind.Database && _host.GetSession(row.DbId) == null)
+            // 연결 안 된(또는 끊긴) DB를 펼치면 연결한다(연결되면 셸이 OnConnected로 펼친다)
+            if (expand && row.Kind == TreeRowKind.Database && NeedsConnect(row.DbId))
             {
                 ConnectAndExpand(row.DbId);
                 return;
@@ -614,6 +618,13 @@ namespace MyPlugin
         {
             if (row != null)
                 SetExpanded(row, !row.Expanded);
+        }
+
+        // 세션이 없거나 끊겼으면 연결해야 한다(ConnectAsync가 끊긴 세션을 버리고 다시 연결한다)
+        private bool NeedsConnect(string dbId)
+        {
+            var session = _host.GetSession(dbId);
+            return session == null || session.IsBroken;
         }
 
         private async void ConnectAndExpand(string dbId)
@@ -637,12 +648,12 @@ namespace MyPlugin
             }
         }
 
-        /// <summary>두 번 누름: 연결 안 된 DB는 연결하고 펼친다. 테이블·뷰는 그 DB 탭에 SELECT를 넣는다.</summary>
+        /// <summary>두 번 누름: 연결 안 된(또는 끊긴) DB는 연결하고 펼친다. 테이블·뷰는 그 DB 탭에 SELECT를 넣는다.</summary>
         private void DoubleClick(TreeRow row)
         {
             if (row.Kind == TreeRowKind.Database)
             {
-                if (_host.GetSession(row.DbId) == null)
+                if (NeedsConnect(row.DbId))
                     ConnectAndExpand(row.DbId);
             }
             else if (row.Kind == TreeRowKind.Object && TreeGroups.HasColumns(row.ObjectType))
@@ -658,7 +669,7 @@ namespace MyPlugin
                 _host.InsertSelect(row.DbId, row.Owner, row.ObjectName);
             else if (row.Kind == TreeRowKind.Note && row.IsLoadMore && row.Load != null)
                 StartLoad(row.Load, true);
-            else if (row.Kind == TreeRowKind.Database && _host.GetSession(row.DbId) == null)
+            else if (row.Kind == TreeRowKind.Database && NeedsConnect(row.DbId))
                 ConnectAndExpand(row.DbId);
             else if (row.Expandable)
                 Toggle(row);
@@ -750,7 +761,7 @@ namespace MyPlugin
                 }
                 else if (e.Key == Key.Right)
                 {
-                    var disconnectedDb = row.Kind == TreeRowKind.Database && _host.GetSession(row.DbId) == null;
+                    var disconnectedDb = row.Kind == TreeRowKind.Database && NeedsConnect(row.DbId);
                     if (row.Expandable && (!row.Expanded || disconnectedDb))
                         SetExpanded(row, true);
                     else if (row.Expanded)
@@ -1602,6 +1613,13 @@ namespace MyPlugin
                     }
                     if (badges.Broken)
                         panel.Children.Add(FillBadge("연결 끊김", Theme.Danger, ShellUi.DangerTint));
+                    if (badges.ProfileChanged)
+                    {
+                        // 보이는 주소·색은 열린 세션의 것이다. 저장한 새 값은 다시 연결할 때 적용된다
+                        var changed = OutlineBadge("변경됨", Theme.SecondaryText, Theme.Border);
+                        changed.ToolTip = ShellLogic.ProfileChangedNote;
+                        panel.Children.Add(changed);
+                    }
                     if (badges.ReadOnly)
                         panel.Children.Add(OutlineBadge("읽기 전용", Theme.SecondaryText, Theme.Border));
                     if (!string.IsNullOrEmpty(badges.Pending))

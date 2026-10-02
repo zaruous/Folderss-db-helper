@@ -102,6 +102,67 @@ namespace MyPlugin.Tests
             Assert.Equal(ShellLogic.DefaultFetchCount, ShellLogic.FetchCounts[0]);
         }
 
+        // ---------- 열린 세션의 접속 정보 사본 ----------
+
+        [Fact]
+        public void SessionCopy_IsIndependentCopyOfEveryField()
+        {
+            var saved = Profile("prod", "운영", readOnly: true);
+            saved.ProtectedPassword = "AQAAAN";
+            saved.Color = "red";
+
+            var copy = ShellLogic.SessionCopy(saved);
+            saved.Host = "prod-db2";
+            saved.Color = "green";
+
+            Assert.NotSame(saved, copy);
+            Assert.Equal(new object[] { "prod", "운영", "dev-db", 1521, "ORCLPDB1", "scott", "AQAAAN", true, "red" },
+                new object[] { copy.Id, copy.Name, copy.Host, copy.Port, copy.ServiceName, copy.UserId, copy.ProtectedPassword, copy.ReadOnly, copy.Color });
+            Assert.Null(ShellLogic.SessionCopy(null));
+        }
+
+        [Fact]
+        public void ProfileChanged_AnySavedFieldDifferentFromSession()
+        {
+            var session = ShellLogic.SessionCopy(Profile());
+
+            Assert.False(ShellLogic.ProfileChanged(ShellLogic.SessionCopy(session), session));
+            var host = ShellLogic.SessionCopy(session);
+            host.Host = "prod-db2";
+            Assert.True(ShellLogic.ProfileChanged(host, session));
+            var color = ShellLogic.SessionCopy(session);
+            color.Color = "red";
+            Assert.True(ShellLogic.ProfileChanged(color, session));
+            var port = ShellLogic.SessionCopy(session);
+            port.Port = 1522;
+            Assert.True(ShellLogic.ProfileChanged(port, session));
+            Assert.False(ShellLogic.ProfileChanged(null, session));
+            Assert.False(ShellLogic.ProfileChanged(session, null));
+        }
+
+        [Fact]
+        public void ApplySavedToSession_OnlyTurningReadOnlyOnAppliesAtOnce()
+        {
+            var session = ShellLogic.SessionCopy(Profile());
+            var saved = ShellLogic.SessionCopy(session);
+            saved.Host = "prod-db2";
+            saved.ReadOnly = true;
+
+            ShellLogic.ApplySavedToSession(session, saved);
+
+            // 읽기 전용은 바로 켜지고 주소는 다시 연결할 때까지 그대로(변경됨 표시는 남는다)
+            Assert.True(session.ReadOnly);
+            Assert.Equal("dev-db", session.Host);
+            Assert.True(ShellLogic.ProfileChanged(saved, session));
+
+            var unlocked = ShellLogic.SessionCopy(session);
+            unlocked.ReadOnly = false;
+            ShellLogic.ApplySavedToSession(session, unlocked);
+            // 읽기 전용을 끄는 것은 열린 세션에 적용하지 않는다
+            Assert.True(session.ReadOnly);
+            Assert.True(ShellLogic.ProfileChanged(unlocked, session));
+        }
+
         // ---------- MergeProfiles ----------
 
         [Fact]

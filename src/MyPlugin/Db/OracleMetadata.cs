@@ -68,6 +68,12 @@ namespace MyPlugin
     {
         public const int SearchLimit = 500;
 
+        /// <summary>컴파일 오류를 메시지 탭에 보이는 최대 줄 수.</summary>
+        public const int CompileErrorLimit = 20;
+
+        // ALL_ERRORS.TEXT를 한 줄로 보일 최대 길이
+        private const int CompileErrorTextLength = 300;
+
         /// <summary>ORACLE_MAINTAINED가 없는 DB(11g)에서 내장으로 볼 스키마. 11gR2 기본 계정(APEX_030200, EXFSYS, SYSMAN 등)도 포함한다.</summary>
         public static readonly string[] KnownSystemSchemas =
         {
@@ -93,6 +99,40 @@ namespace MyPlugin
         public static SqlQuery CurrentSchema()
         {
             return new SqlQuery { Sql = "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL" };
+        }
+
+        /// <summary>
+        /// 객체 하나의 컴파일 오류: SELECT TYPE, LINE, POSITION, TEXT FROM ALL_ERRORS … ORDER BY TYPE, SEQUENCE(limit+1행까지).
+        /// owner가 null이면 현재 스키마(SYS_CONTEXT('USERENV','CURRENT_SCHEMA') — NULL을 바인드하지 않는다).
+        /// </summary>
+        public static SqlQuery CompileErrors(string owner, string name, IEnumerable<string> types, int limit)
+        {
+            var list = (types ?? Enumerable.Empty<string>()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+            if (string.IsNullOrEmpty(name) || list.Count == 0)
+                throw new ArgumentException("객체 이름과 종류가 있어야 합니다.");
+            var query = new SqlQuery
+            {
+                Sql = "SELECT TYPE, LINE, POSITION, TEXT FROM ALL_ERRORS"
+                    + " WHERE OWNER = " + (owner == null ? "SYS_CONTEXT('USERENV','CURRENT_SCHEMA')" : ":owner")
+                    + " AND NAME = :name AND TYPE IN " + InList(list)
+                    + " ORDER BY TYPE, SEQUENCE"
+            };
+            if (owner != null)
+                Bind(query, "owner", owner);
+            Bind(query, "name", name);
+            return Limit(query, limit);
+        }
+
+        /// <summary>컴파일 오류 한 줄: "줄 3, 열 5: PLS-00103: …"(withType이면 앞에 "PACKAGE BODY "). TEXT의 줄바꿈·연속 공백은 공백 하나로.</summary>
+        public static string ReadCompileError(IDataRecord record, bool withType)
+        {
+            var line = Number(record, "LINE");
+            var position = Number(record, "POSITION");
+            var text = string.Join(" ", (Text(record, "TEXT") ?? "").Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
+            if (text.Length > CompileErrorTextLength)
+                text = text.Substring(0, CompileErrorTextLength) + "…";
+            return (withType ? Text(record, "TYPE") + " " : "")
+                + "줄 " + (line.HasValue ? Integer(line.Value) : "?") + ", 열 " + (position.HasValue ? Integer(position.Value) : "?") + ": " + text;
         }
 
         /// <summary>ALL_USERS의 USERNAME(+ORACLE_MAINTAINED), USERNAME 순.</summary>

@@ -318,6 +318,35 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void ExecutedStatus_WithWarning_IsErrorStatus()
+        {
+            var create = SqlScript.Parse("CREATE OR REPLACE PROCEDURE p AS BEGIN x; END;");
+            var result = new ExecuteResult
+            {
+                Kind = SqlKind.Ddl,
+                Summary = "실행함 — 컴파일 오류 (DDL은 자동 커밋됨)",
+                TransactionEnded = true,
+                Warning = "만들었지만 컴파일 오류가 있습니다 (ORA-24344)."
+            };
+
+            var status = WorkspaceLogic.ExecutedStatus(create, result, TimeSpan.FromMilliseconds(120));
+
+            Assert.Equal("실행함 — 컴파일 오류 (DDL은 자동 커밋됨)  0.12초  오류 — 메시지 탭을 보세요.", status.PlainText);
+        }
+
+        [Fact]
+        public void ExecutedStatus_PlSqlThatLeftNoTransaction_HasNoUncommittedNote()
+        {
+            var block = SqlScript.Parse("BEGIN pkg.recalc; END;");
+
+            var ended = WorkspaceLogic.ExecutedStatus(block, new ExecuteResult { Kind = SqlKind.PlSql, Summary = "실행함 (블록 안에서 커밋·롤백됨)", TransactionEnded = true }, TimeSpan.Zero);
+            var open = WorkspaceLogic.ExecutedStatus(block, new ExecuteResult { Kind = SqlKind.PlSql, Summary = "실행함 (커밋 전)" }, TimeSpan.Zero);
+
+            Assert.Equal("실행함 (블록 안에서 커밋·롤백됨)  0.00초", ended.PlainText);
+            Assert.EndsWith("커밋 전에는 다른 세션에 보이지 않습니다. 같은 DB의 다른 탭에는 보입니다(세션 공유).", open.PlainText);
+        }
+
+        [Fact]
         public void ConnectionStatuses_CarryActions()
         {
             var off = WorkspaceLogic.NotConnectedStatus("개발");

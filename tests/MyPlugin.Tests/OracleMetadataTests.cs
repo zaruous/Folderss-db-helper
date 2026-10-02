@@ -52,6 +52,41 @@ namespace MyPlugin.Tests
         // ---------- SQL 텍스트 ----------
 
         [Fact]
+        public void CompileErrors_ForOwnerOrCurrentSchema_SortedAndLimited()
+        {
+            var query = OracleMetadata.CompileErrors("SCOTT", "PKG", new[] { "PACKAGE", "PACKAGE BODY" }, 20);
+
+            Assert.Equal(Limited("SELECT TYPE, LINE, POSITION, TEXT FROM ALL_ERRORS WHERE OWNER = :owner AND NAME = :name"
+                + " AND TYPE IN ('PACKAGE', 'PACKAGE BODY') ORDER BY TYPE, SEQUENCE"), Norm(query.Sql));
+            AssertParameters(query, "owner", "SCOTT", "name", "PKG", "limit", 21);
+
+            var current = OracleMetadata.CompileErrors(null, "P", new[] { "PROCEDURE" }, 20);
+
+            Assert.Contains("WHERE OWNER = SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AND NAME = :name AND TYPE IN ('PROCEDURE')", current.Sql);
+            AssertParameters(current, "name", "P", "limit", 21);
+            Assert.Throws<ArgumentException>(() => OracleMetadata.CompileErrors("SCOTT", "P", new string[0], 20));
+        }
+
+        [Fact]
+        public void ReadCompileError_LineColumnAndOneLineText()
+        {
+            var table = new DataTable();
+            table.Columns.Add("TYPE", typeof(string));
+            table.Columns.Add("LINE", typeof(decimal));
+            table.Columns.Add("POSITION", typeof(decimal));
+            table.Columns.Add("TEXT", typeof(string));
+            table.Rows.Add("PACKAGE BODY", 3m, 5m, "PLS-00103: Encountered the symbol \"END\" when expecting one of the following:\n\n   := . ( @ % ;");
+            table.Rows.Add("PROCEDURE", DBNull.Value, DBNull.Value, "  PL/SQL: Statement ignored  ");
+
+            var plain = ReadAll(table, r => OracleMetadata.ReadCompileError(r, false));
+            var typed = ReadAll(table, r => OracleMetadata.ReadCompileError(r, true));
+
+            Assert.Equal("줄 3, 열 5: PLS-00103: Encountered the symbol \"END\" when expecting one of the following: := . ( @ % ;", plain[0]);
+            Assert.Equal("줄 ?, 열 ?: PL/SQL: Statement ignored", plain[1]);
+            Assert.StartsWith("PACKAGE BODY 줄 3, 열 5: PLS-00103", typed[0]);
+        }
+
+        [Fact]
         public void CurrentSchema_SysContextFromDual_NoParameters()
         {
             var query = OracleMetadata.CurrentSchema();
@@ -319,7 +354,9 @@ namespace MyPlugin.Tests
                 { "Schemas(true)", OracleMetadata.Schemas(true) },
                 { "Schemas(false)", OracleMetadata.Schemas(false) },
                 { "GroupCounts", OracleMetadata.GroupCounts("SCOTT") },
-                { "Columns", OracleMetadata.Columns("SCOTT", "EMP") }
+                { "Columns", OracleMetadata.Columns("SCOTT", "EMP") },
+                { "CompileErrors(owner)", OracleMetadata.CompileErrors("SCOTT", "PKG", new[] { "PACKAGE", "PACKAGE BODY" }, OracleMetadata.CompileErrorLimit) },
+                { "CompileErrors(current)", OracleMetadata.CompileErrors(null, "P", new[] { "PROCEDURE" }, OracleMetadata.CompileErrorLimit) }
             };
             foreach (var group in new[] { TreeGroups.Table, TreeGroups.View, TreeGroups.Sequence, TreeGroups.Code })
                 foreach (var limit in new[] { 0, 1000 })

@@ -996,6 +996,10 @@ namespace MyPlugin.Tests
         [InlineData(12570, "ORA-12570")]
         [InlineData(28, "ORA-00028")]
         [InlineData(2396, "ORA-02396")]
+        [InlineData(2399, "ORA-02399")]
+        [InlineData(2392, "ORA-02392")]
+        [InlineData(1092, "ORA-01092")]
+        [InlineData(603, "ORA-00603")]
         public void DescribeError_BrokenConnectionNumbers(int number, string code)
         {
             var error = NewOracleException(number, code + ": connection lost");
@@ -1122,6 +1126,298 @@ namespace MyPlugin.Tests
                 Assert.False(session.IsBusy);
                 Assert.Equal(3, (await session.QueryAsync(query, r => r.GetValue(0))).Count);
             }
+        }
+
+        // ---- 커밋·롤백 실패(ODP.NET은 실패해도 트랜잭션 객체를 끝내 버린다) ----
+
+        [Fact]
+        public async Task CommitFailure_ServerRolledBack_EndsPendingAndLaterDmlCanStillBeRolledBack()
+        {
+            var odp = new OdpLikeConnection(new SqliteConnection(Memory));
+            using (var session = await OpenAsync(odp))
+            {
+                session.TransactionProbeSql = OdpLikeConnection.ProbeSql;
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1), (2)"), 0);
+                odp.FailNextCommit = CommitFailure.RolledBack;
+
+                var error = await Assert.ThrowsAsync<TransactionEndedException>(() => session.CommitAsync());
+
+                var message = DbSession.DescribeError(error);
+                Assert.StartsWith("ORA-02091: transaction rolled back ORA-02291:", message);
+                Assert.Contains("커밋 대기 변경이 남아 있지 않습니다", message);
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, await CountAsync(session, "t"));
+                // 끝난 트랜잭션 객체를 쥐고 있으면 다음 DML이 트랜잭션 없이(자동 커밋) 실행되고 롤백도 실패한다
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (3)"), 0);
+                Assert.Equal("커밋 대기 1행", session.PendingText);
+                await session.RollbackAsync();
+                Assert.Equal(0, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
+        public async Task CommitFailure_ServerKeptTransaction_KeepsPendingUnderNewTransaction()
+        {
+            var odp = new OdpLikeConnection(new SqliteConnection(Memory));
+            using (var session = await OpenAsync(odp))
+            {
+                session.TransactionProbeSql = OdpLikeConnection.ProbeSql;
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1), (2)"), 0);
+                odp.FailNextCommit = CommitFailure.KeptOpen;
+
+                var error = await Assert.ThrowsAsync<InvalidOperationException>(() => session.CommitAsync());
+
+                Assert.Contains("ORA-02049", error.Message);
+                Assert.False(session.IsBroken);
+                Assert.Equal("커밋 대기 2행", session.PendingText);
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (3)"), 0);
+                await session.RollbackAsync();
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
+        public async Task CommitStatementFailure_IsHandledLikeCommitAsync()
+        {
+            var odp = new OdpLikeConnection(new SqliteConnection(Memory));
+            using (var session = await OpenAsync(odp))
+            {
+                session.TransactionProbeSql = OdpLikeConnection.ProbeSql;
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+                odp.FailNextCommit = CommitFailure.KeptOpen;
+
+                await Assert.ThrowsAsync<InvalidOperationException>(() => session.ExecuteAsync(Transaction("COMMIT", SqlTransactionAction.Commit), 0));
+                var commit = await session.ExecuteAsync(Transaction("COMMIT", SqlTransactionAction.Commit), 0);
+
+                Assert.True(commit.TransactionEnded);
+                Assert.False(session.HasPendingChanges);
+                await session.RollbackAsync();
+                Assert.Equal(1, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
+        public async Task CommitFailure_ProviderKeepsTransaction_CanStillRollBack()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                // SQLite는 지연 외래 키 위반으로 COMMIT이 실패해도 트랜잭션을 그대로 둔다(SqliteTransaction도 살아 있음)
+                await SetupAsync(session, "PRAGMA foreign_keys = ON", "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+                    "CREATE TABLE c (pid INTEGER REFERENCES p (id) DEFERRABLE INITIALLY DEFERRED)");
+                await session.ExecuteAsync(Dml("INSERT INTO c VALUES (1)"), 0);
+
+                await Assert.ThrowsAsync<SqliteException>(() => session.CommitAsync());
+
+                Assert.True(session.HasPendingChanges);
+                await session.RollbackAsync();
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, await CountAsync(session, "c"));
+            }
+        }
+
+        [Fact]
+        public void DescribeError_TransactionRolledBack_KeepsCauseLine()
+        {
+            var error = NewOracleException(2091, "ORA-02091: transaction rolled back\nORA-02291: integrity constraint (SCOTT.FK_EMP_DEPT) violated - parent key not found");
+
+            Assert.Equal("ORA-02091: transaction rolled back ORA-02291: integrity constraint (SCOTT.FK_EMP_DEPT) violated - parent key not found",
+                DbSession.DescribeError(error));
+        }
+
+        // ---- PL/SQL 뒤 서버 트랜잭션 확인 ----
+
+        [Fact]
+        public async Task PlSql_CommittingInsideBlock_EndsEarlierPendingChanges()
+        {
+            var probe = new TransactionProbe();
+            using (var session = await OpenAsync(probe.Attach(new SqliteConnection(Memory))))
+            {
+                session.TransactionProbeSql = TransactionProbe.Sql;
+                await CreateNumbersAsync(session, 10);
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+                var locked = await session.ExecuteAsync(Query("SELECT x FROM nums ORDER BY x", forUpdate: true), 2);
+                probe.Active = false;
+
+                var result = await session.ExecuteAsync(PlSql("INSERT INTO t VALUES (2)"), 0);
+
+                Assert.True(result.TransactionEnded);
+                Assert.Equal("실행함 (블록 안에서 커밋·롤백됨)", result.Summary);
+                Assert.False(session.HasPendingChanges);
+                Assert.Null(session.PendingText);
+                // 블록의 커밋으로 FOR UPDATE 잠금이 풀려 그 커서는 더 읽을 수 없다
+                Assert.True(locked.Cursor.IsClosed);
+            }
+        }
+
+        [Fact]
+        public async Task PlSql_WithoutChangesOrTransaction_IsNotPending()
+        {
+            var probe = new TransactionProbe { Active = false };
+            using (var session = await OpenAsync(probe.Attach(new SqliteConnection(Memory))))
+            {
+                session.TransactionProbeSql = TransactionProbe.Sql;
+
+                var result = await session.ExecuteAsync(PlSql("SELECT 1"), 0);
+
+                Assert.Equal("실행함", result.Summary);
+                Assert.True(result.TransactionEnded);
+                Assert.False(session.HasPendingChanges);
+            }
+        }
+
+        [Fact]
+        public async Task PlSql_LeavingTransactionOpen_StaysPendingWithUnknownCount()
+        {
+            var probe = new TransactionProbe();
+            using (var session = await OpenAsync(probe.Attach(new SqliteConnection(Memory))))
+            {
+                session.TransactionProbeSql = TransactionProbe.Sql;
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+
+                var result = await session.ExecuteAsync(PlSql("INSERT INTO t VALUES (1)"), 0);
+
+                Assert.False(result.TransactionEnded);
+                Assert.Equal("실행함 (커밋 전)", result.Summary);
+                Assert.Equal("커밋 대기(행 수 모름)", session.PendingText);
+            }
+        }
+
+        [Fact]
+        public async Task PlSql_FailingAfterInnerCommit_EndsEarlierPendingChanges()
+        {
+            var probe = new TransactionProbe();
+            using (var session = await OpenAsync(probe.Attach(new SqliteConnection(Memory))))
+            {
+                session.TransactionProbeSql = TransactionProbe.Sql;
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+                probe.Active = false;
+
+                await Assert.ThrowsAsync<SqliteException>(() => session.ExecuteAsync(PlSql("INSERT INTO missing VALUES (1)"), 0));
+
+                Assert.False(session.HasPendingChanges);
+                Assert.False(session.IsBroken);
+            }
+        }
+
+        // ---- LOCK TABLE·FOR UPDATE 잠금 ----
+
+        [Fact]
+        public async Task LockTable_RunsInsideTransaction_AndHoldsPendingUntilEnd()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                // SQLite에는 LOCK TABLE이 없어 LOCK으로 표시한 INSERT로 트랜잭션 안에서 실행되는지 본다(밖이면 바로 커밋된다)
+                var statement = new SqlStatement { Text = "INSERT INTO t VALUES (1)", Kind = SqlKind.Other, Verb = "LOCK" };
+
+                var result = await session.ExecuteAsync(statement, 0);
+
+                Assert.Equal("실행함 (잠금 보유 — 커밋·롤백하면 풀림)", result.Summary);
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal("커밋 대기(잠금 보유)", session.PendingText);
+                await session.RollbackAsync();
+                Assert.Null(session.PendingText);
+                Assert.Equal(0, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
+        public async Task PendingText_ShowsLocksHeldByForUpdate()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 5);
+                await session.ExecuteAsync(Query("SELECT x FROM nums", forUpdate: true), 10);
+                Assert.Equal("커밋 대기(잠금 보유)", session.PendingText);
+
+                await session.ExecuteAsync(Dml("DELETE FROM nums WHERE x = 1"), 0);
+                Assert.Equal("커밋 대기 1행 · 잠금", session.PendingText);
+
+                await session.ExecuteAsync(PlSql("DELETE FROM nums WHERE x = 2"), 0);
+                Assert.Equal("커밋 대기(행 수 모름) · 잠금", session.PendingText);
+
+                await session.CommitAsync();
+                Assert.Null(session.PendingText);
+                await session.ExecuteAsync(Dml("DELETE FROM nums WHERE x = 3"), 0);
+                Assert.Equal("커밋 대기 1행", session.PendingText);
+            }
+        }
+
+        // ---- DDL 컴파일 경고(ORA-24344) ----
+
+        [Fact]
+        public async Task Ddl_WithCompileWarning_ReportsWarningInsteadOfPlainSuccess()
+        {
+            var connection = new SqliteConnection(Memory);
+            DbSession session = null;
+            // ODP.NET은 InfoMessage로 경고를 알린다. 시험에서는 실행 중에 부르는 함수로 같은 신호를 보낸다
+            connection.CreateFunction("warn", (long number) =>
+            {
+                session.NoteWarning((int)number);
+                return number;
+            });
+            session = await OpenAsync(connection);
+            using (session)
+            {
+                // 앞 문장의 경고가 다음 DDL에 남지 않는다
+                await session.ExecuteAsync(Query("SELECT warn(24344)"), 1);
+                var plain = await session.ExecuteAsync(Ddl("CREATE TABLE v (y INTEGER)"), 0);
+                Assert.Null(plain.Warning);
+                Assert.Equal("실행함 (DDL은 자동 커밋됨)", plain.Summary);
+
+                var warned = await session.ExecuteAsync(Ddl("CREATE TABLE u AS SELECT warn(24344) AS x"), 0);
+
+                Assert.True(warned.TransactionEnded);
+                Assert.Contains("ORA-24344", warned.Warning);
+                Assert.Equal("실행함 — 컴파일 오류 (DDL은 자동 커밋됨)", warned.Summary);
+                // 표가 아니라 오류 목록(ALL_ERRORS)을 찾을 대상이 없다
+                Assert.Empty(warned.WarningDetails);
+            }
+        }
+
+        // ---- 값 읽기(형식 매핑이 없는 객체·컬렉션 열) ----
+
+        [Theory]
+        [InlineData("Object", "Text")]
+        [InlineData("Array", "Text")]
+        [InlineData("Ref", "Text")]
+        [InlineData("BinaryDouble", "Value")]
+        [InlineData("BinaryFloat", "Value")]
+        [InlineData("Decimal", "ProviderSpecific")]
+        [InlineData("TimeStampTZ", "ProviderSpecific")]
+        [InlineData("XmlType", "ProviderSpecific")]
+        public void OracleReadMode_ByProviderTypeName(string providerTypeName, string expected)
+        {
+            Assert.Equal(expected, DbSession.OracleReadMode(providerTypeName).ToString());
+        }
+
+        [Fact]
+        public void ReadValue_UnmappedObjectType_FallsBackToProviderText()
+        {
+            // ODP.NET: 형식 매핑이 없는 객체 형식은 GetProviderSpecificValue·GetValue 모두 InvalidOperationException(ORA-50071)
+            var mapping = new InvalidOperationException("Custom type mapping for 'MDSYS.SDO_GEOMETRY' is not specified or is invalid");
+            using (var reader = new SingleValueReader("{\"SDO_GTYPE\":2001}", mapping))
+            {
+                Assert.Equal("{\"SDO_GTYPE\":2001}", DbSession.ReadValue(reader, 0, ColumnRead.ProviderSpecific));
+                Assert.Equal("{\"SDO_GTYPE\":2001}", DbSession.ReadValue(reader, 0, ColumnRead.Text));
+            }
+            using (var reader = new SingleValueReader(null, mapping))
+                Assert.Null(DbSession.ReadValue(reader, 0, ColumnRead.ProviderSpecific));
+            using (var reader = new SingleValueReader("x", NewOracleException(50087, "ORA-50087: unsupported type")) { TextFails = true })
+                Assert.Equal("(OBJECT)", DbSession.ReadValue(reader, 0, ColumnRead.ProviderSpecific));
+        }
+
+        [Fact]
+        public void ReadValue_BrokenConnection_IsNotHidden()
+        {
+            using (var reader = new SingleValueReader("x", NewOracleException(3113, "ORA-03113: end-of-file on communication channel")))
+                Assert.Throws<OracleException>(() => DbSession.ReadValue(reader, 0, ColumnRead.ProviderSpecific));
         }
 
         private static async Task<DbSession> OpenAsync(DbConnection connection)
@@ -1343,6 +1639,337 @@ namespace MyPlugin.Tests
             {
                 _release.Set();
             }
+        }
+
+        /// <summary>txn_probe(): Active면 트랜잭션 ID 같은 값, 아니면 NULL(DBMS_TRANSACTION.LOCAL_TRANSACTION_ID를 흉내).</summary>
+        private sealed class TransactionProbe
+        {
+            public const string Sql = "SELECT txn_probe()";
+
+            public bool Active { get; set; } = true;
+
+            public SqliteConnection Attach(SqliteConnection connection)
+            {
+                connection.CreateFunction("txn_probe", () => Active ? "7.21.3410" : null);
+                return connection;
+            }
+        }
+
+        private enum CommitFailure
+        {
+            None,
+            /// <summary>서버가 트랜잭션을 롤백했다(ORA-02091)</summary>
+            RolledBack,
+            /// <summary>서버 트랜잭션은 남았다</summary>
+            KeptOpen
+        }
+
+        /// <summary>
+        /// ODP.NET처럼 동작하는 연결(OracleConnection은 봉인되어 흉내만 낸다): 명령의 Transaction 설정을 무시하고 연결의 서버 트랜잭션에서 실행하며,
+        /// BeginTransaction은 서버 트랜잭션이 이미 있으면 이어 받는다. 트랜잭션 객체는 커밋·롤백이 실패해도 끝난 것이 된다(다시 부르면 예외).
+        /// txn_probe()는 서버 트랜잭션이 있으면 값, 없으면 NULL.
+        /// </summary>
+        private sealed class OdpLikeConnection : DbConnection
+        {
+            public const string ProbeSql = "SELECT txn_probe()";
+
+            public OdpLikeConnection(SqliteConnection inner)
+            {
+                Inner = inner;
+                inner.CreateFunction("txn_probe", () => Server != null ? "7.21.3410" : null);
+            }
+
+            public SqliteConnection Inner { get; }
+
+            /// <summary>서버 쪽 트랜잭션(트랜잭션 객체가 끝나도 남을 수 있다).</summary>
+            public SqliteTransaction Server { get; set; }
+
+            public CommitFailure FailNextCommit { get; set; }
+
+            public override string ConnectionString
+            {
+                get { return Inner.ConnectionString; }
+                set { Inner.ConnectionString = value; }
+            }
+
+            public override string Database { get { return Inner.Database; } }
+
+            public override string DataSource { get { return Inner.DataSource; } }
+
+            public override string ServerVersion { get { return Inner.ServerVersion; } }
+
+            public override ConnectionState State { get { return Inner.State; } }
+
+            public override void ChangeDatabase(string databaseName)
+            {
+                Inner.ChangeDatabase(databaseName);
+            }
+
+            public override void Open()
+            {
+                Inner.Open();
+            }
+
+            public override void Close()
+            {
+                Inner.Close();
+            }
+
+            protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
+            {
+                if (Server == null)
+                    Server = Inner.BeginTransaction();
+                return new OdpLikeTransaction(this);
+            }
+
+            protected override DbCommand CreateDbCommand()
+            {
+                return new OdpLikeCommand(this);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    Inner.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
+        private sealed class OdpLikeTransaction : DbTransaction
+        {
+            private OdpLikeConnection _owner;
+
+            public OdpLikeTransaction(OdpLikeConnection owner)
+            {
+                _owner = owner;
+            }
+
+            public override IsolationLevel IsolationLevel { get { return IsolationLevel.ReadCommitted; } }
+
+            protected override DbConnection DbConnection { get { return _owner; } }
+
+            public override void Commit()
+            {
+                var owner = Complete();
+                var failure = owner.FailNextCommit;
+                owner.FailNextCommit = CommitFailure.None;
+                if (failure == CommitFailure.RolledBack)
+                {
+                    owner.Server.Rollback();
+                    owner.Server = null;
+                    throw new InvalidOperationException("ORA-02091: transaction rolled back\nORA-02291: integrity constraint (T.FK) violated - parent key not found");
+                }
+                if (failure == CommitFailure.KeptOpen)
+                    throw new InvalidOperationException("ORA-02049: timeout: distributed transaction waiting for lock");
+                owner.Server.Commit();
+                owner.Server = null;
+            }
+
+            public override void Rollback()
+            {
+                var owner = Complete();
+                owner.Server.Rollback();
+                owner.Server = null;
+            }
+
+            // OracleTransaction처럼 결과와 관계없이 끝난 것으로 만든다(finally에서 m_completed = true)
+            private OdpLikeConnection Complete()
+            {
+                var owner = _owner;
+                if (owner == null)
+                    throw new InvalidOperationException("Invalid operation on a closed object");
+                _owner = null;
+                return owner;
+            }
+        }
+
+        private sealed class OdpLikeCommand : DbCommand
+        {
+            private readonly OdpLikeConnection _owner;
+            private readonly SqliteCommand _inner;
+
+            public OdpLikeCommand(OdpLikeConnection owner)
+            {
+                _owner = owner;
+                _inner = owner.Inner.CreateCommand();
+            }
+
+            public override string CommandText
+            {
+                get { return _inner.CommandText; }
+                set { _inner.CommandText = value; }
+            }
+
+            public override int CommandTimeout
+            {
+                get { return _inner.CommandTimeout; }
+                set { _inner.CommandTimeout = value; }
+            }
+
+            public override CommandType CommandType
+            {
+                get { return _inner.CommandType; }
+                set { _inner.CommandType = value; }
+            }
+
+            public override bool DesignTimeVisible { get; set; }
+
+            public override UpdateRowSource UpdatedRowSource
+            {
+                get { return _inner.UpdatedRowSource; }
+                set { _inner.UpdatedRowSource = value; }
+            }
+
+            protected override DbConnection DbConnection
+            {
+                get { return _owner; }
+                set { }
+            }
+
+            protected override DbParameterCollection DbParameterCollection { get { return _inner.Parameters; } }
+
+            // OracleCommand.DbTransaction처럼 설정을 무시한다 — 명령은 언제나 연결의 서버 트랜잭션에서 실행된다
+            protected override DbTransaction DbTransaction
+            {
+                get { return null; }
+                set { }
+            }
+
+            public override void Cancel()
+            {
+                _inner.Cancel();
+            }
+
+            public override int ExecuteNonQuery()
+            {
+                _inner.Transaction = _owner.Server;
+                return _inner.ExecuteNonQuery();
+            }
+
+            public override object ExecuteScalar()
+            {
+                _inner.Transaction = _owner.Server;
+                return _inner.ExecuteScalar();
+            }
+
+            public override void Prepare()
+            {
+                _inner.Prepare();
+            }
+
+            protected override DbParameter CreateDbParameter()
+            {
+                return _inner.CreateParameter();
+            }
+
+            protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
+            {
+                _inner.Transaction = _owner.Server;
+                return _inner.ExecuteReader(behavior);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    _inner.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
+        /// <summary>
+        /// 한 열짜리 리더. GetProviderSpecificValue·GetValue는 failure를 던지고(형식 매핑이 없는 객체 형식처럼) GetString은 text를 준다
+        /// (TextFails면 GetString도 failure). text가 null이면 NULL 값.
+        /// </summary>
+        private sealed class SingleValueReader : DbDataReader
+        {
+            private readonly string _text;
+            private readonly Exception _failure;
+
+            public SingleValueReader(string text, Exception failure)
+            {
+                _text = text;
+                _failure = failure;
+            }
+
+            public bool TextFails { get; set; }
+
+            public override int FieldCount { get { return 1; } }
+
+            public override bool HasRows { get { return true; } }
+
+            public override bool IsClosed { get { return false; } }
+
+            public override int RecordsAffected { get { return -1; } }
+
+            public override int Depth { get { return 0; } }
+
+            public override object this[int ordinal] { get { return GetValue(ordinal); } }
+
+            public override object this[string name] { get { return GetValue(0); } }
+
+            public override object GetProviderSpecificValue(int ordinal)
+            {
+                throw _failure;
+            }
+
+            public override object GetValue(int ordinal)
+            {
+                throw _failure;
+            }
+
+            public override bool IsDBNull(int ordinal)
+            {
+                return _text == null;
+            }
+
+            public override string GetString(int ordinal)
+            {
+                if (TextFails)
+                    throw _failure;
+                return _text;
+            }
+
+            public override bool Read() { return false; }
+
+            public override bool NextResult() { return false; }
+
+            public override string GetName(int ordinal) { return "C"; }
+
+            public override int GetOrdinal(string name) { return 0; }
+
+            public override string GetDataTypeName(int ordinal) { return "Object"; }
+
+            public override Type GetFieldType(int ordinal) { return typeof(object); }
+
+            public override int GetValues(object[] values) { throw new NotSupportedException(); }
+
+            public override bool GetBoolean(int ordinal) { throw new NotSupportedException(); }
+
+            public override byte GetByte(int ordinal) { throw new NotSupportedException(); }
+
+            public override long GetBytes(int ordinal, long dataOffset, byte[] buffer, int bufferOffset, int length) { throw new NotSupportedException(); }
+
+            public override char GetChar(int ordinal) { throw new NotSupportedException(); }
+
+            public override long GetChars(int ordinal, long dataOffset, char[] buffer, int bufferOffset, int length) { throw new NotSupportedException(); }
+
+            public override DateTime GetDateTime(int ordinal) { throw new NotSupportedException(); }
+
+            public override decimal GetDecimal(int ordinal) { throw new NotSupportedException(); }
+
+            public override double GetDouble(int ordinal) { throw new NotSupportedException(); }
+
+            public override float GetFloat(int ordinal) { throw new NotSupportedException(); }
+
+            public override Guid GetGuid(int ordinal) { throw new NotSupportedException(); }
+
+            public override short GetInt16(int ordinal) { throw new NotSupportedException(); }
+
+            public override int GetInt32(int ordinal) { throw new NotSupportedException(); }
+
+            public override long GetInt64(int ordinal) { throw new NotSupportedException(); }
+
+            public override System.Collections.IEnumerator GetEnumerator() { throw new NotSupportedException(); }
         }
     }
 }

@@ -308,7 +308,7 @@ namespace MyPlugin
     /// - 하위에 일치가 있는 노드: 기본 펼침(searchState에 false면 접힘). 접혀도 Expandable.
     /// - 하위에 일치가 없는 일치 노드: 기본 접힘. searchState에 true면 캐시(dbs)로 일반 모드와 같은 하위를 보인다(없으면 Load Note).
     /// - 묶음 행: MatchCount = 그 묶음에서 보이는 객체 수, Count = 캐시의 GroupCounts(있으면).
-    /// - results[db].Truncated면 그 DB 맨 끝에 "결과가 많아 일부만 표시합니다 (DB마다 최대 500개)" Note. Error면 DB 아래 오류 Note.
+    /// - results[db].Truncated면 그 DB 맨 끝에 "결과가 많아 일부만 표시합니다 (스키마·객체·열마다 최대 500개) — 더 좁혀 검색하세요" Note. Error면 DB 아래 오류 Note.
     /// - Highlights: Text에서 term(앞뒤 공백 제거, 대소문자 무시)의 모든 위치.
     /// </summary>
     public static class TreeRowsBuilder
@@ -317,7 +317,8 @@ namespace MyPlugin
 
         private const string LoadingText = "불러오는 중…";
         private const string NoAccessText = "볼 수 있는 객체가 없습니다 (권한 필요)";
-        private const string TruncatedText = "결과가 많아 일부만 표시합니다 (DB마다 최대 500개)";
+        // 한도는 DB 하나의 스키마·객체·열 검색마다 따로다(OracleMetadata.SearchLimit)
+        private const string TruncatedText = "결과가 많아 일부만 표시합니다 (스키마·객체·열마다 최대 500개) — 더 좁혀 검색하세요";
 
         private static readonly int[] LimitSteps = { ObjectPageSize, 5000, 25000 };
 

@@ -265,12 +265,86 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
-        public void Split_BlockWithoutSlash_ContinuesPastBlankLinesAndSemicolons()
+        public void Split_BlockWithoutSlash_EndsAtBlankLineAfterUnindentedEnd()
         {
-            // PL/SQL 블록은 '/' 줄이나 스크립트 끝에서만 끝난다(SQL*Plus와 같음)
-            var statement = Assert.Single(SqlScript.Split("BEGIN NULL; END;\n\nSELECT 1 FROM dual;"));
+            // '/' 줄이 없으면 들여쓰지 않은 END; 줄 뒤의 빈 줄에서 끝난다(아래 문장을 블록에 삼키지 않음)
+            var statements = SqlScript.Split("BEGIN NULL; END;\n\nSELECT 1 FROM dual;");
 
-            Assert.Equal("BEGIN NULL; END;\n\nSELECT 1 FROM dual;", statement.Text);
+            Assert.Equal(new[] { "BEGIN NULL; END;", "SELECT 1 FROM dual" }, statements.Select(s => s.Text));
+            Assert.True(statements[0].IsPlSqlBlock);
+            // 익명 블록은 잘못 잘려도 컴파일 오류로 끝나 아무것도 실행되지 않으므로 묻지 않는다
+            Assert.Null(statements[0].Danger);
+            Assert.Equal(SqlKind.Query, statements[1].Kind);
+        }
+
+        [Fact]
+        public void AtCaret_SelectAfterCreateWithoutSlash_IsNotPartOfTheProcedure()
+        {
+            const string procedure = "CREATE OR REPLACE PROCEDURE p AS\nBEGIN\n  NULL;\nEND;";
+            const string script = procedure + "\n\nSELECT * FROM emp;";
+
+            var select = SqlScript.AtCaret(script, script.IndexOf("emp", StringComparison.Ordinal));
+            var created = SqlScript.AtCaret(script, script.IndexOf("NULL", StringComparison.Ordinal));
+
+            Assert.Equal("SELECT * FROM emp", select.Text);
+            Assert.Equal(SqlKind.Query, select.Kind);
+            Assert.Null(select.Danger);
+            Assert.Equal(procedure, created.Text);
+            Assert.Equal(procedure.Length, created.Length);
+            Assert.True(created.IsPlSqlBlock);
+            // 끝을 짐작한 CREATE는 객체를 INVALID로 바꿀 수 있어 실행 전에 확인받는다
+            Assert.NotNull(created.Danger);
+            Assert.Contains("'/'", created.Danger);
+
+            // 편집기(WPF TextBox)는 CRLF로 줄을 바꾼다
+            var crlf = script.Replace("\n", "\r\n");
+            Assert.Equal("SELECT * FROM emp", SqlScript.AtCaret(crlf, crlf.IndexOf("emp", StringComparison.Ordinal)).Text);
+            Assert.Equal(procedure.Replace("\n", "\r\n"), SqlScript.AtCaret(crlf, 0).Text);
+        }
+
+        [Fact]
+        public void Split_PackageBodyWithoutSlash_IndentedEndsDoNotEndTheBlock()
+        {
+            const string body = "CREATE OR REPLACE PACKAGE BODY pkg AS\n"
+                + "  PROCEDURE p IS\n"
+                + "  BEGIN\n"
+                + "    NULL;\n"
+                + "  END p;\n"
+                + "\n"
+                + "  FUNCTION f RETURN NUMBER IS\n"
+                + "  BEGIN\n"
+                + "    RETURN 1;\n"
+                + "  END f;\n"
+                + "END pkg;";
+
+            var whole = Assert.Single(SqlScript.Split(body + "\n"));
+            var split = SqlScript.Split(body + "\n\nSELECT pkg.f FROM dual;");
+
+            Assert.Equal(body, whole.Text);
+            Assert.Null(whole.Danger);
+            Assert.Equal(new[] { body, "SELECT pkg.f FROM dual" }, split.Select(s => s.Text));
+        }
+
+        [Fact]
+        public void Split_BlocksWithoutSlash_EndIfLoopAndCaseDoNotEndTheBlock()
+        {
+            const string first = "BEGIN\nIF 1 = 1 THEN\nNULL;\nEND IF;\n\nFOR i IN 1..2 LOOP\nNULL;\nEND LOOP;\n\nNULL;\nEND;";
+            const string second = "DECLARE\n  x NUMBER;\nBEGIN\n  x := 1;\nEND; -- 끝";
+
+            var statements = SqlScript.Split(first + "\n\n" + second + "\n\nCOMMIT;");
+
+            Assert.Equal(new[] { first, second, "COMMIT" }, statements.Select(s => s.Text));
+            Assert.All(statements.Take(2), s => Assert.True(s.IsPlSqlBlock));
+        }
+
+        [Fact]
+        public void Split_BlockWithSlashLater_StillEndsOnlyAtSlash()
+        {
+            // '/' 줄이 있으면 그 줄이 끝이다(빈 줄 짐작은 '/' 줄이 없을 때만)
+            var statements = SqlScript.Split("BEGIN\n  NULL;\nEND;\n\nNULL;\n/\nSELECT 1 FROM dual;");
+
+            Assert.Equal(new[] { "BEGIN\n  NULL;\nEND;\n\nNULL;", "SELECT 1 FROM dual" }, statements.Select(s => s.Text));
+            Assert.Null(statements[0].Danger);
         }
 
         [Fact]
@@ -371,6 +445,17 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void Exec_SqlPlusLineContinuation_JoinsLinesInsteadOfMinus()
+        {
+            // SQL*Plus의 줄 이음표 '-'를 남기면 p(1, -2)로 바뀐다
+            Assert.Equal("BEGIN p(1,  2); END;", SqlScript.Parse("EXEC p(1, -\n2);").Text);
+            Assert.Equal("BEGIN pkg.run('a-b',  :x,  3); END;", SqlScript.Split("EXEC pkg.run('a-b', -  \r\n:x, -\n3);\nSELECT 1 FROM dual;")[0].Text);
+            // 줄 가운데의 빼기와 주석이 뒤에 붙은 '-'는 그대로
+            Assert.Equal("BEGIN p(4 - 1); END;", SqlScript.Parse("EXEC p(4 - 1);").Text);
+            Assert.Equal("BEGIN p(1, - -- 빼기\n2); END;", SqlScript.Parse("EXEC p(1, - -- 빼기\n2);").Text);
+        }
+
+        [Fact]
         public void Exec_WithoutArguments_IsLeftAsIs()
         {
             var statement = SqlScript.Parse("EXEC;");
@@ -396,6 +481,7 @@ namespace MyPlugin.Tests
         [InlineData("ALTER TABLE t ADD b NUMBER", SqlKind.Ddl, "ALTER")]
         [InlineData("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD'", SqlKind.Other, "ALTER")]
         [InlineData("alter /* 주석 */ session set current_schema = scott", SqlKind.Other, "ALTER")]
+        [InlineData("ALTER SYSTEM SET open_cursors = 500", SqlKind.Other, "ALTER")]
         [InlineData("DROP TABLE t", SqlKind.Ddl, "DROP")]
         [InlineData("TRUNCATE TABLE t", SqlKind.Ddl, "TRUNCATE")]
         [InlineData("RENAME t TO u", SqlKind.Ddl, "RENAME")]
@@ -416,6 +502,8 @@ namespace MyPlugin.Tests
         [InlineData("ROLLBACK", SqlKind.Transaction, "ROLLBACK")]
         [InlineData("SAVEPOINT a", SqlKind.Transaction, "SAVEPOINT")]
         [InlineData("SET TRANSACTION READ ONLY", SqlKind.Transaction, "SET")]
+        [InlineData("SET CONSTRAINTS ALL DEFERRED", SqlKind.Transaction, "SET")]
+        [InlineData("set constraint fk_emp_dept immediate", SqlKind.Transaction, "SET")]
         [InlineData("SET ROLE ALL", SqlKind.Other, "SET")]
         [InlineData("LOCK TABLE t IN EXCLUSIVE MODE", SqlKind.Other, "LOCK")]
         [InlineData("EXPLAIN PLAN FOR SELECT 1 FROM dual", SqlKind.Other, "EXPLAIN")]
@@ -444,6 +532,7 @@ namespace MyPlugin.Tests
         [InlineData("ROLLBACK FORCE '22.57.53'", SqlTransactionAction.Other)]
         [InlineData("SAVEPOINT a", SqlTransactionAction.Other)]
         [InlineData("SET TRANSACTION READ ONLY", SqlTransactionAction.Other)]
+        [InlineData("SET CONSTRAINTS ALL DEFERRED", SqlTransactionAction.Other)]
         [InlineData("SET ROLE ALL", SqlTransactionAction.None)]
         [InlineData("SELECT 1 FROM dual", SqlTransactionAction.None)]
         [InlineData("BEGIN COMMIT; END;", SqlTransactionAction.None)]
@@ -507,7 +596,15 @@ namespace MyPlugin.Tests
         [InlineData("MERGE INTO t USING s ON (t.id = s.id) WHEN MATCHED THEN UPDATE SET t.a = s.a", null)]
         [InlineData("INSERT INTO t SELECT * FROM u", null)]
         [InlineData("SELECT * FROM t", null)]
-        [InlineData("ALTER TABLE t ADD b NUMBER", null)]
+        [InlineData("ALTER TABLE t ADD b NUMBER", DdlDanger)]
+        [InlineData("ALTER TABLE t DROP COLUMN b", DdlDanger)]
+        [InlineData("alter table t truncate partition p2019", DdlDanger)]
+        [InlineData("ALTER TABLE t DROP PARTITION p2019 UPDATE INDEXES", DdlDanger)]
+        [InlineData("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD'", null)]
+        [InlineData("ALTER SYSTEM KILL SESSION '12,345'", null)]
+        [InlineData("PURGE RECYCLEBIN", DdlDanger)]
+        [InlineData("FLASHBACK TABLE t TO TIMESTAMP SYSTIMESTAMP - INTERVAL '1' HOUR", DdlDanger)]
+        [InlineData("FLASHBACK TABLE t TO BEFORE DROP", null)]
         [InlineData("BEGIN DELETE FROM t; END;", null)]
         public void Danger_FromStatement(string sql, string danger)
         {
@@ -729,6 +826,48 @@ namespace MyPlugin.Tests
         public void Split_CarriageReturnOnlyLineEndings()
         {
             Assert.Equal(new[] { "SELECT 1", "BEGIN NULL;\r\rEND;" }, Texts("SELECT 1\r\rBEGIN NULL;\r\rEND;\r/\r"));
+        }
+
+        // ---- 컴파일 오류를 찾을 객체 ----
+
+        [Theory]
+        [InlineData("CREATE OR REPLACE PROCEDURE p AS BEGIN NULL; END;", null, "P", "PROCEDURE")]
+        [InlineData("create or replace editionable package body scott.pkg as end;", "SCOTT", "PKG", "PACKAGE BODY")]
+        [InlineData("CREATE PACKAGE \"MixedCase\" AS END;", null, "MixedCase", "PACKAGE")]
+        [InlineData("CREATE OR REPLACE /* 주석 */ NONEDITIONABLE TRIGGER hr.trg BEFORE INSERT ON t BEGIN NULL; END;", "HR", "TRG", "TRIGGER")]
+        [InlineData("CREATE OR REPLACE TYPE BODY t_obj AS END;", null, "T_OBJ", "TYPE BODY")]
+        [InlineData("CREATE OR REPLACE TYPE t_obj AS OBJECT (a NUMBER);", null, "T_OBJ", "TYPE")]
+        [InlineData("CREATE OR REPLACE FORCE EDITIONING VIEW v AS SELECT x FROM missing", null, "V", "VIEW")]
+        [InlineData("CREATE OR REPLACE NO FORCE VIEW app.v AS SELECT 1 a FROM dual", "APP", "V", "VIEW")]
+        [InlineData("ALTER PROCEDURE p COMPILE", null, "P", "PROCEDURE")]
+        [InlineData("ALTER PACKAGE scott.pkg COMPILE BODY", "SCOTT", "PKG", "PACKAGE BODY")]
+        [InlineData("ALTER PACKAGE pkg COMPILE SPECIFICATION", null, "PKG", "PACKAGE")]
+        [InlineData("ALTER PACKAGE pkg COMPILE", null, "PKG", "PACKAGE,PACKAGE BODY")]
+        [InlineData("alter type t compile reuse settings", null, "T", "TYPE,TYPE BODY")]
+        [InlineData("ALTER VIEW v COMPILE", null, "V", "VIEW")]
+        public void CompileTargetOf_FindsCompiledObject(string sql, string owner, string name, string types)
+        {
+            var target = SqlScript.CompileTargetOf(sql);
+
+            Assert.NotNull(target);
+            Assert.Equal(owner, target.Owner);
+            Assert.Equal(name, target.Name);
+            Assert.Equal(types.Split(','), target.Types);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("CREATE TABLE t (a NUMBER)")]
+        [InlineData("CREATE OR REPLACE AND COMPILE JAVA SOURCE NAMED \"Hi\" AS public class Hi { }")]
+        [InlineData("ALTER TRIGGER trg ENABLE")]
+        [InlineData("ALTER TABLE t ADD b NUMBER")]
+        [InlineData("DROP PROCEDURE p")]
+        [InlineData("BEGIN NULL; END;")]
+        [InlineData("CREATE OR REPLACE PROCEDURE")]
+        public void CompileTargetOf_OtherStatements_Null(string sql)
+        {
+            Assert.Null(SqlScript.CompileTargetOf(sql));
         }
 
         // ---- LIKE 패턴 ----

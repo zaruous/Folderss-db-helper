@@ -1128,7 +1128,7 @@ namespace MyPlugin.Tests
             var noteIndex = rows.FindIndex(r => r.Kind == TreeRowKind.Note);
             var note = rows[noteIndex];
             Assert.Equal(DbKey + S + "more", note.Key);
-            Assert.Equal("결과가 많아 일부만 표시합니다 (DB마다 최대 500개)", note.Text);
+            Assert.Equal("결과가 많아 일부만 표시합니다 (스키마·객체·열마다 최대 500개) — 더 좁혀 검색하세요", note.Text);
             Assert.Equal(1, note.Depth);
             Assert.Null(note.Load);
             Assert.False(note.IsLoadMore);

@@ -39,8 +39,8 @@ namespace MyPlugin
         /// <summary>"더 있음"을 판단하려고 미리 읽은 행. 다음 Fetch에서 먼저 돌려준다.</summary>
         internal string[] Lookahead { get; set; }
 
-        /// <summary>열마다 GetProviderSpecificValue로 읽을지(Oracle). null이면 모두 GetValue.</summary>
-        internal bool[] ProviderSpecific { get; set; }
+        /// <summary>열마다 값을 읽는 방법(Oracle). null이면 모두 GetValue.</summary>
+        internal ColumnRead[] ReadModes { get; set; }
 
         /// <summary>SELECT … FOR UPDATE 커서. 트랜잭션이 끝나면 더 읽을 수 없다(ORA-01002).</summary>
         internal bool ForUpdate { get; set; }
@@ -61,17 +61,45 @@ namespace MyPlugin
 
         public TimeSpan Elapsed { get; set; }
 
-        /// <summary>COMMIT·ROLLBACK·DDL(자동 커밋)로 트랜잭션이 끝났으면 true.</summary>
+        /// <summary>COMMIT·ROLLBACK·DDL(자동 커밋)로, 또는 PL/SQL 블록 안의 커밋·롤백으로 트랜잭션이 끝났으면(열린 트랜잭션이 없으면) true.</summary>
         public bool TransactionEnded { get; set; }
 
         /// <summary>메시지 탭에 쓸 한 줄. 예: "200행 · 더 있음", "3행 변경됨 (커밋 전)", "커밋함", "실행함(DDL은 자동 커밋됨)".</summary>
         public string Summary { get; set; }
+
+        /// <summary>
+        /// 실행은 됐지만 알려야 할 문제(오류로 보인다). 예: 컴파일 오류가 있는 PL/SQL 객체(ORA-24344 — 예외가 아니라 경고로만 온다). 없으면 null.
+        /// </summary>
+        public string Warning { get; set; }
+
+        /// <summary>Warning의 자세한 줄들(ALL_ERRORS의 "줄 3, 열 5: PLS-00103: …"). 없으면 빈 목록.</summary>
+        public List<string> WarningDetails { get; } = new List<string>();
+    }
+
+    /// <summary>열 값을 읽는 방법.</summary>
+    internal enum ColumnRead
+    {
+        /// <summary>DbDataReader.GetValue(.NET 형식)</summary>
+        Value,
+        /// <summary>GetProviderSpecificValue(OracleDecimal 등 — 큰 NUMBER·TIMESTAMP WITH TIME ZONE 보존)</summary>
+        ProviderSpecific,
+        /// <summary>GetString(객체·컬렉션 형식은 JSON, REF는 16진수 — 형식 매핑이 없으면 다른 방법은 예외)</summary>
+        Text
     }
 
     /// <summary>같은 세션에서 다른 실행이 진행 중일 때(DB마다 세션 1개, 한 번에 한 문장).</summary>
     public sealed class SessionBusyException : InvalidOperationException
     {
         public SessionBusyException() : base("같은 DB에서 다른 실행이 진행 중입니다. 끝난 뒤 다시 실행하세요.") { }
+    }
+
+    /// <summary>커밋·롤백이 실패했고 서버에서 트랜잭션이 끝났을 때(ORA-02091 롤백 등). 커밋 대기 변경은 남아 있지 않다. InnerException이 원래 오류.</summary>
+    public sealed class TransactionEndedException : Exception
+    {
+        public TransactionEndedException(Exception inner)
+            : base(DbSession.DescribeError(inner) + " — 서버에서 트랜잭션이 끝나 커밋 대기 변경이 남아 있지 않습니다.", inner)
+        {
+        }
     }
 
     /// <summary>
@@ -81,6 +109,11 @@ namespace MyPlugin
     /// - 실제 DB 호출은 Task.Run 안에서 동기 ADO.NET으로 한다(공급자의 async가 동기로 동작해도 UI가 멈추지 않게).
     /// - 자동 커밋 끔: DML·PL/SQL·SELECT FOR UPDATE·SAVEPOINT 전에 트랜잭션을 시작하고(없으면), 그 뒤 모든 명령의 Transaction에 넣는다.
     /// - DDL: 트랜잭션이 있으면 먼저 Commit(Oracle의 묵시적 커밋과 같은 결과를 모든 공급자에서 보장) 후 트랜잭션 없이 실행. TransactionEnded = true.
+    ///   컴파일 오류가 있는 PL/SQL 객체(ORA-24344)는 예외가 아니라 InfoMessage 경고로만 오므로 ExecuteResult.Warning으로 알린다.
+    /// - PL/SQL 블록·CALL 뒤에는 서버에 트랜잭션이 남았는지 물어(Oracle) 블록 안의 커밋·롤백을 대기 표시에 반영한다.
+    /// - LOCK TABLE은 트랜잭션 안에서 실행하고 커밋 대기(잠금 보유)로 표시한다.
+    /// - OracleConnection은 연 뒤 AutoCommit = false: 트랜잭션 객체가 없는 동안에도 ODP.NET이 명령마다 커밋하지 않게.
+    /// - 커밋·롤백이 실패하면 ODP.NET이 끝내 버린 트랜잭션 객체를 버리고, 서버에 트랜잭션이 남았으면 새 객체로 이어 받는다.
     /// - COMMIT·ROLLBACK 문장은 SQL로 보내지 않고 CommitAsync·RollbackAsync와 같게 처리한다.
     /// - Query: fetchCount+1행을 읽어 HasMore 판단. 끝까지 읽었으면 리더를 닫는다. 같은 연결의 다른 열린 커서는 그대로 둔다.
     /// - 값: OracleDataReader면 GetProviderSpecificValue(큰 NUMBER·TIMESTAMP WITH TIME ZONE 보존), 아니면 GetValue → ValueFormatter.Format.
@@ -94,9 +127,14 @@ namespace MyPlugin
     {
         private const int CancelErrorNumber = 1013;
         private const string CancelErrorCode = "ORA-01013";
+        // "success with compilation error": 컴파일 오류가 있는 채로 PL/SQL 객체·뷰를 만들었다
+        private const int CompileErrorWarning = 24344;
+        // NULL이면 서버에 열린 트랜잭션이 없다(만들지 않고 묻기만 함)
+        private const string OracleTransactionProbe = "SELECT DBMS_TRANSACTION.LOCAL_TRANSACTION_ID FROM DUAL";
+        private const string UnreadableValue = "(OBJECT)";
 
-        // 연결이 끊겼다고 볼 Oracle 오류 번호
-        private static readonly HashSet<int> BrokenErrorNumbers = new HashSet<int> { 28, 1012, 2396, 3113, 3114, 3135, 12537, 12547, 12570, 12571 };
+        // 연결이 끊겼다고 볼 Oracle 오류 번호(세션 종료·로그오프: 603 치명 오류, 1092 인스턴스 종료, 2392·2396·2399 자원 한도)
+        private static readonly HashSet<int> BrokenErrorNumbers = new HashSet<int> { 28, 603, 1012, 1092, 2392, 2396, 2399, 3113, 3114, 3135, 12537, 12547, 12570, 12571 };
 
         // 연결이 닫힌 상태에서 공급자가 던지는 InvalidOperationException 문구(ODP.NET, SQLite, 일반 ADO.NET)
         private static readonly string[] ClosedConnectionPhrases =
@@ -111,6 +149,8 @@ namespace MyPlugin
         private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
         private readonly object _executingSync = new object();
         private readonly List<QueryCursor> _cursors = new List<QueryCursor>();
+        // 지금 실행하는 문장이 받은 경고 번호(OracleConnection.InfoMessage). 실행 스레드에서만 쓰지만 이벤트라 잠근다.
+        private readonly List<int> _warnings = new List<int>();
 
         private DbCommand _executing;
         // 지금 작업의 취소 토큰. 잠금을 쥔 작업 스레드(RunDb 안)에서만 읽고 쓴다.
@@ -121,6 +161,7 @@ namespace MyPlugin
         private volatile bool _broken;
         private volatile bool _hasPending;
         private volatile bool _countUnknown;
+        private volatile bool _locksHeld;
         private volatile int _pendingRows;
         private int _disposed;
 
@@ -130,7 +171,20 @@ namespace MyPlugin
             if (connection == null)
                 throw new ArgumentNullException(nameof(connection));
             _connection = connection;
+            var oracle = connection as OracleConnection;
+            if (oracle != null)
+            {
+                TransactionProbeSql = OracleTransactionProbe;
+                // ODP.NET은 처리기가 있을 때만 경고(ORA-24344 등)를 알린다
+                oracle.InfoMessage += Connection_InfoMessage;
+            }
         }
+
+        /// <summary>
+        /// 서버에 열린 트랜잭션이 있는지 묻는 문장. 값이 NULL이면 없음. null이면 묻지 않는다(알 수 없음 — 대기로 본다).
+        /// Oracle은 DBMS_TRANSACTION.LOCAL_TRANSACTION_ID, 그 밖의 공급자는 null(시험에서 바꾼다).
+        /// </summary>
+        internal string TransactionProbeSql { get; set; }
 
         /// <summary>OracleConnection으로 세션을 만든다.</summary>
         public static DbSession CreateOracle(string connectionString)
@@ -146,7 +200,7 @@ namespace MyPlugin
         /// <summary>실행·가져오기·커밋 등이 진행 중(잠금을 잡고 있음).</summary>
         public bool IsBusy { get { return _lock.CurrentCount == 0; } }
 
-        /// <summary>커밋하지 않은 변경(또는 FOR UPDATE 잠금)이 있음.</summary>
+        /// <summary>커밋하지 않은 변경(또는 FOR UPDATE·LOCK TABLE 잠금)이 있음.</summary>
         public bool HasPendingChanges { get { return _hasPending; } }
 
         /// <summary>커밋 대기 DML 영향 행 수의 합(표시용).</summary>
@@ -155,16 +209,22 @@ namespace MyPlugin
         /// <summary>PL/SQL 실행 등으로 대기 행 수를 알 수 없음.</summary>
         public bool PendingCountUnknown { get { return _countUnknown; } }
 
-        /// <summary>표시용. 대기가 없으면 null, "커밋 대기 3행", 수를 모르면 "커밋 대기(행 수 모름)".</summary>
+        /// <summary>
+        /// 표시용. 대기가 없으면 null, "커밋 대기 3행", 수를 모르면 "커밋 대기(행 수 모름)".
+        /// SELECT … FOR UPDATE·LOCK TABLE 잠금만 있으면 "커밋 대기(잠금 보유)", 변경도 있으면 뒤에 " · 잠금".
+        /// </summary>
         public string PendingText
         {
             get
             {
                 if (!_hasPending)
                     return null;
+                var locks = _locksHeld ? " · 잠금" : "";
                 if (_countUnknown)
-                    return "커밋 대기(행 수 모름)";
-                return "커밋 대기 " + _pendingRows.ToString(CultureInfo.InvariantCulture) + "행";
+                    return "커밋 대기(행 수 모름)" + locks;
+                if (_locksHeld && _pendingRows == 0)
+                    return "커밋 대기(잠금 보유)";
+                return "커밋 대기 " + _pendingRows.ToString(CultureInfo.InvariantCulture) + "행" + locks;
             }
         }
 
@@ -179,6 +239,11 @@ namespace MyPlugin
                 {
                     if (_connection.State != ConnectionState.Open)
                         _connection.Open();
+                    // 트랜잭션 객체가 없는 동안(커밋·롤백이 실패한 뒤 등) ODP.NET이 DML을 문장마다 커밋하지 않게 한다.
+                    // 기본값(true)이면 OracleTransaction이 끝날 때마다 자동 커밋을 다시 켠다.
+                    var oracle = _connection as OracleConnection;
+                    if (oracle != null && oracle.AutoCommit)
+                        oracle.AutoCommit = false;
                 }, cancellationToken).ConfigureAwait(false);
                 _opened = true;
             }
@@ -283,30 +348,33 @@ namespace MyPlugin
                 throw new ArgumentNullException(nameof(query));
             if (read == null)
                 throw new ArgumentNullException(nameof(read));
-            return RunAsync((connection, transaction) =>
+            return RunAsync((connection, transaction) => QueryRows(query, read, cancellationToken), cancellationToken);
+        }
+
+        // 잠금을 쥔 작업 스레드에서만 부른다
+        private List<T> QueryRows<T>(SqlQuery query, Func<IDataRecord, T> read, CancellationToken cancellationToken)
+        {
+            using (var command = CreateCommand(query.Sql))
             {
-                using (var command = CreateCommand(query.Sql))
+                foreach (var pair in query.Parameters)
                 {
-                    foreach (var pair in query.Parameters)
-                    {
-                        var parameter = command.CreateParameter();
-                        parameter.ParameterName = pair.Key;
-                        parameter.Value = pair.Value ?? DBNull.Value;
-                        command.Parameters.Add(parameter);
-                    }
-                    using (cancellationToken.Register(() => CancelQuietly(command)))
-                    using (var reader = command.ExecuteReader())
-                    {
-                        var rows = new List<T>();
-                        while (reader.Read())
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            rows.Add(read(reader));
-                        }
-                        return rows;
-                    }
+                    var parameter = command.CreateParameter();
+                    parameter.ParameterName = pair.Key;
+                    parameter.Value = pair.Value ?? DBNull.Value;
+                    command.Parameters.Add(parameter);
                 }
-            }, cancellationToken);
+                using (cancellationToken.Register(() => CancelQuietly(command)))
+                using (var reader = command.ExecuteReader())
+                {
+                    var rows = new List<T>();
+                    while (reader.Read())
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        rows.Add(read(reader));
+                    }
+                    return rows;
+                }
+            }
         }
 
         private static void CancelQuietly(DbCommand command)
@@ -574,6 +642,7 @@ namespace MyPlugin
         {
             var stopwatch = Stopwatch.StartNew();
             var result = new ExecuteResult { Kind = statement.Kind };
+            ClearWarnings();
             if (statement.TransactionAction == SqlTransactionAction.Commit)
             {
                 CommitCore();
@@ -588,7 +657,7 @@ namespace MyPlugin
             }
             else if (statement.Kind == SqlKind.Transaction || statement.TransactionAction == SqlTransactionAction.Other)
             {
-                // SAVEPOINT, ROLLBACK TO SAVEPOINT, SET TRANSACTION: 트랜잭션 안에서만 뜻이 있다
+                // SAVEPOINT, ROLLBACK TO SAVEPOINT, SET TRANSACTION, SET CONSTRAINTS: 트랜잭션 안에서만 뜻이 있다
                 EnsureTransaction();
                 ExecuteNonQuery(statement.Text);
                 // ROLLBACK TO는 일부 변경만 되돌리므로 남은 대기 행 수를 알 수 없다
@@ -607,12 +676,7 @@ namespace MyPlugin
                         ExecuteDml(statement, result);
                         break;
                     case SqlKind.PlSql:
-                        EnsureTransaction();
-                        ExecuteNonQuery(statement.Text);
-                        // 블록 안에서 무엇을 바꿨는지 알 수 없으므로 대기로 보고 행 수는 모른다고 표시한다
-                        _hasPending = true;
-                        _countUnknown = true;
-                        result.Summary = "실행함 (커밋 전)";
+                        ExecutePlSql(statement, result);
                         break;
                     case SqlKind.Ddl:
                         if (_transaction != null)
@@ -621,8 +685,26 @@ namespace MyPlugin
                         EndTransaction();
                         result.TransactionEnded = true;
                         result.Summary = "실행함 (DDL은 자동 커밋됨)";
+                        if (TakeWarning(CompileErrorWarning))
+                        {
+                            // 예외가 없어도 멀쩡하던 객체가 쓸 수 없는(INVALID) 것으로 바뀌었다
+                            result.Summary = "실행함 — 컴파일 오류 (DDL은 자동 커밋됨)";
+                            result.Warning = (string.Equals(statement.Verb, "ALTER", StringComparison.Ordinal) ? "다시 컴파일했지만 오류가 있습니다" : "만들었지만 컴파일 오류가 있습니다")
+                                + " (ORA-24344). 객체는 고칠 때까지 쓸 수 없습니다(INVALID).";
+                            ReadCompileErrors(statement, result);
+                        }
                         break;
                     default:
+                        if (string.Equals(statement.Verb, "LOCK", StringComparison.Ordinal))
+                        {
+                            // LOCK TABLE은 트랜잭션이 끝날 때 풀린다 — 트랜잭션 밖에서 실행하면 그 자리에서 커밋되어 바로 풀린다
+                            EnsureTransaction();
+                            ExecuteNonQuery(statement.Text);
+                            _hasPending = true;
+                            _locksHeld = true;
+                            result.Summary = "실행함 (잠금 보유 — 커밋·롤백하면 풀림)";
+                            break;
+                        }
                         // ALTER SESSION 등: 열린 트랜잭션이 있으면 그 안에서 실행하고 대기 상태는 바꾸지 않는다
                         ExecuteNonQuery(statement.Text);
                         result.Summary = "실행함";
@@ -660,7 +742,10 @@ namespace MyPlugin
                 throw;
             }
             if (statement.ForUpdate)
+            {
                 _hasPending = true;
+                _locksHeld = true;
+            }
             if (!cursor.IsClosed)
             {
                 lock (_cursors)
@@ -685,6 +770,125 @@ namespace MyPlugin
             {
                 _countUnknown = true;
                 result.Summary = "실행함 (커밋 전)";
+            }
+        }
+
+        private void ExecutePlSql(SqlStatement statement, ExecuteResult result)
+        {
+            var wasPending = _hasPending;
+            EnsureTransaction();
+            try
+            {
+                ExecuteNonQuery(statement.Text);
+            }
+            catch (Exception ex)
+            {
+                // 커밋한 뒤 오류를 낸 블록도 앞서 대기하던 변경을 이미 끝냈다(대기 표시만 남지 않게)
+                NoteFailure(ex);
+                if (_hasPending && !IsCancellation(ex) && ServerTransactionActive() == false)
+                    EndTransaction();
+                throw;
+            }
+            // 블록 안의 COMMIT·ROLLBACK·EXECUTE IMMEDIATE DDL은 앞서 대기하던 변경까지 끝낸다. 무엇을 했는지는 서버에 물어야 안다.
+            if (ServerTransactionActive() == false)
+            {
+                EndTransaction();
+                result.TransactionEnded = true;
+                result.Summary = wasPending ? "실행함 (블록 안에서 커밋·롤백됨)" : "실행함";
+                return;
+            }
+            // 트랜잭션이 남았거나 물을 수 없으면 대기로 보고, 블록이 바꾼 행 수는 모른다고 표시한다
+            _hasPending = true;
+            _countUnknown = true;
+            result.Summary = "실행함 (커밋 전)";
+        }
+
+        /// <summary>서버에 열린 트랜잭션이 있으면 true, 없으면 false, 알 수 없으면(묻는 문장 없음·끊김·실패·취소) null.</summary>
+        private bool? ServerTransactionActive()
+        {
+            var sql = TransactionProbeSql;
+            if (string.IsNullOrEmpty(sql) || _broken)
+                return null;
+            try
+            {
+                using (var command = CreateCommand(sql))
+                {
+                    SetExecuting(command);
+                    try
+                    {
+                        var value = command.ExecuteScalar();
+                        return value != null && !(value is DBNull);
+                    }
+                    finally
+                    {
+                        SetExecuting(null);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                NoteFailure(ex);
+                return null;
+            }
+        }
+
+        private void Connection_InfoMessage(object sender, OracleInfoMessageEventArgs e)
+        {
+            try
+            {
+                foreach (OracleError error in e.Errors)
+                    NoteWarning(error.Number);
+            }
+            catch (Exception)
+            {
+                // 경고를 읽지 못해도 실행 결과는 그대로다(ODP.NET도 처리기 예외를 삼킨다)
+            }
+        }
+
+        /// <summary>지금 실행 중인 문장이 경고를 받았다(InfoMessage 처리기, 시험).</summary>
+        internal void NoteWarning(int number)
+        {
+            lock (_warnings)
+            {
+                // 메타데이터 조회 등 실행 밖의 경고가 끝없이 쌓이지 않게
+                if (_warnings.Count < 100)
+                    _warnings.Add(number);
+            }
+        }
+
+        private void ClearWarnings()
+        {
+            lock (_warnings)
+                _warnings.Clear();
+        }
+
+        private bool TakeWarning(int number)
+        {
+            lock (_warnings)
+                return _warnings.Remove(number);
+        }
+
+        /// <summary>컴파일 오류 목록(ALL_ERRORS)을 result.WarningDetails에 넣는다. 못 읽어도 경고는 그대로 둔다.</summary>
+        private void ReadCompileErrors(SqlStatement statement, ExecuteResult result)
+        {
+            var target = SqlScript.CompileTargetOf(statement.Text);
+            if (target == null || _broken)
+                return;
+            try
+            {
+                var withType = target.Types.Count > 1;
+                var lines = QueryRows(OracleMetadata.CompileErrors(target.Owner, target.Name, target.Types, OracleMetadata.CompileErrorLimit),
+                    r => OracleMetadata.ReadCompileError(r, withType), _operationToken);
+                if (lines.Count > OracleMetadata.CompileErrorLimit)
+                {
+                    lines.RemoveRange(OracleMetadata.CompileErrorLimit, lines.Count - OracleMetadata.CompileErrorLimit);
+                    lines.Add("… 오류가 더 있습니다(ALL_ERRORS에서 보세요).");
+                }
+                result.WarningDetails.AddRange(lines);
+            }
+            catch (Exception ex)
+            {
+                NoteFailure(ex);
             }
         }
 
@@ -730,12 +934,12 @@ namespace MyPlugin
                     exhausted = true;
                     break;
                 }
-                rows.Add(ReadRow(reader, cursor.ProviderSpecific));
+                rows.Add(ReadRow(reader, cursor.ReadModes));
             }
             if (!exhausted && cursor.Lookahead == null)
             {
                 if (reader.Read())
-                    cursor.Lookahead = ReadRow(reader, cursor.ProviderSpecific);
+                    cursor.Lookahead = ReadRow(reader, cursor.ReadModes);
                 else
                     exhausted = true;
             }
@@ -746,12 +950,12 @@ namespace MyPlugin
             return rows;
         }
 
-        private static string[] ReadRow(DbDataReader reader, bool[] providerSpecific)
+        private static string[] ReadRow(DbDataReader reader, ColumnRead[] modes)
         {
             var row = new string[reader.FieldCount];
             for (var i = 0; i < row.Length; i++)
             {
-                var value = providerSpecific != null && providerSpecific[i] ? ProviderValue(reader, i) : reader.GetValue(i);
+                var value = ReadValue(reader, i, modes != null ? modes[i] : ColumnRead.Value);
                 try
                 {
                     row[i] = ValueFormatter.Format(value);
@@ -762,6 +966,19 @@ namespace MyPlugin
                 }
             }
             return row;
+        }
+
+        internal static object ReadValue(DbDataReader reader, int ordinal, ColumnRead mode)
+        {
+            switch (mode)
+            {
+                case ColumnRead.ProviderSpecific:
+                    return ProviderValue(reader, ordinal);
+                case ColumnRead.Text:
+                    return TextValue(reader, ordinal);
+                default:
+                    return reader.GetValue(ordinal);
+            }
         }
 
         private static object ProviderValue(DbDataReader reader, int ordinal)
@@ -775,6 +992,30 @@ namespace MyPlugin
                 // Oracle 형식으로 바꿀 수 없는 값은 .NET 값으로라도 보인다
                 return reader.GetValue(ordinal);
             }
+            catch (Exception ex) when (IsUnreadableValue(ex))
+            {
+                // 형식 매핑이 없는 객체 형식(ORA-50071)·지원하지 않는 형식: GetValue도 같은 길로 실패하므로 글자로 읽는다
+                return TextValue(reader, ordinal);
+            }
+        }
+
+        /// <summary>GetString으로 읽는다(객체·컬렉션은 JSON, REF는 16진수). 그것도 못 읽으면 자리 표시 — 한 칸 때문에 조회 전체를 실패시키지 않는다.</summary>
+        private static object TextValue(DbDataReader reader, int ordinal)
+        {
+            try
+            {
+                return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+            }
+            catch (Exception ex) when (IsUnreadableValue(ex) || ex is InvalidCastException || ex is NotSupportedException || ex is FormatException)
+            {
+                return UnreadableValue;
+            }
+        }
+
+        // 값 하나를 읽지 못한 것뿐인 오류(연결 끊김·취소는 아님 — 그런 오류는 조회를 멈춰야 한다)
+        private static bool IsUnreadableValue(Exception ex)
+        {
+            return (ex is InvalidOperationException || ex is OracleException) && !IsBrokenError(ex) && !IsCancellation(ex);
         }
 
         private static void DisposeValue(object value)
@@ -802,7 +1043,7 @@ namespace MyPlugin
             var schema = SchemaRows(reader, count);
             var oracle = reader is OracleDataReader;
             if (oracle)
-                cursor.ProviderSpecific = new bool[count];
+                cursor.ReadModes = new ColumnRead[count];
             for (var i = 0; i < count; i++)
             {
                 var row = schema != null ? schema[i] : null;
@@ -812,11 +1053,29 @@ namespace MyPlugin
                 var typeName = reader.GetDataTypeName(i);
                 if (oracle)
                 {
+                    cursor.ReadModes[i] = OracleReadMode(typeName);
                     typeName = NormalizeOracleColumn(typeName, SchemaInt(row, "IsRowID") == 1, ref precision, ref scale);
-                    // BINARY_FLOAT·BINARY_DOUBLE은 Oracle 형식(OracleDecimal)으로 바꾸면 자릿수를 잃고 큰 값은 넘친다
-                    cursor.ProviderSpecific[i] = typeName != "BINARY_FLOAT" && typeName != "BINARY_DOUBLE";
                 }
                 cursor.Columns.Add(ValueFormatter.DescribeColumn(reader.GetName(i), typeName, reader.GetFieldType(i), size, precision, scale));
+            }
+        }
+
+        /// <summary>ODP.NET GetDataTypeName(OracleDbType 이름)으로 정하는 열 읽기 방법.</summary>
+        internal static ColumnRead OracleReadMode(string providerTypeName)
+        {
+            switch (providerTypeName)
+            {
+                case "BinaryFloat":
+                case "BinaryDouble":
+                    // Oracle 형식(OracleDecimal)으로 바꾸면 자릿수를 잃고 큰 값은 넘친다
+                    return ColumnRead.Value;
+                case "Object":
+                case "Array":
+                case "Ref":
+                    // 사용자 정의 형식(SDO_GEOMETRY·ANYDATA·VARRAY 등)과 REF는 형식 매핑이 없으면 GetProviderSpecificValue·GetValue가 예외를 낸다
+                    return ColumnRead.Text;
+                default:
+                    return ColumnRead.ProviderSpecific;
             }
         }
 
@@ -917,8 +1176,16 @@ namespace MyPlugin
             var transaction = _transaction;
             if (transaction != null)
             {
-                // 실패하면 트랜잭션을 그대로 둔다(사용자가 다시 커밋하거나 롤백할 수 있게)
-                transaction.Commit();
+                try
+                {
+                    transaction.Commit();
+                }
+                catch (Exception ex)
+                {
+                    if (AfterFailedEnd(transaction, ex))
+                        throw new TransactionEndedException(ex);
+                    throw;
+                }
                 _transaction = null;
                 DisposeQuietly(transaction);
             }
@@ -930,11 +1197,52 @@ namespace MyPlugin
             var transaction = _transaction;
             if (transaction != null)
             {
-                transaction.Rollback();
+                try
+                {
+                    transaction.Rollback();
+                }
+                catch (Exception ex)
+                {
+                    if (AfterFailedEnd(transaction, ex))
+                        throw new TransactionEndedException(ex);
+                    throw;
+                }
                 _transaction = null;
                 DisposeQuietly(transaction);
             }
             EndTransaction();
+        }
+
+        /// <summary>
+        /// 커밋·롤백이 실패한 뒤 트랜잭션 상태를 맞춘다. 실패해도 ODP.NET은 트랜잭션 객체를 끝난 것으로 만든다 — 그대로 쥐고 있으면
+        /// 그 뒤 명령이 트랜잭션 없이 실행되고(자동 커밋) 다시 커밋·롤백할 수도 없다. 그런 객체는 버리고, 서버에 트랜잭션이 남았으면
+        /// (또는 알 수 없으면) 새 객체로 이어 받는다(대기 상태 유지). 서버에서 트랜잭션이 끝났으면(ORA-02091 롤백 등) 대기 상태를 지우고 true.
+        /// </summary>
+        private bool AfterFailedEnd(DbTransaction transaction, Exception failure)
+        {
+            NoteFailure(failure);
+            // 일반 ADO.NET 공급자는 실패한 트랜잭션을 살려 두므로(Connection이 그대로) 다시 커밋하거나 롤백할 수 있다
+            if (!(transaction is OracleTransaction) && transaction.Connection != null)
+                return false;
+            _transaction = null;
+            DisposeQuietly(transaction);
+            if (_broken)
+                return false;
+            if (ServerTransactionActive() == false)
+            {
+                EndTransaction();
+                return true;
+            }
+            try
+            {
+                _transaction = _connection.BeginTransaction();
+            }
+            catch (Exception ex)
+            {
+                // 다음 DML 앞의 EnsureTransaction이 다시 연다. 원래 오류를 가리지 않는다
+                NoteFailure(ex);
+            }
+            return false;
         }
 
         /// <summary>트랜잭션이 끝난 뒤: 대기 상태를 지우고, 더 읽을 수 없게 된 FOR UPDATE 커서를 닫는다.</summary>
@@ -942,6 +1250,7 @@ namespace MyPlugin
         {
             _hasPending = false;
             _countUnknown = false;
+            _locksHeld = false;
             _pendingRows = 0;
             foreach (var cursor in SnapshotCursors())
             {
@@ -990,7 +1299,11 @@ namespace MyPlugin
         {
             _hasPending = false;
             _countUnknown = false;
+            _locksHeld = false;
             _pendingRows = 0;
+            var oracle = _connection as OracleConnection;
+            if (oracle != null)
+                oracle.InfoMessage -= Connection_InfoMessage;
             try
             {
                 _connection.Close();
@@ -1189,10 +1502,14 @@ namespace MyPlugin
             if (lines.Count == 0)
                 return ex.GetType().Name;
             var first = lines[0];
+            var oracle = ex as OracleException;
             // "ORA-06550: line 1, column 7:"처럼 ':'로 끝나면 실제 원인(PLS-00201 …)은 다음 줄에 있다
             for (var i = 1; i < lines.Count && i < 3 && first.EndsWith(":", StringComparison.Ordinal); i++)
                 first += " " + lines[i];
-            if (ex is OracleException oracle && oracle.Number > 0 && !first.StartsWith("ORA-", StringComparison.Ordinal))
+            // ORA-02091(커밋할 때 트랜잭션이 롤백됨)도 원인(지연 제약 위반 ORA-02291 등)이 다음 줄에 있다
+            if (lines.Count > 1 && first == lines[0] && ((oracle != null && oracle.Number == 2091) || first.StartsWith("ORA-02091", StringComparison.Ordinal)))
+                first += " " + lines[1];
+            if (oracle != null && oracle.Number > 0 && !first.StartsWith("ORA-", StringComparison.Ordinal))
                 first = OracleCode(oracle.Number) + ": " + first;
             return first;
         }

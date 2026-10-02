@@ -24,6 +24,8 @@ namespace MyPlugin
         public bool Current { get; set; }
         /// <summary>"더 보기" 행: 지금 불러오는 중.</summary>
         public bool Loading { get; set; }
+        /// <summary>연결 중인 접속의 저장 값이 연결할 때와 다름(다시 연결하면 적용).</summary>
+        public bool ProfileChanged { get; set; }
     }
 
     /// <summary>트리 패널의 화면과 무관한 판단(순수 로직, 테스트 대상): 행 비교, 검색 막대·바닥줄 문장, 펼침 상태 다루기.</summary>
@@ -56,7 +58,8 @@ namespace MyPlugin
             if (badges != null)
             {
                 sb.Append(Sep)
-                  .Append(Flags(badges.Connected, badges.Connecting, badges.Broken, badges.Running, badges.ReadOnly, badges.Current, badges.Loading))
+                  .Append(Flags(badges.Connected, badges.Connecting, badges.Broken, badges.Running, badges.ReadOnly, badges.Current, badges.Loading,
+                      badges.ProfileChanged))
                   .Append(Sep).Append(badges.Pending)
                   .Append(Sep).Append(badges.Color);
             }
@@ -166,7 +169,7 @@ namespace MyPlugin
         {
             if (waitingCount > 0)
                 return "검색 중…";
-            return "검색 결과 · 연결된 DB " + Number(connectedCount) + "개 · DB마다 최대 " + Number(OracleMetadata.SearchLimit) + "개";
+            return "검색 결과 · 연결된 DB " + Number(connectedCount) + "개 · 종류마다 최대 " + Number(OracleMetadata.SearchLimit) + "개";
         }
 
         /// <summary>검색 결과가 없을 때 안내. 열을 찾지 않았거나 내장 스키마를 뺐으면 줄을 바꿔 힌트를 붙인다.</summary>

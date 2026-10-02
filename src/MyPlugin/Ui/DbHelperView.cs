@@ -98,9 +98,10 @@ namespace MyPlugin
 
         // ================= IDbHost · ITreeHost =================
 
+        /// <summary>접속 목록. 연결 중인 접속은 연결할 때의 사본(<see cref="FindProfile"/>).</summary>
         public IReadOnlyList<OracleConnectionProfile> Profiles
         {
-            get { return _profiles; }
+            get { return _profiles.Select(SessionOrSaved).ToList(); }
         }
 
         public string ProfilesError
@@ -108,16 +109,20 @@ namespace MyPlugin
             get { return _profilesError; }
         }
 
+        /// <summary>
+        /// 접속 정보. 연결 중이면 연결할 때의 사본이다 — 저장 값을 바꿔도 열린 세션은 원래 DB에 붙어 있으므로 주소·이름·색·확인 창·읽기 전용 검사는
+        /// 다시 연결할 때까지 사본을 따른다(읽기 전용을 켠 것만 바로 적용). 저장된 값은 <see cref="SavedProfile"/>.
+        /// </summary>
         public OracleConnectionProfile FindProfile(string dbId)
         {
-            if (string.IsNullOrEmpty(dbId))
-                return null;
-            foreach (var profile in _profiles)
-            {
-                if (profile.Id == dbId)
-                    return profile;
-            }
-            return null;
+            return SessionOrSaved(SavedProfile(dbId));
+        }
+
+        /// <summary>연결 중인 접속의 저장 값이 연결할 때와 달라졌으면 true(다시 연결하면 적용).</summary>
+        public bool ProfileChanged(string dbId)
+        {
+            var state = StateOf(dbId);
+            return state != null && state.Session != null && ShellLogic.ProfileChanged(SavedProfile(dbId), state.Profile);
         }
 
         /// <summary>연결된 세션. 닫는 중인 세션은 없는 것으로 본다(닫히는 세션에 새 문장을 실행하지 않게).</summary>
@@ -145,6 +150,9 @@ namespace MyPlugin
                     return;
                 RefreshToolbar();
                 _tree.RequestRebuild();
+                // 연결·끊기·끊김을 작업 영역의 대상 목록·상태줄에도 바로 알린다(바뀐 것이 없으면 작업 영역이 아무것도 안 함)
+                if (_workspace != null)
+                    _workspace.OnHostStateChanged();
             }
             catch (Exception ex)
             {
@@ -318,6 +326,12 @@ namespace MyPlugin
             foreach (var count in ShellLogic.FetchCounts)
                 _fetchCount.Items.Add(count);
             _fetchCount.SelectedIndex = 0;
+            // 상태줄의 [다음 n행 가져오기] 글자를 바로 맞춘다(OnHostStateChanged는 예외를 내지 않는다)
+            _fetchCount.SelectionChanged += (s, e) =>
+            {
+                if (_workspace != null && !_closed)
+                    _workspace.OnHostStateChanged();
+            };
             var fetch = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
             fetch.Children.Add(fetchLabel);
             fetch.Children.Add(_fetchCount);
@@ -396,7 +410,7 @@ namespace MyPlugin
             var selectedState = selected == null ? null : StateOf(selected.Id);
             var text = ShellLogic.SelectedDbText(selected);
             _selectedText.Text = text;
-            _selectedLabel.ToolTip = "트리에서 고른 DB: " + text;
+            _selectedLabel.ToolTip = "트리에서 고른 DB: " + text + (selected != null && ProfileChanged(selected.Id) ? " (" + ShellLogic.ProfileChangedNote + ")" : "");
             var session = selectedState == null ? null : selectedState.Session;
             var connecting = selectedState != null && selectedState.Connecting != null;
             var busy = selectedState != null && selectedState.Busy;
@@ -535,7 +549,8 @@ namespace MyPlugin
 
         private async Task<bool> ConnectCoreAsync(string dbId, DbState state)
         {
-            var profile = FindProfile(dbId);
+            // 연결은 언제나 저장된 값으로 한다(끊긴 세션의 사본이 아니라)
+            var profile = SavedProfile(dbId);
             if (profile == null)
                 return false;
 
@@ -556,6 +571,9 @@ namespace MyPlugin
                 DisposeInBackground(broken);
                 _tree.ResetDb(dbId);
                 AddMessage(dbId, ShellLogic.ReconnectMessage(lostPending), MessageKind.Info);
+                // 커서를 닫는 동안 창 닫기가 시작됐을 수 있다(닫기 흐름은 이 연결을 모른다)
+                if (_closed || _closingFlow)
+                    return false;
             }
 
             string password = null;
@@ -572,10 +590,10 @@ namespace MyPlugin
             if (string.IsNullOrEmpty(password))
             {
                 password = PasswordPrompt.Ask(OwnerWindow(), profile, reason ?? ShellLogic.NoStoredPasswordReason);
-                if (string.IsNullOrEmpty(password) || _closed)
+                if (string.IsNullOrEmpty(password) || _closed || _closingFlow)
                     return false;
                 // 묻는 동안 접속 목록이 바뀌었을 수 있다
-                profile = FindProfile(dbId);
+                profile = SavedProfile(dbId);
                 if (profile == null)
                     return false;
             }
@@ -585,6 +603,7 @@ namespace MyPlugin
             {
                 var connectionString = OracleConnectionStore.BuildConnectionString(profile, password, ShellLogic.ConnectTimeoutSeconds);
                 password = null;
+                var used = ShellLogic.SessionCopy(profile);
                 state.Opening = true;
                 StateChanged(dbId);
                 session = DbSession.CreateOracle(connectionString);
@@ -594,14 +613,19 @@ namespace MyPlugin
                 var mySchema = schemas.FirstOrDefault();
                 if (string.IsNullOrWhiteSpace(mySchema))
                     mySchema = (profile.UserId ?? "").Trim().ToUpperInvariant();
-                if (_closed)
+                // 닫기 흐름이 시작된 뒤 붙은 세션은 그 흐름의 계획에 없다 — 남기지 않고 닫는다(finally)
+                if (_closed || _closingFlow)
                     return false;
-                if (FindProfile(dbId) == null)
+                var saved = SavedProfile(dbId);
+                if (saved == null)
                 {
                     AddMessage(null, ShellLogic.ProfileRemovedWhileConnecting, MessageKind.Info);
                     return false;
                 }
+                // 연결하는 동안 읽기 전용을 켰으면 바로 적용한다
+                ShellLogic.ApplySavedToSession(used, saved);
                 state.Session = session;
+                state.Profile = used;
                 state.MySchema = mySchema;
                 state.HasOracleMaintained = null;
                 state.Closing = false;
@@ -616,7 +640,7 @@ namespace MyPlugin
             catch (Exception ex)
             {
                 if (!_closed)
-                    AddMessage(dbId, ShellLogic.ConnectFailedPrefix + DbSession.DescribeError(ex), MessageKind.Error);
+                    AddMessage(dbId, ShellLogic.ConnectFailedPrefix + ConnectionManagerLogic.DescribeConnectError(ex), MessageKind.Error);
                 return false;
             }
             finally
@@ -720,6 +744,9 @@ namespace MyPlugin
             {
                 FinishBusy(dbId, state);
             }
+            // 트랜잭션이 끝나(실패했어도 서버가 끝냈으면) 닫힌 FOR UPDATE 커서를 보이던 탭을 맞춘다
+            if (!_closed)
+                _workspace.OnTransactionEnded(dbId);
         }
 
         /// <summary>끊기·커밋·롤백이 끝남. 그 사이 창이 닫혔으면 남은 세션을 정리한다.</summary>
@@ -745,6 +772,7 @@ namespace MyPlugin
             if (state == null || session == null || !ReferenceEquals(state.Session, session))
                 return;
             state.Session = null;
+            state.Profile = null;
             state.MySchema = null;
             state.HasOracleMaintained = null;
             state.Closing = false;
@@ -807,7 +835,12 @@ namespace MyPlugin
             }
             _profiles = ShellLogic.MergeProfiles(loaded, _profiles, HasLiveSession, _orphans);
             _profilesError = null;
-            foreach (var id in _dbs.Keys.Where(k => FindProfile(k) == null).ToList())
+            foreach (var pair in _dbs)
+            {
+                if (pair.Value.Session != null)
+                    ShellLogic.ApplySavedToSession(pair.Value.Profile, SavedProfile(pair.Key));
+            }
+            foreach (var id in _dbs.Keys.Where(k => SavedProfile(k) == null).ToList())
             {
                 var state = _dbs[id];
                 if (state.Session == null && state.Connecting == null && !state.Busy)
@@ -1042,8 +1075,8 @@ namespace MyPlugin
             if (_closed)
                 return;
             IsEnabled = true;
-            RefreshToolbar();
-            _tree.RequestRebuild();
+            // 닫기 흐름이 이미 닫은 세션이 있을 수 있다 — 툴바·트리·작업 영역을 모두 맞춘다
+            StateChanged(null);
             try
             {
                 _workspace.FocusEditor();
@@ -1153,6 +1186,27 @@ namespace MyPlugin
         {
             DbState state;
             return dbId != null && _dbs.TryGetValue(dbId, out state) ? state : null;
+        }
+
+        /// <summary>저장된 접속 정보(목록에서 빠졌지만 연결이 살아 있는 접속은 이전 값). 없으면 null.</summary>
+        private OracleConnectionProfile SavedProfile(string dbId)
+        {
+            if (string.IsNullOrEmpty(dbId))
+                return null;
+            foreach (var profile in _profiles)
+            {
+                if (profile.Id == dbId)
+                    return profile;
+            }
+            return null;
+        }
+
+        private OracleConnectionProfile SessionOrSaved(OracleConnectionProfile saved)
+        {
+            if (saved == null)
+                return null;
+            var state = StateOf(saved.Id);
+            return state != null && state.Session != null && state.Profile != null ? state.Profile : saved;
         }
 
         /// <summary>닫는 중이어도 이 창이 세션을 쥐고 있으면 true(접속 목록에서 빼지 않는다).</summary>
@@ -1286,6 +1340,8 @@ namespace MyPlugin
         private sealed class DbState
         {
             public DbSession Session;
+            /// <summary>연결할 때 쓴 접속 정보의 사본(세션이 있는 동안 표시·확인에 쓴다).</summary>
+            public OracleConnectionProfile Profile;
             /// <summary>접속 사용자의 스키마(대문자).</summary>
             public string MySchema;
             /// <summary>ALL_USERS.ORACLE_MAINTAINED가 있는지(null = 모름). 세션마다 새로 알아낸다.</summary>

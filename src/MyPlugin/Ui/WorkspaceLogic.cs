@@ -554,11 +554,14 @@ namespace MyPlugin
             return hasMore ? "다음 " + Count(fetchCount) + "행 가져오기" : "더 가져올 행 없음";
         }
 
-        /// <summary>조회가 아닌 문장의 결과 상태: 요약(굵게) · 초 · 종류별 안내.</summary>
+        /// <summary>조회가 아닌 문장의 결과 상태: 요약(굵게) · 초 · 종류별 안내. 경고(컴파일 오류 등)가 있으면 안내 대신 오류 상태.</summary>
         public static StatusInfo ExecutedStatus(SqlStatement statement, ExecuteResult result, TimeSpan elapsed)
         {
             var status = new StatusInfo().Part(result != null && !string.IsNullOrEmpty(result.Summary) ? result.Summary : "실행함", true)
                 .Part(Seconds(elapsed) + "초");
+            // 실행은 됐어도 결과가 쓸 수 없는 상태(INVALID 객체 등)면 성공처럼 보이지 않게
+            if (result != null && !string.IsNullOrEmpty(result.Warning))
+                return status.Part("오류 — 메시지 탭을 보세요.");
             var note = ExecutedNote(statement, result);
             if (note != null)
                 status.Part(note);
@@ -571,6 +574,7 @@ namespace MyPlugin
                 return null;
             if (statement.TransactionAction == SqlTransactionAction.Commit || statement.TransactionAction == SqlTransactionAction.Rollback)
                 return "같은 DB의 모든 탭에 적용됩니다.";
+            // PL/SQL은 블록이 커밋·롤백했거나 아무것도 바꾸지 않았으면 TransactionEnded(남은 트랜잭션 없음)
             var ended = result != null && result.TransactionEnded;
             if (!ended && (statement.Kind == SqlKind.Dml || statement.Kind == SqlKind.PlSql))
                 return "커밋 전에는 다른 세션에 보이지 않습니다. 같은 DB의 다른 탭에는 보입니다(세션 공유).";

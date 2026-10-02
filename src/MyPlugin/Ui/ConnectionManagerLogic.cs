@@ -301,6 +301,21 @@ namespace MyPlugin
         }
 
         /// <summary>
+        /// 연결할 때(접속 테스트·연결)의 오류 문장. 연결 끊김 번호(ORA-12537 등)는 DescribeError가 "다시 연결하세요"로 바꾸는데,
+        /// 아직 연결되지 않았으므로 리스너·TNS가 알려 준 원래 첫 줄이 정확하다.
+        /// </summary>
+        public static string DescribeConnectError(Exception ex)
+        {
+            if (DbSession.IsBrokenError(ex) && !DbSession.IsCancellation(ex))
+            {
+                var line = FirstLine(ex.Message);
+                if (line.Length > 0)
+                    return line;
+            }
+            return DbSession.DescribeError(ex);
+        }
+
+        /// <summary>
         /// 오류 메시지의 첫 의미 있는 줄. 빈 줄과 도움말 주소(http…) 줄은 건너뛰고,
         /// "ORA-06550: line 1, column 7:"처럼 ':'로 끝나면 다음 줄(실제 원인)을 이어 붙인다(최대 두 줄).
         /// </summary>

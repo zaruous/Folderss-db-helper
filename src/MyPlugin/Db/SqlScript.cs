@@ -10,13 +10,13 @@ namespace MyPlugin
         Query,
         /// <summary>INSERT, UPDATE, DELETE, MERGE</summary>
         Dml,
-        /// <summary>CREATE, ALTER(ALTER SESSION 제외), DROP, TRUNCATE, RENAME, GRANT, REVOKE, COMMENT, PURGE, ANALYZE, AUDIT, NOAUDIT, FLASHBACK. Oracle은 DDL 전후로 자동 커밋한다.</summary>
+        /// <summary>CREATE, ALTER(ALTER SESSION·SYSTEM 제외), DROP, TRUNCATE, RENAME, GRANT, REVOKE, COMMENT, PURGE, ANALYZE, AUDIT, NOAUDIT, FLASHBACK. Oracle은 DDL 전후로 자동 커밋한다.</summary>
         Ddl,
         /// <summary>BEGIN, DECLARE, CALL, EXEC/EXECUTE(BEGIN … END;로 바꿔 실행)</summary>
         PlSql,
-        /// <summary>COMMIT, ROLLBACK, SAVEPOINT, SET TRANSACTION</summary>
+        /// <summary>COMMIT, ROLLBACK, SAVEPOINT, SET TRANSACTION, SET CONSTRAINT(S)</summary>
         Transaction,
-        /// <summary>그 밖(ALTER SESSION, LOCK TABLE, EXPLAIN PLAN 등)</summary>
+        /// <summary>그 밖(ALTER SESSION, ALTER SYSTEM(자동 커밋 안 함), LOCK TABLE, EXPLAIN PLAN 등)</summary>
         Other
     }
 
@@ -27,7 +27,7 @@ namespace MyPlugin
         Commit,
         /// <summary>ROLLBACK [WORK] (TO SAVEPOINT·FORCE 아님)</summary>
         Rollback,
-        /// <summary>SAVEPOINT, ROLLBACK TO SAVEPOINT, SET TRANSACTION, COMMIT·ROLLBACK FORCE — SQL로 그대로 실행</summary>
+        /// <summary>SAVEPOINT, ROLLBACK TO SAVEPOINT, SET TRANSACTION, SET CONSTRAINT(S), COMMIT·ROLLBACK FORCE — 트랜잭션 안에서 SQL로 그대로 실행</summary>
         Other
     }
 
@@ -58,13 +58,26 @@ namespace MyPlugin
         /// <summary>문자열·주석 밖, 괄호 깊이 0에서 FOR UPDATE가 있는 SELECT. 잠금을 잡으므로 트랜잭션 안에서 실행해야 한다.</summary>
         public bool ForUpdate { get; set; }
 
-        /// <summary>'/' 줄(또는 스크립트 끝)로 끝나는 PL/SQL 블록(DECLARE·BEGIN, CREATE [OR REPLACE] [EDITIONABLE|NONEDITIONABLE]
+        /// <summary>'/' 줄(또는 스크립트 끝, 끝을 짐작한 빈 줄 — <see cref="SqlScript"/> 참고)로 끝나는 PL/SQL 블록(DECLARE·BEGIN, CREATE [OR REPLACE] [EDITIONABLE|NONEDITIONABLE]
         /// PROCEDURE·FUNCTION·PACKAGE [BODY]·TRIGGER·TYPE [BODY]·LIBRARY·JAVA).</summary>
         public bool IsPlSqlBlock { get; set; }
 
         /// <summary>실행 전에 확인을 받아야 하는 이유(사람이 읽을 한국어 문장). 없으면 null.
-        /// WHERE 없는 UPDATE·DELETE(괄호 깊이 0 기준), DROP·TRUNCATE.</summary>
+        /// WHERE 없는 UPDATE·DELETE(괄호 깊이 0 기준), DROP·TRUNCATE·ALTER(ALTER SESSION·SYSTEM 제외)·PURGE·FLASHBACK(TO BEFORE DROP 제외),
+        /// '/' 줄이 없어 빈 줄에서 끝을 짐작한 CREATE 블록.</summary>
         public string Danger { get; set; }
+    }
+
+    /// <summary>컴파일하는 PL/SQL 객체·뷰(ALL_ERRORS에서 컴파일 오류를 찾을 때).</summary>
+    public sealed class CompileTarget
+    {
+        /// <summary>스키마. 문장에 없으면 null(현재 스키마).</summary>
+        public string Owner { get; set; }
+
+        public string Name { get; set; }
+
+        /// <summary>ALL_ERRORS.TYPE 값. 예: PROCEDURE, PACKAGE BODY, VIEW. ALTER PACKAGE … COMPILE은 PACKAGE와 PACKAGE BODY.</summary>
+        public List<string> Types { get; } = new List<string>();
     }
 
     /// <summary>
@@ -73,7 +86,9 @@ namespace MyPlugin
     /// - 문자열('…', '' 이스케이프), Oracle 대체 따옴표(q'[…]', q'{…}', q'(…)', q'&lt;…&gt;', 그 밖 같은 문자 짝), 따옴표 식별자("…"),
     ///   줄 주석(--), 블록 주석(/* */) 안의 구분자는 무시한다. 닫히지 않은 문자열·주석은 끝까지 이어진 것으로 본다(예외 없음).
     /// - PL/SQL 블록이 아닌 문장은 ';', 공백만 있는 빈 줄, 또는 '/'만 있는 줄에서 끝난다.
-    /// - PL/SQL 블록은 '/'만 있는 줄 또는 스크립트 끝에서만 끝난다(안의 ';'·빈 줄로는 안 끝남).
+    /// - PL/SQL 블록은 '/'만 있는 줄에서 끝난다(안의 ';'·빈 줄로는 안 끝남). '/' 줄 없이 스크립트 끝까지 가면 SQL Developer처럼
+    ///   들여쓰지 않은 줄이 END [이름];으로 끝나고 바로 빈 줄이 오며 그 뒤에 문장이 더 있을 때 그 빈 줄에서 끝낸다
+    ///   (패키지 본문 안의 "  END p;" 뒤 빈 줄처럼 들여쓴 END에서는 끝내지 않는다). 그런 곳이 없으면 스크립트 끝까지.
     /// - 주석·공백만 있는 조각은 문장으로 내지 않는다.
     /// </summary>
     public static class SqlScript
@@ -81,6 +96,8 @@ namespace MyPlugin
         private const string UpdateWithoutWhere = "WHERE 절이 없습니다. 테이블의 모든 행이 바뀝니다.";
         private const string DeleteWithoutWhere = "WHERE 절이 없습니다. 테이블의 모든 행이 삭제됩니다.";
         private const string Irreversible = "되돌릴 수 없는 문장입니다. DDL은 바로 커밋되어 롤백할 수 없습니다.";
+        private const string GuessedBlockEnd = "블록 끝을 알리는 '/' 줄이 없어 빈 줄에서 블록이 끝난 것으로 봤습니다. "
+            + "블록이 잘리거나 아래 문장이 섞이지 않았는지 확인하세요(블록 끝에 '/'만 있는 줄을 두면 묻지 않습니다).";
 
         /// <summary>스크립트 전체를 문장 목록으로. 순서는 원문 순서.</summary>
         public static List<SqlStatement> Split(string script)
@@ -96,6 +113,17 @@ namespace MyPlugin
                 var end = i;
                 while (end < tokens.Count && !EndsStatement(script, tokens[end], block))
                     end++;
+                var guessedEnd = false;
+                if (block && end >= tokens.Count)
+                {
+                    // '/' 줄 없이 스크립트 끝까지 가는 블록이 아래 문장을 삼키지 않게 한다
+                    var blank = UnterminatedBlockEnd(script, tokens, i);
+                    if (blank >= 0)
+                    {
+                        end = blank;
+                        guessedEnd = true;
+                    }
+                }
                 // ';'와 '/' 줄은 문장 범위에 넣는다. 빈 줄·스크립트 끝에서 끝나면 마지막 토큰까지.
                 var terminatorEnd = -1;
                 var semicolon = false;
@@ -104,7 +132,11 @@ namespace MyPlugin
                     terminatorEnd = tokens[end].End;
                     semicolon = tokens[end].Type == TokenType.Symbol;
                 }
-                result.Add(Build(script, tokens, i, end, terminatorEnd, block, semicolon));
+                var statement = Build(script, tokens, i, end, terminatorEnd, block, semicolon);
+                // CREATE 블록을 잘못 자르거나 합치면 멀쩡한 객체가 INVALID로 바뀐다 — 짐작한 끝은 실행 전에 확인받는다
+                if (guessedEnd && statement.Kind == SqlKind.Ddl && statement.Danger == null)
+                    statement.Danger = GuessedBlockEnd;
+                result.Add(statement);
                 i = SkipSeparators(script, tokens, end + 1);
             }
             return result;
@@ -166,6 +198,79 @@ namespace MyPlugin
             statement.Length += statement.Start;
             statement.Start = 0;
             return statement;
+        }
+
+        /// <summary>
+        /// 컴파일 오류가 남는 객체: CREATE [OR REPLACE] [EDITIONABLE·NONEDITIONABLE·EDITIONING·[NO] FORCE]
+        /// {PROCEDURE|FUNCTION|TRIGGER|VIEW|PACKAGE [BODY]|TYPE [BODY]} [스키마.]이름,
+        /// ALTER {PROCEDURE|FUNCTION|TRIGGER|VIEW|PACKAGE|TYPE} [스키마.]이름 … COMPILE [BODY|SPECIFICATION]. 아니면 null.
+        /// 따옴표 없는 이름은 대문자로, 따옴표 이름은 그대로.
+        /// </summary>
+        public static CompileTarget CompileTargetOf(string sql)
+        {
+            if (string.IsNullOrEmpty(sql))
+                return null;
+            var sig = Tokenize(sql).FindAll(t => !t.IsComment && !t.IsMarker);
+            var verb = WordText(sql, sig, 0);
+            var k = 1;
+            if (verb == "CREATE")
+            {
+                if (WordText(sql, sig, k) == "OR" && WordText(sql, sig, k + 1) == "REPLACE")
+                    k += 2;
+                while (true)
+                {
+                    var w = WordText(sql, sig, k);
+                    if (w == "EDITIONABLE" || w == "NONEDITIONABLE" || w == "EDITIONING" || w == "FORCE" || w == "NOFORCE")
+                        k++;
+                    else if (w == "NO" && WordText(sql, sig, k + 1) == "FORCE")
+                        k += 2;
+                    else
+                        break;
+                }
+            }
+            else if (verb != "ALTER")
+            {
+                return null;
+            }
+            var kind = WordText(sql, sig, k++);
+            if (kind != "PROCEDURE" && kind != "FUNCTION" && kind != "TRIGGER" && kind != "VIEW" && kind != "PACKAGE" && kind != "TYPE")
+                return null;
+            var body = false;
+            if (verb == "CREATE" && (kind == "PACKAGE" || kind == "TYPE") && WordText(sql, sig, k) == "BODY")
+            {
+                body = true;
+                k++;
+            }
+            var target = new CompileTarget { Name = NameText(sql, sig, k) };
+            if (target.Name == null)
+                return null;
+            if (k + 2 < sig.Count && IsSymbol(sql, sig[k + 1], '.'))
+            {
+                target.Owner = target.Name;
+                target.Name = NameText(sql, sig, k + 2);
+                if (target.Name == null)
+                    return null;
+            }
+            if (verb == "CREATE")
+            {
+                target.Types.Add(body ? kind + " BODY" : kind);
+                return target;
+            }
+            // ALTER는 COMPILE일 때만 컴파일 오류가 생긴다. 패키지·형식은 무엇을 컴파일했는지에 따라 명세·본문
+            var compile = sig.FindIndex(k, t => IsWord(sql, t, "COMPILE"));
+            if (compile < 0)
+                return null;
+            var part = WordText(sql, sig, compile + 1);
+            if (kind != "PACKAGE" && kind != "TYPE")
+            {
+                target.Types.Add(kind);
+                return target;
+            }
+            if (part != "BODY")
+                target.Types.Add(kind);
+            if (part != "SPECIFICATION")
+                target.Types.Add(kind + " BODY");
+            return target;
         }
 
         /// <summary>LIKE 패턴용 이스케이프: '\' → '\\', '%' → '\%', '_' → '\_'. SQL에는 ESCAPE '\'를 함께 쓴다.</summary>
@@ -231,7 +336,7 @@ namespace MyPlugin
             statement.Kind = KindOf(verb, next);
             statement.TransactionAction = TransactionActionOf(verb, next, s, sig, v);
             statement.ForUpdate = statement.Kind == SqlKind.Query && HasTopLevel(s, sig, "FOR", "UPDATE");
-            statement.Danger = DangerOf(verb, s, sig);
+            statement.Danger = DangerOf(verb, next, s, sig);
             if (v == 0 && (verb == "EXEC" || verb == "EXECUTE"))
                 statement.Text = ExecAsBlock(s, sig, statement.Text);
         }
@@ -249,7 +354,8 @@ namespace MyPlugin
                 case "MERGE":
                     return SqlKind.Dml;
                 case "ALTER":
-                    return next == "SESSION" ? SqlKind.Other : SqlKind.Ddl;
+                    // ALTER SYSTEM은 DDL과 달리 트랜잭션을 커밋하지 않는다
+                    return next == "SESSION" || next == "SYSTEM" ? SqlKind.Other : SqlKind.Ddl;
                 case "CREATE":
                 case "DROP":
                 case "TRUNCATE":
@@ -274,10 +380,16 @@ namespace MyPlugin
                 case "SAVEPOINT":
                     return SqlKind.Transaction;
                 case "SET":
-                    return next == "TRANSACTION" ? SqlKind.Transaction : SqlKind.Other;
+                    return IsTransactionSet(next) ? SqlKind.Transaction : SqlKind.Other;
                 default:
                     return SqlKind.Other;
             }
+        }
+
+        // SET TRANSACTION, SET CONSTRAINT(S): 지금 트랜잭션에만 뜻이 있다(트랜잭션 밖에서 자동 커밋되면 바로 사라진다)
+        private static bool IsTransactionSet(string next)
+        {
+            return next == "TRANSACTION" || next == "CONSTRAINT" || next == "CONSTRAINTS";
         }
 
         private static SqlTransactionAction TransactionActionOf(string verb, string next, string s, List<Token> sig, int v)
@@ -295,12 +407,12 @@ namespace MyPlugin
                     return SqlTransactionAction.Commit;
                 return SqlTransactionAction.Other;
             }
-            if (verb == "SAVEPOINT" || (verb == "SET" && next == "TRANSACTION"))
+            if (verb == "SAVEPOINT" || (verb == "SET" && IsTransactionSet(next)))
                 return SqlTransactionAction.Other;
             return SqlTransactionAction.None;
         }
 
-        private static string DangerOf(string verb, string s, List<Token> sig)
+        private static string DangerOf(string verb, string next, string s, List<Token> sig)
         {
             switch (verb)
             {
@@ -310,7 +422,14 @@ namespace MyPlugin
                     return HasTopLevel(s, sig, "WHERE", null) ? null : DeleteWithoutWhere;
                 case "DROP":
                 case "TRUNCATE":
+                case "PURGE":
                     return Irreversible;
+                case "ALTER":
+                    // ALTER TABLE … DROP COLUMN·TRUNCATE PARTITION 등. 세션·시스템 설정은 데이터를 지우지 않는다
+                    return next == "SESSION" || next == "SYSTEM" ? null : Irreversible;
+                case "FLASHBACK":
+                    // TO BEFORE DROP은 지운 테이블을 되살린다. TO SCN·TIMESTAMP는 그 뒤의 변경을 버린다
+                    return HasTopLevel(s, sig, "BEFORE", "DROP") ? null : Irreversible;
                 default:
                     return null;
             }
@@ -334,6 +453,7 @@ namespace MyPlugin
         }
 
         // EXEC x → BEGIN x; END;  x 끝의 ';'와 뒤 주석은 뺀다(끝 줄 주석이 "; END;"까지 주석으로 만들지 않게).
+        // 줄 끝의 '-'는 SQL*Plus의 줄 이음표다 — 그대로 두면 다음 줄 값의 빼기 부호가 된다(p(1, -⏎2) → p(1, -2)).
         private static string ExecAsBlock(string s, List<Token> sig, string text)
         {
             var last = sig.Count - 1;
@@ -341,7 +461,19 @@ namespace MyPlugin
                 last--;
             if (last < 1)
                 return text;  // EXEC만 있으면 그대로 보내 DB 오류로 알린다
-            return "BEGIN " + s.Substring(sig[1].Start, sig[last].End - sig[1].Start) + "; END;";
+            var body = new StringBuilder();
+            var pos = sig[1].Start;
+            for (var i = 1; i < last; i++)
+            {
+                var t = sig[i];
+                if (!IsSymbol(s, t, '-') || !IsBlankUntilLineEnd(s, t.End))
+                    continue;
+                var lineEnd = LineEnd(s, t.End);
+                body.Append(s, pos, t.Start - pos).Append(' ');
+                pos = lineEnd + (s[lineEnd] == '\r' && lineEnd + 1 < s.Length && s[lineEnd + 1] == '\n' ? 2 : 1);
+            }
+            body.Append(s, pos, sig[last].End - pos);
+            return "BEGIN " + body + "; END;";
         }
 
         // ---- 문장 경계 ----
@@ -397,6 +529,52 @@ namespace MyPlugin
             return !block && (t.Type == TokenType.BlankLine || IsSymbol(s, t, ';'));
         }
 
+        /// <summary>
+        /// '/' 줄 없이 스크립트 끝까지 가는 블록(tokens[first]부터)의 끝으로 볼 빈 줄: 들여쓰지 않은 줄이 END [이름];로 끝나고(뒤 주석은 무시)
+        /// 바로 다음이 빈 줄이며 그 뒤에 문장이 더 있는 첫 곳. 없으면 -1. 들여쓴 END(패키지 본문 안의 서브프로그램 등)에서는 끝내지 않는다.
+        /// </summary>
+        private static int UnterminatedBlockEnd(string s, List<Token> tokens, int first)
+        {
+            for (var k = first + 1; k < tokens.Count; k++)
+            {
+                if (tokens[k].Type == TokenType.BlankLine && EndsWithBlockEnd(s, tokens, first, k) && HasStatementAfter(s, tokens, k + 1))
+                    return k;
+            }
+            return -1;
+        }
+
+        // tokens[blank] 바로 앞 줄이 들여쓰지 않은 줄이고 END [이름] ; 로 끝나는지(END IF·LOOP·CASE는 블록 끝이 아니다)
+        private static bool EndsWithBlockEnd(string s, List<Token> tokens, int first, int blank)
+        {
+            var m = blank - 1;
+            while (m > first && tokens[m].IsComment)
+                m--;
+            if (m <= first || !IsSymbol(s, tokens[m], ';'))
+                return false;
+            var e = m - 1;
+            var name = tokens[e];
+            if (e > first && (name.Type == TokenType.QuotedIdentifier
+                || (name.Type == TokenType.Word && !IsWord(s, name, "END") && !IsWord(s, name, "IF") && !IsWord(s, name, "LOOP") && !IsWord(s, name, "CASE"))))
+                e--;
+            if (e <= first || !IsWord(s, tokens[e], "END"))
+                return false;
+            var lineStart = tokens[e].Start;
+            while (lineStart > 0 && s[lineStart - 1] != '\n' && s[lineStart - 1] != '\r')
+                lineStart--;
+            return !char.IsWhiteSpace(s[lineStart]);
+        }
+
+        private static bool HasStatementAfter(string s, List<Token> tokens, int from)
+        {
+            for (var i = from; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (!t.IsComment && !t.IsMarker && !IsSymbol(s, t, ';'))
+                    return true;
+            }
+            return false;
+        }
+
         // 문장 앞의 주석·빈 줄과 빈 조각의 구분자(';', '/' 줄)를 건너뛴다
         private static int SkipSeparators(string s, List<Token> tokens, int i)
         {
@@ -422,6 +600,19 @@ namespace MyPlugin
         private static string WordText(string s, List<Token> sig, int index)
         {
             return index < sig.Count && sig[index].Type == TokenType.Word ? Upper(s, sig[index]) : null;
+        }
+
+        // 식별자 하나: 따옴표 없으면 대문자, 따옴표 식별자는 안의 글자 그대로. 식별자가 아니면 null.
+        private static string NameText(string s, List<Token> sig, int index)
+        {
+            if (index >= sig.Count)
+                return null;
+            var t = sig[index];
+            if (t.Type == TokenType.Word)
+                return Upper(s, t);
+            if (t.Type != TokenType.QuotedIdentifier || t.End - t.Start < 3 || s[t.End - 1] != '"')
+                return null;
+            return s.Substring(t.Start + 1, t.End - t.Start - 2);
         }
 
         private static bool IsSymbol(string s, Token t, char c)

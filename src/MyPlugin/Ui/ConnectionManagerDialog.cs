@@ -468,7 +468,7 @@ namespace MyPlugin
                 row = NewRow(grid);
                 Place(grid, Note("탭·트리·확인 창의 DB 배지에 이 색을 씁니다. 운영 DB는 빨강을 권장합니다."), row, 1, 3, NoteGap);
 
-                _liveNote = Note("지금 연결 중인 접속입니다. 바꾼 내용은 다시 연결할 때 적용됩니다.");
+                _liveNote = Note("지금 연결 중인 접속입니다. 바꾼 내용은 다시 연결할 때 적용됩니다(읽기 전용을 켜는 것은 바로 적용).");
                 _liveNote.Foreground = Theme.Warning;
                 row = NewRow(grid);
                 Place(grid, _liveNote, row, 1, 3, Gap);
@@ -1020,20 +1020,8 @@ namespace MyPlugin
                 }
                 catch (Exception ex)
                 {
-                    return Tuple.Create(false, "접속 실패: " + DescribeTestError(ex));
+                    return Tuple.Create(false, "접속 실패: " + ConnectionManagerLogic.DescribeConnectError(ex));
                 }
-            }
-
-            private static string DescribeTestError(Exception ex)
-            {
-                // 연결 끊김 번호(ORA-12537 등)는 DescribeError가 "다시 연결하세요"로 바꾸는데, 테스트에서는 원래 문장이 정확하다.
-                if (DbSession.IsBrokenError(ex))
-                {
-                    var line = ConnectionManagerLogic.FirstLine(ex.Message);
-                    if (line.Length > 0)
-                        return line;
-                }
-                return DbSession.DescribeError(ex);
             }
 
             // ---- 저장·닫기 ----

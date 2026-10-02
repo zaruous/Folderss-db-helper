@@ -226,7 +226,7 @@ namespace MyPlugin.Tests
 
             var rows = TreeRowsBuilder.BuildSearch(new[] { db }, results, "T", new TreeState(), false);
 
-            Assert.Equal("결과가 많아 일부만 표시합니다 (DB마다 최대 500개)", rows.Last().Text);
+            Assert.Equal("결과가 많아 일부만 표시합니다 (스키마·객체·열마다 최대 500개) — 더 좁혀 검색하세요", rows.Last().Text);
             Assert.Equal(OracleMetadata.SearchLimit, rows.Count(r => r.IsHit && r.Kind == TreeRowKind.Object));
         }
 

@@ -52,6 +52,7 @@ namespace MyPlugin.Tests
             Assert.NotEqual(baseline, TreePanelLogic.Signature(counted, new RowBadges()));
             Assert.NotEqual(baseline, TreePanelLogic.Signature(Row("k"), new RowBadges { Pending = "커밋 대기 3행" }));
             Assert.NotEqual(baseline, TreePanelLogic.Signature(Row("k"), new RowBadges { Running = true }));
+            Assert.NotEqual(baseline, TreePanelLogic.Signature(Row("k"), new RowBadges { ProfileChanged = true }));
             Assert.NotEqual(baseline, TreePanelLogic.Signature(Row("k"), new RowBadges { Current = true }));
             Assert.NotEqual(baseline, TreePanelLogic.Signature(Row("k"), new RowBadges { Color = "red" }));
             Assert.NotEqual(baseline, TreePanelLogic.Signature(Row("k", "DEPT"), new RowBadges()));
@@ -252,7 +253,7 @@ namespace MyPlugin.Tests
         public void SearchFooter_WaitingOrResult()
         {
             Assert.Equal("검색 중…", TreePanelLogic.SearchFooter(2, 1));
-            Assert.Equal("검색 결과 · 연결된 DB 2개 · DB마다 최대 500개", TreePanelLogic.SearchFooter(2, 0));
+            Assert.Equal("검색 결과 · 연결된 DB 2개 · 종류마다 최대 500개", TreePanelLogic.SearchFooter(2, 0));
         }
 
         [Fact]

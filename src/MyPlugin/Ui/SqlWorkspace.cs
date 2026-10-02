@@ -54,7 +54,8 @@ namespace MyPlugin
         private const double EditorFontSize = 13;
         // 편집기와 줄 번호 칸의 줄 높이를 고정해 맞춘다(한글처럼 대체 글꼴로 그리는 줄도 같은 높이가 된다)
         private const double EditorLineHeight = 19;
-        private const string FirstTabText = "-- 커서가 있는 문장(빈 줄이나 ;로 구분)이나 선택한 부분을 Ctrl+Enter로 실행합니다.\n";
+        private const string FirstTabText = "-- 커서가 있는 문장(빈 줄이나 ;로 구분)이나 선택한 부분을 Ctrl+Enter로 실행합니다.\n"
+            + "-- PL/SQL 블록(BEGIN·DECLARE·CREATE PROCEDURE 등)은 끝에 / 만 있는 줄을 두세요(블록 안의 빈 줄·;로는 끝나지 않음).\n";
 
         private static readonly Thickness EditorPadding = new Thickness(6, 4, 6, 4);
 
@@ -71,6 +72,7 @@ namespace MyPlugin
         private bool _fillingTarget;
         private int _gutterLines = -1;
         private string _stateSignature;
+        private bool _stateTimerFailed;
 
         private Grid _strip;
         private StackPanel _tabPanel;
@@ -134,7 +136,7 @@ namespace MyPlugin
 
             _elapsedTimer = new DispatcherTimer(DispatcherPriority.Normal, Dispatcher) { Interval = TimeSpan.FromMilliseconds(100) };
             _elapsedTimer.Tick += ElapsedTimer_Tick;
-            // 셸은 연결·끊기·가져올 행 변경을 알려 주지 않으므로 대상 목록의 "(연결 안 됨)"과 버튼 글자를 1초마다 맞춘다
+            // 셸이 연결·끊기·가져올 행 변경을 OnHostStateChanged로 알린다. 알림이 빠진 경로(커서 정리 중 끊김 등)를 위해 1초마다도 맞춘다
             _stateTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromSeconds(1) };
             _stateTimer.Tick += StateTimer_Tick;
             Loaded += Workspace_Loaded;
@@ -248,6 +250,35 @@ namespace MyPlugin
                         // 바쁘거나 끊긴 세션 — 연결을 닫을 때 커서도 함께 닫힌다
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>툴바 [커밋]·[롤백] 뒤: 트랜잭션이 끝나 닫힌 FOR UPDATE 커서를 보이던 탭의 상태줄을 "커서 닫힘"으로.</summary>
+        public void OnTransactionEnded(string dbId)
+        {
+            try
+            {
+                RefreshCursorStates(dbId);
+                RenderStatus();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>
+        /// 연결·끊기·끊김·가져올 행이 바뀌었을 수 있음(셸이 알린다. 1초 타이머는 알림을 놓친 경우를 위한 것). 바뀐 것이 없으면 아무것도 안 함.
+        /// </summary>
+        public void OnHostStateChanged()
+        {
+            try
+            {
+                RefreshHostState();
             }
             catch (Exception ex)
             {
@@ -1200,7 +1231,15 @@ namespace MyPlugin
         private void ApplyResult(SqlTabState tab, DbSession session, string dbId, SqlStatement statement, ExecuteResult result, TimeSpan elapsed)
         {
             var background = tab != _active;
-            AddMessage(dbId, WorkspaceLogic.ExecutedMessage(result.Summary, elapsed, statement.Text), MessageKind.Success);
+            // 실행은 됐어도 경고(컴파일 오류 ORA-24344 등)는 오류로 보인다 — 예외가 없어 성공처럼 보이기 쉽다
+            var warned = !string.IsNullOrEmpty(result.Warning);
+            AddMessage(dbId, WorkspaceLogic.ExecutedMessage(result.Summary, elapsed, statement.Text), warned ? MessageKind.Error : MessageKind.Success);
+            if (warned)
+            {
+                AddMessage(dbId, result.Warning, MessageKind.Error);
+                foreach (var detail in result.WarningDetails)
+                    AddMessage(dbId, detail, MessageKind.Error);
+            }
             if (result.Kind == SqlKind.Query && result.Cursor != null)
             {
                 tab.SetResult(session, dbId, result);
@@ -1697,29 +1736,38 @@ namespace MyPlugin
         {
             try
             {
-                var signature = StateSignature();
-                if (signature == _stateSignature)
-                    return;
-                _stateSignature = signature;
-                // 트리·툴바에서 연결했으면 [연결] 안내는 더 맞지 않는다
-                foreach (var tab in _tabs)
-                {
-                    var status = tab.Status;
-                    if (tab.Running || status == null || tab.DbId == null)
-                        continue;
-                    var session = _host.GetSession(tab.DbId);
-                    var usable = session != null && !session.IsBroken;
-                    if (usable && (status.Action == WorkspaceLogic.StatusAction.Connect || status.Action == WorkspaceLogic.StatusAction.Reconnect))
-                        SetStatus(tab, WorkspaceLogic.ConnectedStatus(status.Action == WorkspaceLogic.StatusAction.Reconnect));
-                }
-                RenderTarget();
-                RenderStatus();
+                RefreshHostState();
             }
             catch (Exception ex)
             {
-                _stateTimer.Stop();
-                ReportUnexpected(ex);
+                // 타이머를 멈추면 대상 목록의 "(연결 안 됨)"이 다시는 맞춰지지 않는다 — 계속 돌리되 같은 오류를 매초 쌓지 않는다
+                if (!_stateTimerFailed)
+                    ReportUnexpected(ex);
+                _stateTimerFailed = true;
             }
+        }
+
+        private void RefreshHostState()
+        {
+            var signature = StateSignature();
+            if (signature == _stateSignature)
+                return;
+            _stateSignature = signature;
+            // 트리·툴바에서 연결했으면 [연결] 안내는 더 맞지 않는다
+            foreach (var tab in _tabs)
+            {
+                var status = tab.Status;
+                if (tab.Running || status == null || tab.DbId == null)
+                    continue;
+                var session = _host.GetSession(tab.DbId);
+                var usable = session != null && !session.IsBroken;
+                if (usable && (status.Action == WorkspaceLogic.StatusAction.Connect || status.Action == WorkspaceLogic.StatusAction.Reconnect))
+                    SetStatus(tab, WorkspaceLogic.ConnectedStatus(status.Action == WorkspaceLogic.StatusAction.Reconnect));
+            }
+            // 연결하거나 끊으면 탭 배지 색이 열린 세션의 값과 저장된 값 사이에서 바뀐다
+            RenderTabs();
+            RenderTarget();
+            RenderStatus();
         }
 
         // 대상 목록·상태줄이 의존하는 바깥 상태: 접속마다 연결 여부·끊김, 가져올 행 수

@@ -23,6 +23,47 @@ namespace MyPlugin
         public const string RollbackDone = "롤백 완료 (같은 DB의 모든 탭에 적용)";
         public const string ConnectFailedPrefix = "연결하지 못했습니다: ";
         public const string ProfileRemovedWhileConnecting = "연결하는 동안 접속이 삭제되어 연결을 닫았습니다.";
+        public const string ProfileChangedNote = "변경됨 — 다시 연결하면 적용";
+
+        /// <summary>
+        /// 연결할 때 쓴 접속 정보의 사본. 연결된 동안은 이 값으로 주소·이름·색을 보이고 확인 창·읽기 전용 검사를 한다
+        /// (저장된 값을 바꿔도 열린 세션은 원래 DB에 붙어 있다).
+        /// </summary>
+        public static OracleConnectionProfile SessionCopy(OracleConnectionProfile profile)
+        {
+            if (profile == null)
+                return null;
+            return new OracleConnectionProfile
+            {
+                Id = profile.Id,
+                Name = profile.Name,
+                Host = profile.Host,
+                Port = profile.Port,
+                ServiceName = profile.ServiceName,
+                UserId = profile.UserId,
+                ProtectedPassword = profile.ProtectedPassword,
+                ReadOnly = profile.ReadOnly,
+                Color = profile.Color
+            };
+        }
+
+        /// <summary>다시 읽은 저장 값(saved)에서 열린 세션(session 사본)에 바로 적용할 것: 읽기 전용을 켠 것만(더 안전한 쪽). 나머지는 다시 연결할 때.</summary>
+        public static void ApplySavedToSession(OracleConnectionProfile session, OracleConnectionProfile saved)
+        {
+            if (session != null && saved != null && saved.ReadOnly)
+                session.ReadOnly = true;
+        }
+
+        /// <summary>저장된 접속 정보가 열린 세션의 사본과 다르면 true(다시 연결하면 적용될 변경이 있다).</summary>
+        public static bool ProfileChanged(OracleConnectionProfile saved, OracleConnectionProfile session)
+        {
+            if (saved == null || session == null)
+                return false;
+            return !(Same(saved.Name, session.Name) && Same(saved.Host, session.Host) && saved.Port == session.Port
+                && Same(saved.ServiceName, session.ServiceName) && Same(saved.UserId, session.UserId)
+                && Same(saved.ProtectedPassword, session.ProtectedPassword) && saved.ReadOnly == session.ReadOnly
+                && Same(saved.Color ?? "", session.Color ?? ""));
+        }
 
         /// <summary>접속 표시 user@host:port/service.</summary>
         public static string Address(OracleConnectionProfile profile)
@@ -140,6 +181,11 @@ namespace MyPlugin
         private static string Trim(string value)
         {
             return (value ?? "").Trim();
+        }
+
+        private static bool Same(string a, string b)
+        {
+            return string.Equals(a, b, StringComparison.Ordinal);
         }
     }
 }

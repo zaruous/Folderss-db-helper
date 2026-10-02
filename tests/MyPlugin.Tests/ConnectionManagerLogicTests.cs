@@ -432,6 +432,28 @@ namespace MyPlugin.Tests
             Assert.Equal(expected, ConnectionManagerLogic.FirstLine(message));
         }
 
+        [Fact]
+        public void DescribeConnectError_BrokenNumberKeepsListenerMessage()
+        {
+            // 연결 끊김 번호라도 연결하기 전의 오류는 "다시 연결하세요"가 아니라 원래 이유가 맞다
+            var refused = NewOracleException(12537, "ORA-12537: Network Session: End of file");
+            var denied = NewOracleException(1017, "ORA-01017: invalid credential or not authorized; logon denied");
+
+            Assert.Equal("ORA-12537: Network Session: End of file", ConnectionManagerLogic.DescribeConnectError(refused));
+            Assert.StartsWith("DB 연결이 끊겼습니다", DbSession.DescribeError(refused));
+            Assert.Equal(DbSession.DescribeError(denied), ConnectionManagerLogic.DescribeConnectError(denied));
+        }
+
+        /// <summary>ODP.NET의 OracleException은 공개 생성자가 없어 내부 생성자로 만든다(DbSessionTests와 같음).</summary>
+        private static Oracle.ManagedDataAccess.Client.OracleException NewOracleException(int number, string message)
+        {
+            var type = typeof(Oracle.ManagedDataAccess.Client.OracleException);
+            var constructor = type.GetConstructor(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
+                new[] { typeof(int), typeof(string), typeof(string), typeof(string), typeof(int) }, null);
+            Assert.True(constructor != null, "OracleException 내부 생성자를 찾지 못했습니다.");
+            return (Oracle.ManagedDataAccess.Client.OracleException)constructor.Invoke(new object[] { number, "test", "test", message, -1 });
+        }
+
         // ---------- 입력 칸·표시 ----------
 
         [Theory]
