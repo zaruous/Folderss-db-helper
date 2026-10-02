@@ -32,6 +32,40 @@ namespace MyPlugin.Tests
             Assert.DoesNotContain("\"password\"", json);
         }
 
+        [Fact]
+        public void Deserialize_OldFormatWithoutId_AssignsStableIdAndDefaults()
+        {
+            var back = OracleConnectionStore.Deserialize("[{\"name\":\"운영\",\"host\":\"h\",\"port\":1521,\"serviceName\":\"S\",\"userId\":\"u\"}]");
+
+            var p = Assert.Single(back);
+            Assert.False(string.IsNullOrWhiteSpace(p.Id));
+            Assert.False(p.ReadOnly);
+            Assert.Equal("", p.Color);
+            var again = OracleConnectionStore.Deserialize(OracleConnectionStore.Serialize(back));
+            Assert.Equal(p.Id, Assert.Single(again).Id);
+        }
+
+        [Fact]
+        public void SerializeDeserialize_KeepsReadOnlyAndColor_UnknownColorBecomesNone()
+        {
+            var a = Valid("A"); a.ReadOnly = true; a.Color = "red";
+            var b = Valid("B"); b.Color = "purple";
+
+            var back = OracleConnectionStore.Deserialize(OracleConnectionStore.Serialize(new[] { a, b }));
+
+            Assert.True(back[0].ReadOnly);
+            Assert.Equal("red", back[0].Color);
+            Assert.Equal("", back[1].Color);
+        }
+
+        [Fact]
+        public void Validate_DuplicateIds_Reports()
+        {
+            var a = Valid("A"); var b = Valid("B");
+            a.Id = b.Id = "same";
+            Assert.Contains(OracleConnectionStore.Validate(new[] { a, b }), e => e.Contains("ID"));
+        }
+
         [Theory]
         [InlineData(null)]
         [InlineData("")]

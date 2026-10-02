@@ -2,8 +2,9 @@
 
   <!--
     플러그인 프로젝트는 WPF(net8.0-windows)라 Linux에서 테스트를 실행할 수 없다.
-    화면과 무관한 OracleConnections.cs만 링크해 net8.0으로 테스트한다 (CI의 Ubuntu에서도 실행됨).
+    화면과 무관한 파일(접속 정보, Db/*, 트리 모델)만 링크해 net8.0으로 테스트한다 (CI의 Ubuntu에서도 실행됨).
     DPAPI(ProtectedData)는 Windows에서만 동작하므로 여기서는 테스트하지 않는다.
+    DbSession은 SQLite(Microsoft.Data.Sqlite) 연결로 테스트한다 — Oracle 서버 없이 커서·트랜잭션·잠금 동작을 확인하기 위함.
   -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -15,11 +16,14 @@
 
   <ItemGroup>
     <Compile Include="..\..\src\MyPlugin\OracleConnections.cs" Link="OracleConnections.cs" />
+    <Compile Include="..\..\src\MyPlugin\Db\*.cs" Link="Db\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\MyPlugin\Ui\TreeModel.cs" Link="Ui\TreeModel.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.26.301" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
