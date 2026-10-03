@@ -88,6 +88,8 @@ namespace MyPlugin
         private Grid _editorHost;
         private TextBlock _gutterText;
         private TranslateTransform _gutterShift;
+        // 줄 번호 첫 글자 상자의 위쪽(TextBlock 안 좌표). 처음 배치 뒤 잰다.
+        private double _gutterGlyphTop = double.NaN;
 
         private PaneTab _gridTab;
         private PaneTab _messagesTab;
@@ -428,11 +430,12 @@ namespace MyPlugin
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
+            // 편집기와 같은 글꼴·크기·줄 높이여야 글자 상자를 맞췄을 때 기준선도 맞는다
             _gutterText = new TextBlock
             {
                 Text = "1",
                 FontFamily = Theme.Mono,
-                FontSize = 12,
+                FontSize = EditorFontSize,
                 TextAlignment = TextAlignment.Right,
                 LineHeight = EditorLineHeight,
                 LineStackingStrategy = LineStackingStrategy.BlockLineHeight
@@ -1005,7 +1008,11 @@ namespace MyPlugin
             _gutterText.Text = WorkspaceLogic.LineNumbers(lines);
         }
 
-        /// <summary>줄 번호를 편집기 첫 줄 위치와 세로 스크롤에 맞춘다(편집기 템플릿의 여백은 처음 배치 뒤 잰다).</summary>
+        /// <summary>
+        /// 줄 번호를 편집기 첫 줄 위치와 세로 스크롤에 맞춘다. 편집기의 첫 글자 상자(캐럿 사각형)와 줄 번호의 첫 글자 상자를 맞춘다 —
+        /// 글자 상자는 줄 상자(LineHeight)보다 아래에 있어서, 줄 번호의 줄 상자 위쪽을 편집기 글자 상자에 맞추면 그만큼(약 4px) 아래로 밀린다.
+        /// 두 쪽 모두 처음 배치 뒤에 잰다. 재기 전에는 줄 상자 위쪽끼리(편집기 여백) 맞춘다.
+        /// </summary>
         private void PositionGutter(SqlTabState tab, double verticalOffset)
         {
             var editor = tab.Editor;
@@ -1015,7 +1022,16 @@ namespace MyPlugin
                 if (!rect.IsEmpty)
                     tab.FirstLineTop = rect.Top + editor.VerticalOffset;
             }
-            var top = double.IsNaN(tab.FirstLineTop) ? editor.Padding.Top + editor.BorderThickness.Top : tab.FirstLineTop;
+            if (double.IsNaN(_gutterGlyphTop) && _gutterText.IsLoaded && _gutterText.IsArrangeValid)
+            {
+                var run = _gutterText.Inlines.FirstInline as Run;
+                var rect = run != null ? run.ContentStart.GetCharacterRect(LogicalDirection.Forward) : Rect.Empty;
+                if (!rect.IsEmpty)
+                    _gutterGlyphTop = rect.Top;
+            }
+            var top = double.IsNaN(tab.FirstLineTop) || double.IsNaN(_gutterGlyphTop)
+                ? editor.Padding.Top + editor.BorderThickness.Top
+                : tab.FirstLineTop - _gutterGlyphTop;
             _gutterShift.Y = top - verticalOffset;
         }
 
