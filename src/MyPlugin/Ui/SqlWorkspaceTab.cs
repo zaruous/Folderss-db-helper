@@ -60,6 +60,9 @@ namespace MyPlugin
 
         public bool StrippedSemicolon { get; set; }
 
+        /// <summary>이 결과에서 "가져온 행 안에서만 정렬" 안내를 이미 했음.</summary>
+        public bool SortNoticeShown { get; set; }
+
         /// <summary>열린 커서에서 더 가져올 수 있음.</summary>
         public bool HasMoreRows
         {
@@ -120,6 +123,7 @@ namespace MyPlugin
             CursorSession = session;
             ResultDbId = dbId;
             CursorReleased = false;
+            SortNoticeShown = false;
             CursorHadMore = result.Cursor != null && result.Cursor.HasMore;
             Columns = result.Cursor != null ? new List<ResultColumn>(result.Cursor.Columns) : new List<ResultColumn>();
             var rows = new List<ResultGridRow>(result.Rows != null ? result.Rows.Count : 0);

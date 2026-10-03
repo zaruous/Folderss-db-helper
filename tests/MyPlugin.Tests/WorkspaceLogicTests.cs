@@ -440,5 +440,87 @@ namespace MyPlugin.Tests
             Assert.True(WorkspaceLogic.ColumnWidth("X", "NUMBER", new string[] { null }) >= WorkspaceLogic.MinColumnWidth);
             Assert.True(WorkspaceLogic.RowNumberWidth(100000) > WorkspaceLogic.RowNumberWidth(9));
         }
+
+        // ---------- 결과 정렬 ----------
+
+        private static string[] SortValues(IEnumerable<string> values, bool numeric, bool descending)
+        {
+            var rows = values.Select((v, i) => new { Values = new[] { v }, Number = i + 1 }).ToList();
+            rows.Sort((a, b) => WorkspaceLogic.CompareRows(a.Values, a.Number, b.Values, b.Number, 0, numeric, descending));
+            return rows.Select(r => r.Values[0]).ToArray();
+        }
+
+        [Fact]
+        public void CompareRows_NumericColumn_SortsByValueNotText()
+        {
+            var values = new[] { "10", "9", "-1.5", "100", "0.25", "1E+40", null, "2" };
+
+            Assert.Equal(new[] { "-1.5", "0.25", "2", "9", "10", "100", "1E+40", null }, SortValues(values, true, false));
+            // 내림차순은 NULL이 맨 앞(Oracle DESC NULLS FIRST)
+            Assert.Equal(new[] { null, "1E+40", "100", "10", "9", "2", "0.25", "-1.5" }, SortValues(values, true, true));
+        }
+
+        [Fact]
+        public void CompareRows_NumericColumn_BinaryDoubleSpecials()
+        {
+            var values = new[] { "Infinity", "0.125", "-Infinity", "NaN", "3" };
+
+            Assert.Equal(new[] { "NaN", "-Infinity", "0.125", "3", "Infinity" }, SortValues(values, true, false));
+        }
+
+        [Fact]
+        public void CompareRows_NumericColumn_UnparsableTextGoesAfterNumbers()
+        {
+            Assert.Equal(new[] { "1", "2", "(OBJECT)" }, SortValues(new[] { "(OBJECT)", "2", "1" }, true, false));
+        }
+
+        [Fact]
+        public void CompareRows_TextColumn_OrdinalLikeOracleBinary()
+        {
+            var values = new[] { "나", "b", "가", "B", null, "2026-01-02 00:00:00", "2025-12-31 23:59:59" };
+
+            Assert.Equal(new[] { "2025-12-31 23:59:59", "2026-01-02 00:00:00", "B", "b", "가", "나", null }, SortValues(values, false, false));
+        }
+
+        [Fact]
+        public void CompareRows_Ties_KeepOriginalOrder()
+        {
+            var rows = new[] { "A", "B", "A", "B", "A" }.Select((v, i) => new { Values = new[] { v }, Number = i + 1 }).ToList();
+
+            rows.Sort((a, b) => WorkspaceLogic.CompareRows(a.Values, a.Number, b.Values, b.Number, 0, false, false));
+            Assert.Equal(new[] { 1, 3, 5, 2, 4 }, rows.Select(r => r.Number).ToArray());
+
+            rows.Sort((a, b) => WorkspaceLogic.CompareRows(a.Values, a.Number, b.Values, b.Number, 0, false, true));
+            Assert.Equal(new[] { 2, 4, 1, 3, 5 }, rows.Select(r => r.Number).ToArray());
+        }
+
+        [Fact]
+        public void CompareRows_MissingColumnIsNull()
+        {
+            Assert.True(WorkspaceLogic.CompareRows(new[] { "x" }, 1, new string[0], 2, 0, false, false) < 0);
+        }
+
+        [Theory]
+        [InlineData(-1, false, 2, 2, false)]  // 정렬 없음 → 누른 열 오름차순
+        [InlineData(2, false, 2, 2, true)]    // 오름차순 → 내림차순
+        [InlineData(2, true, 2, -1, false)]   // 내림차순 → 해제
+        [InlineData(2, true, 0, 0, false)]    // 다른 열 → 그 열 오름차순
+        public void NextSort_CyclesAscendingDescendingOff(int current, bool currentDesc, int clicked, int expectedColumn, bool expectedDesc)
+        {
+            int column;
+            bool descending;
+            WorkspaceLogic.NextSort(current, currentDesc, clicked, out column, out descending);
+
+            Assert.Equal(expectedColumn, column);
+            Assert.Equal(expectedDesc, descending);
+        }
+
+        [Fact]
+        public void SortMessages()
+        {
+            Assert.Equal(" ▲", WorkspaceLogic.SortMark(false));
+            Assert.Equal(" ▼", WorkspaceLogic.SortMark(true));
+            Assert.StartsWith("가져온 1,000행 안에서만 정렬했습니다.", WorkspaceLogic.SortPartialMessage(1000));
+        }
     }
 }

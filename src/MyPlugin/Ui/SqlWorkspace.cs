@@ -1466,12 +1466,22 @@ namespace MyPlugin
             {
                 var owner = tab;
                 tab.Grid = new ResultGridView(all => CopyRows(owner, all));
+                tab.Grid.Sorted += (s, e) => Safe(() => OnGridSorted(owner));
                 tab.Grid.View.Visibility = Visibility.Collapsed;
                 _gridHost.Children.Add(tab.Grid.View);
             }
             tab.Grid.Show(tab.Columns, tab.Rows);
             if (tab == _active)
                 RenderResults();
+        }
+
+        /// <summary>열 머리로 정렬함: 더 가져올 행이 남았으면 "가져온 행 안에서만"임을 결과마다 한 번 알린다.</summary>
+        private void OnGridSorted(SqlTabState tab)
+        {
+            if (tab.Grid == null || tab.Grid.SortColumn < 0 || !tab.HasMoreRows || tab.SortNoticeShown)
+                return;
+            tab.SortNoticeShown = true;
+            AddMessage(tab.ResultDbId, WorkspaceLogic.SortPartialMessage(tab.Rows != null ? tab.Rows.Count : 0), MessageKind.Info);
         }
 
         private void RenderResults()
@@ -1559,8 +1569,10 @@ namespace MyPlugin
                 return;
             if (all)
             {
-                var tsv = WorkspaceLogic.ToTsv(tab.Columns.Select(c => c.Name), tab.Rows.Select(r => r.Values));
-                await CopyTextAsync(tsv, WorkspaceLogic.CopiedMessage(tab.Rows.Count), tab.ResultDbId);
+                // 화면 순서(열 머리로 정렬했으면 정렬한 순서)
+                var rows = tab.Grid != null ? tab.Grid.RowsInViewOrder() : tab.Rows.ToList();
+                var tsv = WorkspaceLogic.ToTsv(tab.Columns.Select(c => c.Name), rows.Select(r => r.Values));
+                await CopyTextAsync(tsv, WorkspaceLogic.CopiedMessage(rows.Count), tab.ResultDbId);
             }
             else if (tab.Grid != null)
             {

@@ -41,16 +41,25 @@ namespace MyPlugin
     /// 조회 결과 그리드(ListView + GridView, 가상화). 열 머리는 이름(굵게) 위·형식(작은 고정폭) 아래,
     /// NULL은 흐린 기울임꼴, 숫자 열은 오른쪽 정렬, 긴 값은 한 줄로 줄이고 툴팁으로 전체를 보인다.
     /// Ctrl+C는 선택한 행, 오른쪽 메뉴로 전체 복사. 복사(클립보드·메시지)는 만든 쪽이 copy 콜백으로 한다.
+    /// 열 머리를 누르면 가져온 행을 정렬한다(오름차순 → 내림차순 → 해제, # 열은 해제). 행 번호는 원래 순서 그대로 보이고,
+    /// 더 가져온 행도 정렬 위치에 들어간다(ListCollectionView.CustomSort). 복사는 화면 순서를 따른다.
     /// </summary>
     internal sealed class ResultGridView
     {
         private const int SampleRows = 50;
+        private const string SortHint = "누르면 정렬: 오름차순 → 내림차순 → 해제 (가져온 행 안에서)";
 
         private readonly ListView _list;
         private readonly Action<bool> _copy;
+        private readonly List<TextBlock> _titles = new List<TextBlock>();
+        private readonly List<string> _names = new List<string>();
+        private IList<ResultColumn> _columns;
+        private ListCollectionView _rowsView;
         private GridViewColumn _numberColumn;
         private Style _headerStyle;
         private bool _stylesApplied;
+        private int _sortColumn = -1;
+        private bool _sortDescending;
 
         /// <param name="copy">복사 요청. true = 전체(머리글 포함), false = 선택한 행.</param>
         public ResultGridView(Action<bool> copy)
@@ -95,12 +104,27 @@ namespace MyPlugin
                 copyAll.IsEnabled = _list.Items.Count > 0;
             };
             _list.ContextMenu = menu;
+            _list.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(Header_Click));
         }
 
         public ListView View
         {
             get { return _list; }
         }
+
+        /// <summary>정렬한 열(결과 열 위치). 정렬 안 했으면 -1.</summary>
+        public int SortColumn
+        {
+            get { return _sortColumn; }
+        }
+
+        public bool SortDescending
+        {
+            get { return _sortDescending; }
+        }
+
+        /// <summary>열 머리를 눌러 정렬을 바꿨을 때.</summary>
+        public event EventHandler Sorted;
 
         /// <summary>새 결과로 바꾼다. 이 그리드는 화면 트리에 붙어 있어야 한다(테마 스타일을 찾으려고).</summary>
         public void Show(IList<ResultColumn> columns, ObservableCollection<ResultGridRow> rows)
@@ -110,9 +134,18 @@ namespace MyPlugin
             var view = new GridView { AllowsColumnReorder = false };
             if (_headerStyle != null)
                 view.ColumnHeaderContainerStyle = _headerStyle;
+            // 새 결과는 정렬하지 않은 원래 순서로 보인다
+            _sortColumn = -1;
+            _sortDescending = false;
+            _columns = columns;
+            _titles.Clear();
+            _names.Clear();
+            TextBlock numberTitle;
+            var numberHeader = HeaderText("#", null, out numberTitle);
+            numberHeader.ToolTip = "원래 순서(행 번호). 누르면 정렬을 해제합니다.";
             _numberColumn = new GridViewColumn
             {
-                Header = HeaderText("#", null),
+                Header = numberHeader,
                 CellTemplate = NumberTemplate(),
                 Width = WorkspaceLogic.RowNumberWidth(rows.Count)
             };
@@ -122,15 +155,22 @@ namespace MyPlugin
                 var index = i;
                 var column = columns[i];
                 var sample = rows.Take(SampleRows).Select(r => index < r.Values.Length ? r.Values[index] : null);
+                TextBlock title;
+                var header = HeaderText(column.Name, column.TypeLabel, out title);
+                _titles.Add(title);
+                _names.Add(column.Name ?? "");
                 view.Columns.Add(new GridViewColumn
                 {
-                    Header = HeaderText(column.Name, column.TypeLabel),
+                    Header = header,
                     CellTemplate = CellTemplate(index, column.IsNumeric),
                     Width = WorkspaceLogic.ColumnWidth(column.Name, column.TypeLabel, sample)
                 });
             }
             _list.View = view;
             _list.ItemsSource = rows;
+            _rowsView = CollectionViewSource.GetDefaultView(rows) as ListCollectionView;
+            if (_rowsView != null)
+                _rowsView.CustomSort = null;
             // 같은 탭에서 다시 조회하면 이전 결과의 스크롤 위치에 머물지 않게 한다
             var scroller = WorkspaceUi.FindDescendant<ScrollViewer>(_list);
             if (scroller != null)
@@ -153,10 +193,103 @@ namespace MyPlugin
                 _list.ScrollIntoView(row);
         }
 
-        /// <summary>선택한 행(화면 순서).</summary>
+        /// <summary>선택한 행(화면 순서 — 정렬했으면 정렬한 순서).</summary>
         public List<ResultGridRow> SelectedRows()
         {
-            return _list.SelectedItems.OfType<ResultGridRow>().OrderBy(r => r.Number).ToList();
+            var selected = _list.SelectedItems.OfType<ResultGridRow>().ToList();
+            if (_sortColumn < 0 || _rowsView == null)
+                return selected.OrderBy(r => r.Number).ToList();
+            var order = ViewOrder();
+            return selected.OrderBy(r => order.TryGetValue(r, out var position) ? position : int.MaxValue).ToList();
+        }
+
+        /// <summary>모든 행(화면 순서 — 정렬했으면 정렬한 순서).</summary>
+        public List<ResultGridRow> RowsInViewOrder()
+        {
+            if (_rowsView == null)
+                return _list.Items.OfType<ResultGridRow>().ToList();
+            return _rowsView.OfType<ResultGridRow>().ToList();
+        }
+
+        private Dictionary<ResultGridRow, int> ViewOrder()
+        {
+            var order = new Dictionary<ResultGridRow, int>();
+            var position = 0;
+            foreach (var row in _rowsView.OfType<ResultGridRow>())
+                order[row] = position++;
+            return order;
+        }
+
+        private void Header_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var header = e.OriginalSource as GridViewColumnHeader;
+                var view = _list.View as GridView;
+                if (header == null || header.Column == null || header.Role == GridViewColumnHeaderRole.Padding || view == null || _rowsView == null)
+                    return;
+                e.Handled = true;
+                var clicked = view.Columns.IndexOf(header.Column) - 1;
+                if (clicked < -1)
+                    return;
+                int column;
+                bool descending;
+                if (clicked < 0)
+                {
+                    // # 열: 원래 순서로
+                    if (_sortColumn < 0)
+                        return;
+                    column = -1;
+                    descending = false;
+                }
+                else
+                {
+                    WorkspaceLogic.NextSort(_sortColumn, _sortDescending, clicked, out column, out descending);
+                }
+                _sortColumn = column;
+                _sortDescending = descending;
+                ApplySort();
+                Sorted?.Invoke(this, EventArgs.Empty);
+            }
+            catch (Exception)
+            {
+                // 정렬하지 못해도 결과는 그대로 보인다
+            }
+        }
+
+        private void ApplySort()
+        {
+            var numeric = _sortColumn >= 0 && _columns != null && _sortColumn < _columns.Count && _columns[_sortColumn].IsNumeric;
+            _rowsView.CustomSort = _sortColumn < 0 ? null : new RowComparer(_sortColumn, numeric, _sortDescending);
+            for (var i = 0; i < _titles.Count; i++)
+                _titles[i].Text = _names[i] + (i == _sortColumn ? WorkspaceLogic.SortMark(_sortDescending) : "");
+            // 정렬한 결과의 처음을 보인다
+            var scroller = WorkspaceUi.FindDescendant<ScrollViewer>(_list);
+            if (scroller != null)
+                scroller.ScrollToVerticalOffset(0);
+        }
+
+        private sealed class RowComparer : System.Collections.IComparer
+        {
+            private readonly int _column;
+            private readonly bool _numeric;
+            private readonly bool _descending;
+
+            public RowComparer(int column, bool numeric, bool descending)
+            {
+                _column = column;
+                _numeric = numeric;
+                _descending = descending;
+            }
+
+            public int Compare(object x, object y)
+            {
+                var a = x as ResultGridRow;
+                var b = y as ResultGridRow;
+                if (a == null || b == null)
+                    return a == null ? (b == null ? 0 : 1) : -1;
+                return WorkspaceLogic.CompareRows(a.Values, a.Number, b.Values, b.Number, _column, _numeric, _descending);
+            }
         }
 
         private void ApplyThemeStyles()
@@ -176,10 +309,10 @@ namespace MyPlugin
             }
         }
 
-        private static FrameworkElement HeaderText(string name, string typeLabel)
+        private static FrameworkElement HeaderText(string name, string typeLabel, out TextBlock title)
         {
             var panel = new StackPanel { HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(2, 1, 2, 1) };
-            var title = Theme.Text(name ?? "");
+            title = Theme.Text(name ?? "");
             title.FontWeight = FontWeights.SemiBold;
             panel.Children.Add(title);
             if (!string.IsNullOrEmpty(typeLabel))
@@ -188,7 +321,11 @@ namespace MyPlugin
                 type.FontFamily = Theme.Mono;
                 type.FontSize = 10.5;
                 panel.Children.Add(type);
-                panel.ToolTip = (name ?? "") + " · " + typeLabel;
+                panel.ToolTip = (name ?? "") + " · " + typeLabel + Environment.NewLine + SortHint;
+            }
+            else
+            {
+                panel.ToolTip = SortHint;
             }
             return panel;
         }
