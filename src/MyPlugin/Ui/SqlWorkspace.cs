@@ -587,6 +587,10 @@ namespace MyPlugin
                 FontSize = EditorFontSize,
                 BorderThickness = new Thickness(0),
                 Padding = EditorPadding,
+                // Folderss의 암시적 TextBox 스타일은 VerticalContentAlignment=Center다(한 줄 입력칸용). 그대로 두면 짧은 글이 편집기
+                // 한가운데에 뜨고, 처음 잰 첫 줄 위치로 맞추는 줄 번호도 글이 늘면 어긋난다 — 위·왼쪽 정렬을 직접 정한다.
+                VerticalContentAlignment = VerticalAlignment.Top,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
                 IsInactiveSelectionHighlightEnabled = true,
                 Visibility = Visibility.Collapsed,
                 Text = WorkspaceLogic.NormalizeNewlines(text ?? "", Environment.NewLine)
