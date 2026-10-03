@@ -368,5 +368,40 @@ namespace MyPlugin.Tests
             Assert.Null(TreePanelLogic.ParentKey(new TreeRow { Key = TreeKeys.Db("d1"), Kind = TreeRowKind.Database }));
             Assert.Null(TreePanelLogic.ParentKey(null));
         }
+
+        // ---------- 오른쪽 메뉴 ----------
+
+        [Fact]
+        public void ConnectionMenu_NotConnected_OnlyConnect()
+        {
+            var state = TreePanelLogic.ConnectionMenu(false, false);
+
+            Assert.True(state.CanConnect);
+            Assert.False(state.CanReconnect);
+            Assert.False(state.CanDisconnect);
+            Assert.False(state.Connecting);
+        }
+
+        [Fact]
+        public void ConnectionMenu_Connected_ReconnectAndDisconnect()
+        {
+            // 끊긴 세션도 세션이 있으므로 같다(다시 연결은 끊긴 세션을 버리고 연결)
+            var state = TreePanelLogic.ConnectionMenu(true, false);
+
+            Assert.False(state.CanConnect);
+            Assert.True(state.CanReconnect);
+            Assert.True(state.CanDisconnect);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void ConnectionMenu_Connecting_BlocksAll(bool hasSession)
+        {
+            var state = TreePanelLogic.ConnectionMenu(hasSession, true);
+
+            Assert.True(state.Connecting);
+            Assert.False(state.CanConnect || state.CanReconnect || state.CanDisconnect);
+        }
     }
 }

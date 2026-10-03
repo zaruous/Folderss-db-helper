@@ -363,6 +363,84 @@ namespace MyPlugin
             return Count(rows) + "행을 TSV로 복사했습니다(머리글 포함).";
         }
 
+        // ---- 결과 정렬(열 머리 누르기) ----
+
+        /// <summary>
+        /// 결과 칸 값 비교(오름차순 기준). NULL(null)은 맨 뒤 — Oracle ORDER BY 기본(ASC NULLS LAST)과 같다.
+        /// 숫자 열은 수로 비교하고(수로 읽히지 않는 값은 수 뒤), 그 밖은 서수 비교(Oracle 기본 BINARY 정렬과 같은 순서).
+        /// </summary>
+        public static int CompareCells(string a, string b, bool numeric)
+        {
+            if (a == null || b == null)
+                return a == null ? (b == null ? 0 : 1) : -1;
+            if (numeric)
+            {
+                decimal da, db;
+                var isDecA = decimal.TryParse(a, NumberStyles.Float, Inv, out da);
+                var isDecB = decimal.TryParse(b, NumberStyles.Float, Inv, out db);
+                if (isDecA && isDecB)
+                    return da.CompareTo(db);
+                // decimal 범위를 넘는 수(1E+40 등)·BINARY_DOUBLE의 Infinity·NaN
+                double xa, xb;
+                var isNumA = double.TryParse(a, NumberStyles.Float, Inv, out xa);
+                var isNumB = double.TryParse(b, NumberStyles.Float, Inv, out xb);
+                if (isNumA && isNumB)
+                    return xa.CompareTo(xb);
+                if (isNumA != isNumB)
+                    return isNumA ? -1 : 1;
+            }
+            return string.CompareOrdinal(a, b);
+        }
+
+        /// <summary>
+        /// 결과 두 행 비교: column 열 값으로(descending이면 뒤집음 — NULL이 맨 앞, Oracle DESC NULLS FIRST와 같다).
+        /// 같으면 원래 순서(행 번호)를 지킨다(안정 정렬).
+        /// </summary>
+        public static int CompareRows(string[] a, int numberA, string[] b, int numberB, int column, bool numeric, bool descending)
+        {
+            var va = a != null && column >= 0 && column < a.Length ? a[column] : null;
+            var vb = b != null && column >= 0 && column < b.Length ? b[column] : null;
+            var result = CompareCells(va, vb, numeric);
+            if (descending)
+                result = -result;
+            return result != 0 ? result : numberA.CompareTo(numberB);
+        }
+
+        /// <summary>열 머리 누르기 순환: 정렬 안 함 → 오름차순 → 내림차순 → 정렬 안 함. 다른 열을 누르면 그 열 오름차순.</summary>
+        public static void NextSort(int currentColumn, bool currentDescending, int clickedColumn, out int column, out bool descending)
+        {
+            if (clickedColumn != currentColumn || currentColumn < 0)
+            {
+                column = clickedColumn;
+                descending = false;
+            }
+            else if (!currentDescending)
+            {
+                column = currentColumn;
+                descending = true;
+            }
+            else
+            {
+                column = -1;
+                descending = false;
+            }
+        }
+
+        // 정렬 표시(" ▲")가 차지하는 칸(열 너비 어림용)
+        private const double SortMarkUnits = 2;
+
+        /// <summary>정렬한 열 머리에 붙이는 표시.</summary>
+        public static string SortMark(bool descending)
+        {
+            return descending ? " ▼" : " ▲";
+        }
+
+        /// <summary>더 가져올 행이 남은 결과를 정렬했을 때(결과마다 한 번).</summary>
+        public static string SortPartialMessage(int fetched)
+        {
+            return "가져온 " + Count(fetched) + "행 안에서만 정렬했습니다. 더 가져온 행도 정렬 위치에 들어가지만, 전체 결과의 순서는 ORDER BY로 정하세요.";
+        }
+
         private static string MovedSuffix(string tabTitle, string name)
         {
             return " → '" + tabTitle + "' 탭(대상 " + (string.IsNullOrEmpty(name) ? "없음" : name) + ")";
@@ -711,10 +789,11 @@ namespace MyPlugin
         /// <summary>
         /// 결과 열의 처음 너비(픽셀) 어림: 열 이름(굵게)·형식(작은 고정폭)·앞쪽 행 값 중 가장 긴 것. MinColumnWidth~MaxColumnWidth.
         /// 한글 등 넓은 글자는 1.8칸으로 센다. 사용자가 머리 경계를 끌어 바꿀 수 있으므로 어림이면 충분하다.
+        /// 열 이름 뒤에는 정렬 표시(SortMark " ▲") 자리를 둔다 — 없으면 좁은 열에서 표시가 잘려 보이지 않는다.
         /// </summary>
         public static double ColumnWidth(string name, string typeLabel, IEnumerable<string> sample)
         {
-            var units = Math.Max(TextUnits(name) * 1.1, TextUnits(typeLabel) * 0.85);
+            var units = Math.Max((TextUnits(name) + SortMarkUnits) * 1.1, TextUnits(typeLabel) * 0.85);
             if (sample != null)
             {
                 foreach (var value in sample)

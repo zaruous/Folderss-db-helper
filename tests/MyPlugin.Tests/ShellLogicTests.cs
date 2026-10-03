@@ -216,5 +216,31 @@ namespace MyPlugin.Tests
             Assert.Same(first, merged[0]);
             Assert.Empty(ShellLogic.MergeProfiles(null, null, null, null));
         }
+
+        // ---------- 창 전체 단축키 ----------
+
+        [Theory]
+        [InlineData("N", true, false, false, "NewTab")]
+        [InlineData("O", true, false, false, "Open")]
+        [InlineData("S", true, false, false, "Save")]
+        [InlineData("S", true, true, false, "SaveAs")]
+        [InlineData("W", true, false, false, "CloseTab")]
+        [InlineData("N", false, false, false, "None")]   // Ctrl 없음 = 글자 입력
+        [InlineData("S", true, false, true, "None")]     // Alt가 섞이면 아님(AltGr 등)
+        [InlineData("N", true, true, false, "None")]
+        [InlineData("W", true, true, false, "None")]
+        [InlineData("Enter", true, false, false, "None")] // 실행은 편집기가 처리
+        [InlineData("Q", true, false, false, "None")]
+        public void WindowShortcut_MapsCtrlKeys(string key, bool control, bool shift, bool alt, string expected)
+        {
+            Assert.Equal(expected, ShellLogic.WindowShortcut(key, control, shift, alt).ToString());
+        }
+
+        [Fact]
+        public void ShortcutsText_ListsEveryShortcut()
+        {
+            foreach (var shortcut in new[] { "Ctrl+N", "Ctrl+O", "Ctrl+S", "Ctrl+Shift+S", "Ctrl+W", "Ctrl+Enter", "Ctrl+/", "Ctrl+Shift+U", "Ctrl+Shift+L", "Shift+F10" })
+                Assert.Contains(shortcut, ShellLogic.ShortcutsText);
+        }
     }
 }

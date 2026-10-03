@@ -20,7 +20,7 @@ namespace MyPlugin
     /// DB Helper 팝업 화면(PoC의 창 전체): 위 툴바, 왼쪽 DB·스키마 트리, 오른쪽 SQL 작업 영역.
     /// DB(접속)마다 세션을 하나 열고(같은 DB의 탭은 트랜잭션을 공유), 창을 닫을 때 커밋 대기 변경을 DB마다 묻는다.
     /// </summary>
-    internal sealed class DbHelperView : Grid, IDbHost, ITreeHost
+    internal sealed class DbHelperView : Grid, IDbHost, ITreeHost, IShellCommands
     {
         private const string DisconnectAction = "연결을 끊기";
         private const string CloseAction = "창을 닫기";
@@ -35,6 +35,7 @@ namespace MyPlugin
         private readonly HashSet<string> _orphans = new HashSet<string>(StringComparer.Ordinal);
         private readonly DbTreePanel _tree;
         private readonly SqlWorkspace _workspace;
+        private readonly ShellMenu _shellMenu;
 
         private List<OracleConnectionProfile> _profiles = new List<OracleConnectionProfile>();
         private string _profilesError;
@@ -68,9 +69,15 @@ namespace MyPlugin
             LoadProfiles();
             _selectedDbId = _profiles.Select(p => p.Id).FirstOrDefault();
 
+            // 맨 위 메뉴 막대·아이콘(미니 패널) → 툴바 → 트리·작업 영역
+            RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            Children.Add(BuildToolbar());
+            _shellMenu = new ShellMenu(this);
+            Children.Add(_shellMenu.View);
+            var toolbar = BuildToolbar();
+            Grid.SetRow(toolbar, 1);
+            Children.Add(toolbar);
 
             // 작업 영역은 생성자에서 Profiles·SelectedDbId를 읽으므로 접속 목록·툴바를 먼저 준비한다
             _tree = new DbTreePanel(this);
@@ -85,10 +92,13 @@ namespace MyPlugin
             body.Children.Add(splitter);
             Grid.SetColumn(_workspace, 2);
             body.Children.Add(_workspace);
-            Grid.SetRow(body, 1);
+            Grid.SetRow(body, 2);
             Children.Add(body);
 
             _workspace.ActiveTabChanged += Workspace_ActiveTabChanged;
+            _workspace.CommandStateChanged += (s, e) => RefreshShellMenu();
+            // 창 전체 단축키(트리·결과에 포커스가 있어도): Ctrl+N·O·S·Shift+S·W
+            PreviewKeyDown += View_PreviewKeyDown;
             _tree.SelectDb(_selectedDbId);
             _tree.Rebuild();
             RefreshToolbar();
@@ -206,6 +216,262 @@ namespace MyPlugin
             {
                 // 표시용 질문이다 — 작업 영역이 답하지 못하면 실행 중이 아닌 것으로 본다
                 return false;
+            }
+        }
+
+        public string LastSqlFolder
+        {
+            get { return SafeSetting(SqlFileLogic.FolderSettingKey); }
+            set { SaveSetting(SqlFileLogic.FolderSettingKey, value); }
+        }
+
+        public void AddRecentSqlFile(string path)
+        {
+            SaveSetting(SqlFileLogic.RecentSettingKey, SqlFileLogic.SerializeRecent(SqlFileLogic.AddRecent(RecentFiles, path)));
+        }
+
+        private string SafeSetting(string key)
+        {
+            try
+            {
+                return _manager.GetSetting(key);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private void SaveSetting(string key, string value)
+        {
+            try
+            {
+                _manager.SetSetting(key, value);
+            }
+            catch (Exception ex)
+            {
+                // 최근 파일·폴더를 기억하지 못할 뿐이다
+                AddMessage(null, "설정을 저장하지 못했습니다: " + ex.Message, MessageKind.Error);
+            }
+        }
+
+        // ================= IShellCommands (메뉴 막대·아이콘) =================
+
+        public IReadOnlyList<string> RecentFiles
+        {
+            get { return SqlFileLogic.ParseRecent(SafeSetting(SqlFileLogic.RecentSettingKey)); }
+        }
+
+        public TextBox ActiveEditor
+        {
+            get { return _workspace != null ? _workspace.ActiveEditor : null; }
+        }
+
+        public void NewTab()
+        {
+            _workspace.NewTab();
+        }
+
+        public void OpenFile()
+        {
+            _workspace.OpenFileWithDialog();
+        }
+
+        public void OpenRecent(string path)
+        {
+            if (!System.IO.File.Exists(path))
+            {
+                // 옮겼거나 지운 파일은 목록에서 뺀다
+                SaveSetting(SqlFileLogic.RecentSettingKey, SqlFileLogic.SerializeRecent(RecentFiles.Where(p => !SqlFileLogic.SamePath(p, path))));
+                Dialogs.Show(OwnerWindow(), "파일이 없습니다", "파일을 찾을 수 없어 최근 파일 목록에서 뺐습니다." + Environment.NewLine + path, true);
+                return;
+            }
+            _workspace.OpenPaths(new[] { path });
+        }
+
+        public void ClearRecent()
+        {
+            SaveSetting(SqlFileLogic.RecentSettingKey, null);
+        }
+
+        public void Save()
+        {
+            _workspace.SaveActive(false);
+        }
+
+        public void SaveAs()
+        {
+            _workspace.SaveActive(true);
+        }
+
+        public void CloseTab()
+        {
+            _workspace.CloseActiveTab();
+        }
+
+        public void ManageConnections()
+        {
+            Manage_Click(this, new RoutedEventArgs());
+        }
+
+        public void ShowShortcuts()
+        {
+            Dialogs.Show(OwnerWindow(), "단축키", ShellLogic.ShortcutsText, false);
+        }
+
+        public void ToggleComment()
+        {
+            _workspace.ToggleComment();
+        }
+
+        public void ChangeCase(bool upper)
+        {
+            _workspace.ChangeCase(upper);
+        }
+
+        public void Run()
+        {
+            _workspace.RunActiveStatement();
+        }
+
+        public void Cancel()
+        {
+            _workspace.CancelActiveRun();
+        }
+
+        public void FetchNext()
+        {
+            _workspace.FetchNextActive();
+        }
+
+        public void Commit()
+        {
+            Commit_Click(this, new RoutedEventArgs());
+        }
+
+        public void Rollback()
+        {
+            Rollback_Click(this, new RoutedEventArgs());
+        }
+
+        public void Connect()
+        {
+            Connect_Click(this, new RoutedEventArgs());
+        }
+
+        void IShellCommands.Reconnect()
+        {
+            Reconnect(_selectedDbId);
+        }
+
+        void IShellCommands.Disconnect()
+        {
+            Disconnect(_selectedDbId);
+        }
+
+        public ShellCommandState CommandState()
+        {
+            var state = new ShellCommandState();
+            if (_workspace == null || _connect == null)
+                return state;
+            var open = !_closingFlow && !_closed;
+            state.CanRun = open && _workspace.ActiveEditor != null && !_workspace.ActiveRunning;
+            state.CanCancel = open && _workspace.ActiveRunning;
+            state.CanFetch = open && _workspace.ActiveCanFetch;
+            state.HasSelection = _workspace.ActiveHasSelection;
+            state.CanCommit = _commit.IsEnabled;
+            state.CanRollback = _rollback.IsEnabled;
+            state.CanConnect = _connect.IsEnabled;
+            state.CanDisconnect = _disconnect.IsEnabled;
+            var selected = FindProfile(_selectedDbId);
+            state.DbName = selected != null ? selected.Name : null;
+            var selectedState = selected == null ? null : StateOf(selected.Id);
+            state.CanReconnect = open && selectedState != null && selectedState.Session != null
+                && selectedState.Connecting == null && !selectedState.Busy;
+            return state;
+        }
+
+        /// <summary>창 전체 단축키. 편집기 안의 단축키(Ctrl+Enter·/·Shift+U·Shift+L)는 SqlWorkspace가 처리한다.</summary>
+        private void View_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            try
+            {
+                if (_closed || _closingFlow)
+                    return;
+                var key = e.Key == System.Windows.Input.Key.ImeProcessed ? e.ImeProcessedKey
+                    : e.Key == System.Windows.Input.Key.System ? e.SystemKey : e.Key;
+                var modifiers = System.Windows.Input.Keyboard.Modifiers;
+                var command = ShellLogic.WindowShortcut(key.ToString(),
+                    (modifiers & System.Windows.Input.ModifierKeys.Control) != 0,
+                    (modifiers & System.Windows.Input.ModifierKeys.Shift) != 0,
+                    (modifiers & System.Windows.Input.ModifierKeys.Alt) != 0);
+                if (command == ShellShortcut.None)
+                    return;
+                e.Handled = true;
+                switch (command)
+                {
+                    case ShellShortcut.NewTab:
+                        NewTab();
+                        break;
+                    case ShellShortcut.Open:
+                        OpenFile();
+                        break;
+                    case ShellShortcut.Save:
+                        Save();
+                        break;
+                    case ShellShortcut.SaveAs:
+                        SaveAs();
+                        break;
+                    case ShellShortcut.CloseTab:
+                        CloseTab();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex, null);
+            }
+        }
+
+        public string DataDirectory
+        {
+            get
+            {
+                try
+                {
+                    return _manager.DataDirectory;
+                }
+                catch (Exception)
+                {
+                    // 폴더를 만들 수 없는 등 — 임시 저장만 못 할 뿐 화면은 계속 쓴다
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>트리 메뉴 [연결 끊기]: 툴바 [끊기]와 같다(실행 중이면 막고, 커밋 대기는 묻는다).</summary>
+        public async void Disconnect(string dbId)
+        {
+            try
+            {
+                await DisconnectAsync(dbId);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex, dbId);
+            }
+        }
+
+        /// <summary>트리 메뉴 [다시 연결].</summary>
+        public async void Reconnect(string dbId)
+        {
+            try
+            {
+                await ReconnectAsync(dbId);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex, dbId);
             }
         }
 
@@ -427,6 +693,20 @@ namespace MyPlugin
             var canEnd = open && activeSession != null && activeSession.HasPendingChanges && !activeSession.IsBroken && !activeState.Busy && !IsRunning(activeId);
             _commit.IsEnabled = canEnd;
             _rollback.IsEnabled = canEnd;
+            RefreshShellMenu();
+        }
+
+        private void RefreshShellMenu()
+        {
+            try
+            {
+                if (_shellMenu != null && !_closed)
+                    _shellMenu.Refresh();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex, null);
+            }
         }
 
         private void SetPillStyle(bool danger)
@@ -712,6 +992,29 @@ namespace MyPlugin
             {
                 FinishBusy(dbId, state);
             }
+        }
+
+        /// <summary>
+        /// 다시 연결: 연결돼 있으면 [끊기]와 같이 끊고(실행 중이면 막고, 커밋 대기는 묻는다) 저장된 접속 정보로 연결한다
+        /// (바뀐 접속 정보·비밀번호가 이때 적용된다). 끊긴 세션은 ConnectAsync가 버리고 다시 연결한다.
+        /// 끊기를 취소했거나 끊지 못했으면 연결하지 않는다.
+        /// </summary>
+        private async Task ReconnectAsync(string dbId)
+        {
+            if (FindProfile(dbId) == null || _closed || _closingFlow)
+                return;
+            var state = StateOf(dbId);
+            var session = state == null ? null : state.Session;
+            if (session != null && !session.IsBroken)
+            {
+                await DisconnectAsync(dbId);
+                state = StateOf(dbId);
+                if (state != null && state.Session != null)
+                    return;
+            }
+            if (_closed || _closingFlow)
+                return;
+            await ConnectAsync(dbId);
         }
 
         /// <summary>툴바 [커밋]·[롤백]: 지금 SQL 탭 대상 DB의 세션 전체(같은 DB의 모든 탭)에 적용한다.</summary>

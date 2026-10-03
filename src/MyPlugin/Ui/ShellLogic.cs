@@ -5,9 +5,66 @@ using System.Linq;
 
 namespace MyPlugin
 {
+    /// <summary>창 전체 단축키.</summary>
+    internal enum ShellShortcut { None, NewTab, Open, Save, SaveAs, CloseTab }
+
     /// <summary>DB Helper 화면 틀(툴바·연결·창 닫기)의 화면과 무관한 판단과 문장(순수 로직, 테스트 대상).</summary>
     internal static class ShellLogic
     {
+        /// <summary>
+        /// 창 전체 단축키(key는 WPF Key의 이름): Ctrl+N 새 SQL 탭, Ctrl+O 열기, Ctrl+S 저장, Ctrl+Shift+S 다른 이름으로 저장, Ctrl+W 탭 닫기.
+        /// Alt가 함께 눌렸거나 Ctrl이 없으면 None(메뉴 Alt 키·글자 입력과 섞이지 않게).
+        /// </summary>
+        public static ShellShortcut WindowShortcut(string key, bool control, bool shift, bool alt)
+        {
+            if (!control || alt)
+                return ShellShortcut.None;
+            switch (key)
+            {
+                case "N":
+                    return shift ? ShellShortcut.None : ShellShortcut.NewTab;
+                case "O":
+                    return shift ? ShellShortcut.None : ShellShortcut.Open;
+                case "S":
+                    return shift ? ShellShortcut.SaveAs : ShellShortcut.Save;
+                case "W":
+                    return shift ? ShellShortcut.None : ShellShortcut.CloseTab;
+                default:
+                    return ShellShortcut.None;
+            }
+        }
+
+        /// <summary>도움말 &gt; 단축키 창의 글.</summary>
+        public static readonly string ShortcutsText = string.Join(Environment.NewLine, new[]
+        {
+            "[파일]",
+            "Ctrl+N — 새 SQL 탭",
+            "Ctrl+O — SQL 파일 열기",
+            "Ctrl+S — 저장 (파일이 없으면 저장 창)",
+            "Ctrl+Shift+S — 다른 이름으로 저장",
+            "Ctrl+W — 탭 닫기 (저장하지 않은 SQL이 있으면 물어봄)",
+            "",
+            "[편집기]",
+            "Ctrl+Enter — 커서가 있는 문장(또는 선택 영역) 실행",
+            "Ctrl+/ — 줄 주석 토글",
+            "Ctrl+Shift+U / Ctrl+Shift+L — 선택 영역 대문자 / 소문자",
+            "Ctrl+Z / Ctrl+Y — 실행 취소 / 다시 실행",
+            "",
+            "[결과]",
+            "Ctrl+C — 선택한 행 복사(TSV)",
+            "열 머리 클릭 — 정렬 (오름차순 → 내림차순 → 해제)",
+            "",
+            "[트리]",
+            "Enter — SELECT 넣기 · 펼치기 · 연결",
+            "Shift+F10 또는 오른쪽 클릭 — 연결 · 다시 연결 · 연결 끊기",
+            "Esc — 검색 지우기",
+            "",
+            "[메뉴]",
+            "Alt+F · E · S · C · H — 파일 · 편집 · SQL · 연결 · 도움말",
+            "",
+            "SQL은 입력이 멈추고 1.5초 뒤 자동으로 임시 저장되어, 창을 다시 열면 되살아납니다."
+        });
+
         /// <summary>툴바 "가져올 행" 선택지. 첫 값이 기본.</summary>
         public static readonly int[] FetchCounts = { 200, 1000, 5000 };
 

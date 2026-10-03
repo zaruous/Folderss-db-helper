@@ -28,9 +28,30 @@ namespace MyPlugin
         public bool ProfileChanged { get; set; }
     }
 
+    /// <summary>트리 오른쪽 메뉴에서 그 DB에 할 수 있는 연결 동작.</summary>
+    internal sealed class ConnectionMenuState
+    {
+        public bool CanConnect { get; set; }
+        public bool CanReconnect { get; set; }
+        public bool CanDisconnect { get; set; }
+        /// <summary>연결하는 중 — 연결 동작을 모두 막고 "연결하는 중…"만 보인다.</summary>
+        public bool Connecting { get; set; }
+    }
+
     /// <summary>트리 패널의 화면과 무관한 판단(순수 로직, 테스트 대상): 행 비교, 검색 막대·바닥줄 문장, 펼침 상태 다루기.</summary>
     internal static class TreePanelLogic
     {
+        /// <summary>
+        /// 트리 오른쪽 메뉴의 연결 동작. 세션이 없으면 [연결]만, 세션이 있으면(끊긴 세션 포함) [다시 연결]·[연결 끊기].
+        /// 연결하는 중이면 모두 막는다.
+        /// </summary>
+        public static ConnectionMenuState ConnectionMenu(bool hasSession, bool connecting)
+        {
+            if (connecting)
+                return new ConnectionMenuState { Connecting = true };
+            return new ConnectionMenuState { CanConnect = !hasSession, CanReconnect = hasSession, CanDisconnect = hasSession };
+        }
+
         /// <summary>검색 결과 아래에 화면이 직접 붙이는 안내 행의 키. TreeKeys 형식이 아니라 DB id가 없다(DbIdOf → null).</summary>
         public const string OfflineNoteKey = "search\u001Foffline";
 
