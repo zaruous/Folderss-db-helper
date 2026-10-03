@@ -3,3 +3,5 @@ obj/
 .vs/
 *.user
 *.suo
+# scripts/pack.ps1 가 만드는 릴리스 zip
+/release/
