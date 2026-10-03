@@ -145,6 +145,9 @@ namespace MyPlugin
         // Dispose가 실행 중인 작업을 기다리는 최대 시간
         private static readonly TimeSpan DisposeWait = TimeSpan.FromSeconds(2);
 
+        // UseInBandBreak을 이미 시도했음(1). 성공 여부와 관계없이 한 번만 시도한다.
+        private static int _breakConfigured;
+
         private readonly DbConnection _connection;
         private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
         private readonly object _executingSync = new object();
@@ -191,7 +194,30 @@ namespace MyPlugin
         /// <summary>OracleConnection으로 세션을 만든다.</summary>
         public static DbSession CreateOracle(string connectionString)
         {
+            UseInBandBreak();
             return new DbSession(new OracleConnection(connectionString));
+        }
+
+        /// <summary>
+        /// 취소(DbCommand.Cancel)를 in-band break로 보낸다. 기본값 OOB(TCP 긴급 데이터)는 Docker Desktop의 포트 포워딩이나
+        /// 일부 방화벽·NAT·VPN이 전달하지 않아, 서버가 취소를 받지 못하고 문장이 끝날 때까지 세션이 바쁜 채로 남는다
+        /// (실측: Docker의 Oracle 12.1에서 OOB 취소는 10분이 지나도 멈추지 않았고, in-band 취소는 10~20ms에 ORA-01013으로 끝남).
+        /// OracleConfiguration은 이 플러그인이 불러온 ODP.NET에만 적용된다(Folderss는 플러그인마다 따로 로드한다).
+        /// 이 값은 프로세스에서 연결을 하나라도 연 뒤에는 바꿀 수 없으므로(ORA-50099) Oracle 연결을 여는 모든 경로(CreateOracle·접속 테스트)가 먼저 부른다.
+        /// 늦게 불려 바꾸지 못해도 연결은 막지 않는다(취소만 OOB로 남음).
+        /// </summary>
+        internal static void UseInBandBreak()
+        {
+            if (Interlocked.Exchange(ref _breakConfigured, 1) != 0)
+                return;
+            try
+            {
+                OracleConfiguration.DisableOOB = true;
+            }
+            catch (InvalidOperationException)
+            {
+                // ORA-50099: 이미 연 연결이 있어 바꿀 수 없다
+            }
         }
 
         public bool IsOpen { get { return _opened && !_closed && ConnectionIsOpen(); } }
@@ -512,6 +538,7 @@ namespace MyPlugin
         /// <summary>
         /// 사람이 읽을 오류 문장. AggregateException·TargetInvocationException을 벗긴다.
         /// ORA-01013(취소) → "실행을 취소했습니다.", 연결 끊김 → "DB 연결이 끊겼습니다. 다시 연결하세요. (ORA-…)", 그 밖은 예외 메시지(ORA-번호 포함) 첫 줄.
+        /// 안쪽 예외에 다른 오류 번호가 있으면(연결 실패 ORA-50201 ← ORA-12514 등) 그 원인을 앞에 둔다: "ORA-12514: … (ORA-50201)".
         /// </summary>
         public static string DescribeError(Exception ex)
         {
@@ -525,7 +552,7 @@ namespace MyPlugin
                 var code = BrokenErrorNumber(ex);
                 return "DB 연결이 끊겼습니다. 다시 연결하세요." + (code.HasValue ? " (" + OracleCode(code.Value) + ")" : "");
             }
-            return FirstLine(ex);
+            return WithInnerCause(ex, FirstLine(ex));
         }
 
         /// <summary>취소로 끝난 실행인지(ORA-01013, OperationCanceledException 등).</summary>
@@ -1499,6 +1526,41 @@ namespace MyPlugin
         private static string OracleCode(int number)
         {
             return "ORA-" + number.ToString("D5", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// ODP.NET의 연결 실패는 겉 오류가 ORA-50201(서버에 연결하지 못했거나 연결 문자열을 해석하지 못함)뿐이고
+        /// 실제 원인(ORA-12514 리스너가 서비스를 모름, ORA-12541 리스너 없음 등)은 InnerException 안쪽(NetworkException)에 있다.
+        /// 겉 줄이 오류 번호로 시작하고 안쪽에 다른 번호가 있으면 가장 깊은 것을 앞에 두고 겉 번호는 괄호로 남긴다.
+        /// </summary>
+        private static string WithInnerCause(Exception ex, string first)
+        {
+            var outer = ErrorCodeOf(first);
+            if (outer == null)
+                return first;
+            string cause = null;
+            var e = ex.InnerException;
+            for (var i = 0; i < 16 && e != null; i++, e = e.InnerException)
+            {
+                var line = FirstLine(e);
+                var code = ErrorCodeOf(line);
+                if (code != null && code != outer)
+                    cause = line;
+            }
+            return cause == null ? first : cause + " (" + outer + ")";
+        }
+
+        /// <summary>"ORA-12514: …"·"TNS-12541: …" → "ORA-12514"·"TNS-12541". 오류 번호로 시작하지 않으면 null.</summary>
+        private static string ErrorCodeOf(string line)
+        {
+            if (line == null || line.Length < 9 || !(line.StartsWith("ORA-", StringComparison.Ordinal) || line.StartsWith("TNS-", StringComparison.Ordinal)))
+                return null;
+            for (var i = 4; i < 9; i++)
+            {
+                if (line[i] < '0' || line[i] > '9')
+                    return null;
+            }
+            return line.Substring(0, 9);
         }
 
         private static string FirstLine(Exception ex)

@@ -1010,6 +1010,8 @@ namespace MyPlugin
                 try
                 {
                     var connectionString = OracleConnectionStore.BuildConnectionString(profile, password, ConnectionManagerLogic.TestTimeoutSeconds);
+                    // 첫 연결이 접속 테스트일 수 있다 — 연결을 연 뒤에는 취소 방식을 바꿀 수 없다(ORA-50099)
+                    DbSession.UseInBandBreak();
                     string version;
                     using (var connection = new OracleConnection(connectionString))
                     {
