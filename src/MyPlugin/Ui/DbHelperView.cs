@@ -209,6 +209,32 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>트리 메뉴 [연결 끊기]: 툴바 [끊기]와 같다(실행 중이면 막고, 커밋 대기는 묻는다).</summary>
+        public async void Disconnect(string dbId)
+        {
+            try
+            {
+                await DisconnectAsync(dbId);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex, dbId);
+            }
+        }
+
+        /// <summary>트리 메뉴 [다시 연결].</summary>
+        public async void Reconnect(string dbId)
+        {
+            try
+            {
+                await ReconnectAsync(dbId);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex, dbId);
+            }
+        }
+
         public string MySchemaOf(string dbId)
         {
             var state = StateOf(dbId);
@@ -712,6 +738,29 @@ namespace MyPlugin
             {
                 FinishBusy(dbId, state);
             }
+        }
+
+        /// <summary>
+        /// 다시 연결: 연결돼 있으면 [끊기]와 같이 끊고(실행 중이면 막고, 커밋 대기는 묻는다) 저장된 접속 정보로 연결한다
+        /// (바뀐 접속 정보·비밀번호가 이때 적용된다). 끊긴 세션은 ConnectAsync가 버리고 다시 연결한다.
+        /// 끊기를 취소했거나 끊지 못했으면 연결하지 않는다.
+        /// </summary>
+        private async Task ReconnectAsync(string dbId)
+        {
+            if (FindProfile(dbId) == null || _closed || _closingFlow)
+                return;
+            var state = StateOf(dbId);
+            var session = state == null ? null : state.Session;
+            if (session != null && !session.IsBroken)
+            {
+                await DisconnectAsync(dbId);
+                state = StateOf(dbId);
+                if (state != null && state.Session != null)
+                    return;
+            }
+            if (_closed || _closingFlow)
+                return;
+            await ConnectAsync(dbId);
         }
 
         /// <summary>툴바 [커밋]·[롤백]: 지금 SQL 탭 대상 DB의 세션 전체(같은 DB의 모든 탭)에 적용한다.</summary>

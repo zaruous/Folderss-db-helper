@@ -52,6 +52,12 @@ namespace MyPlugin
 
         Task<bool> ConnectAsync(string dbId);
 
+        /// <summary>트리 메뉴 [다시 연결]: 연결돼 있으면 끊고(커밋 대기는 묻는다) 저장된 접속 정보로 다시 연결한다.</summary>
+        void Reconnect(string dbId);
+
+        /// <summary>트리 메뉴 [연결 끊기]: 툴바 [끊기]와 같다.</summary>
+        void Disconnect(string dbId);
+
         /// <summary>트리 조회 중 세션이 끊긴 것을 알았을 때 등 툴바·배지를 새로 그려야 할 때.</summary>
         void StateChanged(string dbId);
 
@@ -111,6 +117,8 @@ namespace MyPlugin
         // 고른 행. 접혀서 안 보여도 기억한다(다시 펼치면 그대로 고른 상태)
         private string _selectedKey;
         private TreeRow _selectedRow;
+        // 오른쪽 누름으로 고른 메뉴 대상 행(메뉴를 열 때 쓰고 비운다)
+        private TreeRow _menuRow;
 
         private bool _inRebuild;
         private bool _rebuildAgain;
@@ -378,8 +386,12 @@ namespace MyPlugin
             VirtualizingPanel.SetVirtualizationMode(_list, VirtualizationMode.Recycling);
             ScrollViewer.SetCanContentScroll(_list, true);
             _list.PreviewMouseLeftButtonDown += List_PreviewMouseLeftButtonDown;
+            _list.PreviewMouseRightButtonDown += List_PreviewMouseRightButtonDown;
             _list.PreviewKeyDown += List_PreviewKeyDown;
             _list.SelectionChanged += List_SelectionChanged;
+            // 오른쪽 메뉴: 항목은 열 때마다 그 행의 DB 상태로 만든다(ContextMenu가 있어야 ContextMenuOpening이 온다)
+            _list.ContextMenu = new ContextMenu();
+            _list.ContextMenuOpening += List_ContextMenuOpening;
 
             _overlay = new TextBlock
             {
@@ -733,6 +745,105 @@ namespace MyPlugin
             {
                 Report(ex, null);
             }
+        }
+
+        /// <summary>오른쪽 누름: 누른 행을 고르고 메뉴 대상으로 기억한다(빈 곳·안내 행이면 메뉴를 띄우지 않음).</summary>
+        private void List_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            try
+            {
+                _menuRow = null;
+                var container = ShellUi.FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject, _list);
+                if (container == null)
+                    return;
+                var entry = _list.ItemContainerGenerator.ItemFromContainer(container) as TreeEntry ?? container.DataContext as TreeEntry;
+                if (entry == null || entry.Row == null || entry.Row.Kind == TreeRowKind.Note)
+                    return;
+                _list.SelectedItem = entry;
+                container.Focus();
+                _menuRow = entry.Row;
+            }
+            catch (Exception ex)
+            {
+                Report(ex, null);
+            }
+        }
+
+        /// <summary>메뉴 열기: 마우스로 열면 누른 행, 키보드(Shift+F10·메뉴 키)로 열면 고른 행의 DB 메뉴를 만든다.</summary>
+        private void List_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            try
+            {
+                var byKeyboard = e.CursorLeft < 0 && e.CursorTop < 0;
+                var selected = _list.SelectedItem as TreeEntry;
+                var row = byKeyboard ? (selected != null ? selected.Row : null) : _menuRow;
+                _menuRow = null;
+                if (row == null || row.Kind == TreeRowKind.Note || string.IsNullOrEmpty(row.DbId) || _shutdown)
+                {
+                    e.Handled = true;
+                    return;
+                }
+                FillMenu(_list.ContextMenu, row);
+                if (_list.ContextMenu.Items.Count == 0)
+                    e.Handled = true;
+            }
+            catch (Exception ex)
+            {
+                e.Handled = true;
+                Report(ex, null);
+            }
+        }
+
+        /// <summary>그 행의 DB 메뉴: DB 이름(머리), 연결·다시 연결·연결 끊기, 테이블·뷰면 SELECT 넣기.</summary>
+        private void FillMenu(ContextMenu menu, TreeRow row)
+        {
+            menu.Items.Clear();
+            var dbId = row.DbId;
+            var profile = _host.Profiles.FirstOrDefault(p => p.Id == dbId);
+            if (profile == null)
+                return;
+            menu.Items.Add(new MenuItem { Header = profile.Name, IsEnabled = false });
+            menu.Items.Add(new Separator());
+            var state = TreePanelLogic.ConnectionMenu(_host.GetSession(dbId) != null, _host.IsConnecting(dbId));
+            if (state.Connecting)
+            {
+                menu.Items.Add(new MenuItem { Header = "연결하는 중…", IsEnabled = false });
+            }
+            else
+            {
+                menu.Items.Add(MenuAction("연결", state.CanConnect, () => ConnectAndExpand(dbId)));
+                menu.Items.Add(MenuAction("다시 연결", state.CanReconnect, () => _host.Reconnect(dbId),
+                    "연결을 끊고 저장된 접속 정보로 다시 연결합니다(커밋 대기 변경은 묻습니다)"));
+                menu.Items.Add(MenuAction("연결 끊기", state.CanDisconnect, () => _host.Disconnect(dbId)));
+            }
+            if (row.Kind == TreeRowKind.Object && TreeGroups.HasColumns(row.ObjectType))
+            {
+                var owner = row.Owner;
+                var name = row.ObjectName;
+                menu.Items.Add(new Separator());
+                menu.Items.Add(MenuAction("SELECT 문 넣기", true, () => _host.InsertSelect(dbId, owner, name)));
+            }
+        }
+
+        // 메뉴가 닫힌 뒤 실행한다(확인·비밀번호 창이 메뉴 위에 뜨지 않게)
+        private MenuItem MenuAction(string header, bool enabled, Action action, string tooltip = null)
+        {
+            var item = new MenuItem { Header = header, IsEnabled = enabled };
+            if (tooltip != null)
+                item.ToolTip = tooltip;
+            item.Click += (s, e) => Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+            {
+                try
+                {
+                    if (!_shutdown)
+                        action();
+                }
+                catch (Exception ex)
+                {
+                    Report(ex, null);
+                }
+            }));
+            return item;
         }
 
         private void List_PreviewKeyDown(object sender, KeyEventArgs e)
