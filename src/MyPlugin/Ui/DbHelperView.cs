@@ -334,6 +334,26 @@ namespace MyPlugin
             _workspace.RunActiveStatement();
         }
 
+        public void RunScript()
+        {
+            _workspace.RunActiveScript();
+        }
+
+        public void Describe()
+        {
+            _workspace.DescribeAtCaret();
+        }
+
+        public void QuickQuery(string dbId, string owner, string objectName)
+        {
+            _workspace.QuickQuery(dbId, owner, objectName);
+        }
+
+        public void DescribeObject(string dbId, string owner, string objectName)
+        {
+            _workspace.DescribeObject(dbId, owner, objectName);
+        }
+
         public void Cancel()
         {
             _workspace.CancelActiveRun();
@@ -424,6 +444,9 @@ namespace MyPlugin
                         break;
                     case ShellShortcut.CloseTab:
                         CloseTab();
+                        break;
+                    case ShellShortcut.RunScript:
+                        RunScript();
                         break;
                 }
             }

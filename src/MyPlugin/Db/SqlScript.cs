@@ -166,6 +166,64 @@ namespace MyPlugin
         }
 
         /// <summary>
+        /// 여러 문장 실행(선택 영역 Ctrl+Enter·스크립트 실행 F5)용 나누기. <see cref="Split"/>과 같되,
+        /// 빈 줄에서 끊긴 조각 뒤의 조각이 새 문장으로 시작하지 않으면(FROM·WHERE·SET·AND·UNION 등으로 이어지면) 한 문장으로 합친다.
+        /// 그래서 문장 안에 빈 줄을 둔 스크립트도 ';'로 끝내면 그대로 실행된다. ';'·'/' 줄은 언제나 문장을 끝낸다.
+        /// 합친 문장은 <see cref="Parse"/>로 다시 분석하고 Start·Length는 원문 기준이다.
+        /// </summary>
+        public static List<SqlStatement> SplitForRun(string script)
+        {
+            var result = new List<SqlStatement>();
+            foreach (var part in Split(script))
+            {
+                var previous = result.Count > 0 ? result[result.Count - 1] : null;
+                if (previous != null && EndedAtBlankLine(script, previous) && !StartsStatement(part))
+                {
+                    var start = previous.Start;
+                    var end = part.Start + part.Length;
+                    var merged = Parse(script.Substring(start, end - start));
+                    if (merged != null)
+                    {
+                        merged.Start += start;
+                        merged.Length = end - merged.Start;
+                        result[result.Count - 1] = merged;
+                        continue;
+                    }
+                }
+                result.Add(part);
+            }
+            return result;
+        }
+
+        // 빈 줄(또는 스크립트 끝)에서 끝난 일반 문장인지: ';'·'/' 줄로 끝났거나 PL/SQL 블록이면 아니다
+        private static bool EndedAtBlankLine(string script, SqlStatement statement)
+        {
+            if (statement.IsPlSqlBlock)
+                return false;
+            var raw = script.Substring(statement.Start, statement.Length).TrimEnd();
+            if (raw.EndsWith(";", StringComparison.Ordinal))
+                return false;
+            var lastBreak = raw.LastIndexOf('\n');
+            return raw.Substring(lastBreak + 1).Trim() != "/";
+        }
+
+        // 새 문장으로 시작하는 조각인지. ALTER SESSION·LOCK·EXPLAIN 말고 종류가 Other인 조각(FROM·WHERE·SET·AND …)은 앞 문장에 이어진다.
+        private static bool StartsStatement(SqlStatement statement)
+        {
+            if (statement.Kind != SqlKind.Other)
+                return true;
+            switch (statement.Verb)
+            {
+                case "ALTER":
+                case "LOCK":
+                case "EXPLAIN":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
         /// 선택 영역처럼 이미 문장 하나로 정해진 텍스트를 분석한다. 주석·공백(과 ';'·'/' 줄 같은 빈 구분자)뿐이면 null.
         /// 가운데의 ';'·빈 줄로는 나누지 않고 끝의 '/' 줄과(PL/SQL 블록이 아니면) 끝의 ';' 하나만 뗀다.
         /// Length는 텍스트 처음부터 문장 끝(뗀 구분자 포함)까지.

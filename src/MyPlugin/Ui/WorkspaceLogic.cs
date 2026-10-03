@@ -363,6 +363,105 @@ namespace MyPlugin
             return Count(rows) + "행을 TSV로 복사했습니다(머리글 포함).";
         }
 
+        // ---- 빠른 조회(트리 F1) ----
+
+        /// <summary>트리 F1 빠른 조회로 처음 가져올 행 수.</summary>
+        public const int QuickQueryRows = 100;
+
+        public static string QuickQueryMessage(string qualifiedName, string tabTitle)
+        {
+            return "빠른 조회: " + qualifiedName + " 앞 " + QuickQueryRows.ToString(Inv) + "행 → '" + tabTitle + "' 탭 (편집기는 그대로, 실행 기록에 남음)";
+        }
+
+        // ---- 여러 문장 실행(결과 하위 탭) ----
+
+        /// <summary>한 번 실행에서 그리드로 남기는 최대 조회 결과 수. 넘는 조회는 커서를 바로 닫는다(서버의 열린 커서 수를 아끼려고).</summary>
+        public const int MaxResultSets = 20;
+
+        private static readonly System.Text.RegularExpressions.Regex FromTarget = new System.Text.RegularExpressions.Regex(
+            @"\bFROM\s+((?:""[^""]+""|[A-Za-z_][\w$#]*)(?:\s*\.\s*(?:""[^""]+""|[A-Za-z_][\w$#]*))?)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>조회의 첫 FROM 대상(예: "SAMPLE1.AUDIT_LOG"). 주석·문자열 안은 보지 않는다. 없으면(DUAL도 포함해 그대로) null.</summary>
+        public static string ResultSource(string sql)
+        {
+            if (string.IsNullOrEmpty(sql))
+                return null;
+            var match = FromTarget.Match(StripCommentsAndStrings(sql));
+            // "sample1 . dept" → "sample1.dept"(따옴표 이름 안의 공백은 그대로)
+            return match.Success ? System.Text.RegularExpressions.Regex.Replace(match.Groups[1].Value, @"\s*\.\s*", ".") : null;
+        }
+
+        /// <summary>결과 하위 탭 이름: "결과 2 · SAMPLE1.ATTACHMENT (5행)", 더 있으면 "(200행+)".</summary>
+        public static string ResultTabTitle(int number, string sql, int rows, bool hasMore)
+        {
+            var source = ResultSource(sql);
+            return "결과 " + number.ToString(Inv) + (source != null ? " · " + source : "") + " (" + Count(rows) + "행" + (hasMore ? "+" : "") + ")";
+        }
+
+        /// <summary>여러 문장 실행의 메시지 머리: "[2/5] ".</summary>
+        public static string ScriptStep(int index, int total)
+        {
+            return "[" + index.ToString(Inv) + "/" + total.ToString(Inv) + "] ";
+        }
+
+        /// <summary>여러 문장 실행이 끝났을 때 메시지 한 줄.</summary>
+        public static string ScriptSummary(int executed, int total, int queries, int failedAt, bool cancelled, TimeSpan elapsed)
+        {
+            var head = failedAt > 0 ? failedAt.ToString(Inv) + "번째 문장에서 오류로 멈췄습니다"
+                : cancelled ? "취소해 멈췄습니다"
+                : "스크립트 실행을 마쳤습니다";
+            return head + " — 문장 " + total.ToString(Inv) + "개 중 " + executed.ToString(Inv) + "개 실행, 조회 결과 "
+                + queries.ToString(Inv) + "개 · " + Seconds(elapsed) + "초";
+        }
+
+        /// <summary>여러 문장 실행 뒤 상태줄 앞머리: "문장 5/5 · 결과 2개 —" (오류·취소면 그 표시).</summary>
+        public static string ScriptLead(int executed, int total, int results, int failedAt, bool cancelled)
+        {
+            var lead = "문장 " + executed.ToString(Inv) + "/" + total.ToString(Inv) + " · 결과 " + results.ToString(Inv) + "개";
+            if (failedAt > 0)
+                lead += " (" + failedAt.ToString(Inv) + "번째에서 오류)";
+            else if (cancelled)
+                lead += " (취소됨)";
+            return lead + " —";
+        }
+
+        public static string TooManyResultsMessage(int index)
+        {
+            return index.ToString(Inv) + "번째 문장의 결과는 보이지 않습니다(한 번에 결과 " + MaxResultSets.ToString(Inv) + "개까지). 커서를 닫았습니다.";
+        }
+
+        // 주석과 문자열 안의 글자를 공백으로 바꾼다(FROM 찾기용)
+        private static string StripCommentsAndStrings(string sql)
+        {
+            var chars = sql.ToCharArray();
+            for (var i = 0; i < chars.Length; i++)
+            {
+                if (chars[i] == '-' && i + 1 < chars.Length && chars[i + 1] == '-')
+                {
+                    while (i < chars.Length && chars[i] != '\n')
+                        chars[i++] = ' ';
+                }
+                else if (chars[i] == '/' && i + 1 < chars.Length && chars[i + 1] == '*')
+                {
+                    var end = sql.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                    end = end < 0 ? chars.Length : end + 2;
+                    for (; i < end; i++)
+                        chars[i] = ' ';
+                    i--;
+                }
+                else if (chars[i] == '\'')
+                {
+                    chars[i++] = ' ';
+                    while (i < chars.Length && chars[i] != '\'')
+                        chars[i++] = ' ';
+                    if (i < chars.Length)
+                        chars[i] = ' ';
+                }
+            }
+            return new string(chars);
+        }
+
         // ---- 결과 정렬(열 머리 누르기) ----
 
         /// <summary>
@@ -587,9 +686,13 @@ namespace MyPlugin
             return status;
         }
 
-        public static StatusInfo RunningStatus(TimeSpan elapsed, bool cancelling)
+        /// <param name="progress">여러 문장 실행이면 "2/5"(몇 번째 문장 / 모두). 아니면 null.</param>
+        public static StatusInfo RunningStatus(TimeSpan elapsed, bool cancelling, string progress = null)
         {
-            var status = new StatusInfo().Part(cancelling ? "취소하는 중… " : "실행 중… ").Then(SecondsShort(elapsed) + "초", true);
+            var status = new StatusInfo().Part(cancelling ? "취소하는 중… " : "실행 중… ");
+            if (!string.IsNullOrEmpty(progress))
+                status.Then("(" + progress + ") ");
+            status.Then(SecondsShort(elapsed) + "초", true);
             if (!cancelling)
                 status.Part("[취소]로 멈출 수 있습니다.");
             return status;

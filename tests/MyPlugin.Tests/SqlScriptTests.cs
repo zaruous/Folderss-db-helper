@@ -921,5 +921,73 @@ namespace MyPlugin.Tests
         {
             Assert.Equal(expected, SqlScript.ContainsPattern(term));
         }
+
+        // ---------- 여러 문장 실행(SplitForRun) ----------
+
+        [Fact]
+        public void SplitForRun_BlankLineInsideStatement_KeepsOneStatement()
+        {
+            // 요청 예: 첫 문장 안에 빈 줄이 있어도 ';'로 끝낸 두 문장
+            var script = "SELECT *\r\n\r\n  FROM SAMPLE1.AUDIT_LOG;\r\n\r\nSELECT *\r\n  FROM SAMPLE1.ATTACHMENT;\r\n";
+
+            var statements = SqlScript.SplitForRun(script);
+
+            Assert.Equal(2, statements.Count);
+            Assert.Equal("SELECT *\r\n\r\n  FROM SAMPLE1.AUDIT_LOG", statements[0].Text);
+            Assert.Equal("SELECT *\r\n  FROM SAMPLE1.ATTACHMENT", statements[1].Text);
+            Assert.All(statements, s => Assert.Equal(SqlKind.Query, s.Kind));
+            Assert.Equal(0, statements[0].Start);
+            Assert.Equal(script.IndexOf("AUDIT_LOG;") + "AUDIT_LOG;".Length, statements[0].Start + statements[0].Length);
+            Assert.Equal(script.LastIndexOf("SELECT"), statements[1].Start);
+        }
+
+        [Fact]
+        public void SplitForRun_BlankLineBeforeNewStatement_Splits()
+        {
+            var statements = SqlScript.SplitForRun("SELECT 1 FROM DUAL\n\nSELECT 2 FROM DUAL\n\nUPDATE T SET A = 1 WHERE B = 2");
+
+            Assert.Equal(new[] { "SELECT 1 FROM DUAL", "SELECT 2 FROM DUAL", "UPDATE T SET A = 1 WHERE B = 2" }, statements.Select(s => s.Text).ToArray());
+        }
+
+        [Fact]
+        public void SplitForRun_ContinuationWordsAfterBlankLine_Merge()
+        {
+            var script = "UPDATE EMP\n\nSET SAL = 0\n\nWHERE EMPNO = 1;\nSELECT A\n\n  FROM T\n\n WHERE X = 1\n\n   AND Y = 2";
+
+            var statements = SqlScript.SplitForRun(script);
+
+            Assert.Equal(2, statements.Count);
+            Assert.Equal(SqlKind.Dml, statements[0].Kind);
+            Assert.Null(statements[0].Danger); // 합친 뒤 WHERE가 있으니 위험하지 않다
+            Assert.EndsWith("AND Y = 2", statements[1].Text);
+        }
+
+        [Fact]
+        public void SplitForRun_SemicolonAndSlashAlwaysEnd()
+        {
+            var script = "SELECT 1 FROM DUAL;\nFROM_X;\nBEGIN\n  NULL;\n\nEND;\n/\nSELECT 2 FROM DUAL";
+
+            var statements = SqlScript.SplitForRun(script);
+
+            Assert.Equal(4, statements.Count);
+            Assert.Equal(SqlKind.PlSql, statements[2].Kind);
+            Assert.Equal("SELECT 2 FROM DUAL", statements[3].Text);
+        }
+
+        [Fact]
+        public void SplitForRun_AlterSessionAfterBlankLine_IsNewStatement()
+        {
+            var statements = SqlScript.SplitForRun("SELECT 1 FROM DUAL\n\nALTER SESSION SET NLS_DATE_FORMAT = 'YYYY'\n\nLOCK TABLE T IN EXCLUSIVE MODE");
+
+            Assert.Equal(3, statements.Count);
+        }
+
+        [Fact]
+        public void SplitForRun_SingleStatementAndEmpty()
+        {
+            Assert.Single(SqlScript.SplitForRun("SELECT 1 FROM DUAL;"));
+            Assert.Empty(SqlScript.SplitForRun("  -- 주석만\n"));
+            Assert.Empty(SqlScript.SplitForRun(""));
+        }
     }
 }

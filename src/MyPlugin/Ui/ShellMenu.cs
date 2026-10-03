@@ -29,6 +29,10 @@ namespace MyPlugin
         void ChangeCase(bool upper);
 
         void Run();
+        void RunScript();
+
+        /// <summary>편집기에서 커서가 있는 이름의 테이블 정보(F4).</summary>
+        void Describe();
         void Cancel();
         void FetchNext();
         void Commit();
@@ -59,7 +63,7 @@ namespace MyPlugin
     }
 
     /// <summary>
-    /// 창 맨 위: 메뉴 막대(파일·편집·SQL·연결·도움말) + 작은 아이콘 막대(미니 패널).
+    /// 창 맨 위: 메뉴 막대(파일·편집·SQL·연결·도움말)와 그 아래 줄의 작은 아이콘 막대(미니 패널).
     /// - 단축키 자체는 DbHelperView(창 전체: Ctrl+N·O·S·Shift+S·W)와 편집기(Ctrl+Enter·/·Shift+U·Shift+L)가 처리한다. 메뉴는 글자로 보일 뿐이다.
     /// - Folderss의 MenuItem 스타일은 색만 바꾸고 템플릿은 WPF 기본이라 하위 메뉴 창이 밝은 회색으로 뜬다 — 메뉴 막대 안에서만 쓰는 템플릿을 테마 키로 직접 준다.
     /// - 메뉴 항목은 열 때마다 켬·끔과 이름(연결 대상 DB, 최근 파일)을 맞춘다. 아이콘은 Refresh로 맞춘다.
@@ -120,14 +124,18 @@ namespace MyPlugin
             icons.Children.Add(Icon(IconReconnect, "다시 연결 (트리에서 고른 DB)", null, s => s.CanReconnect, _commands.Reconnect));
             icons.Children.Add(Icon(IconDisconnect, "연결 끊기 (트리에서 고른 DB)", null, s => s.CanDisconnect, _commands.Disconnect));
 
-            var row = new DockPanel { LastChildFill = false };
-            row.Children.Add(menu);
-            row.Children.Add(Divider());
-            row.Children.Add(icons);
-            var bar = new Border { Child = row, Padding = new Thickness(4, 2, 8, 2), BorderThickness = new Thickness(0, 0, 0, 1) };
-            bar.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
-            Theme.Background(bar, Theme.SurfaceBackground);
-            View = bar;
+            // 메뉴 막대(첫 줄) 아래에 아이콘 막대(둘째 줄)
+            var menuBar = new Border { Child = menu, Padding = new Thickness(4, 1, 8, 1), BorderThickness = new Thickness(0, 0, 0, 1) };
+            menuBar.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+            Theme.Background(menuBar, Theme.SurfaceBackground);
+            icons.Margin = new Thickness(0);
+            var iconBar = new Border { Child = icons, Padding = new Thickness(6, 2, 8, 2), BorderThickness = new Thickness(0, 0, 0, 1) };
+            iconBar.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+            Theme.Background(iconBar, Theme.SurfaceBackground);
+            var bars = new StackPanel();
+            bars.Children.Add(menuBar);
+            bars.Children.Add(iconBar);
+            View = bars;
         }
 
         public FrameworkElement View { get; }
@@ -226,11 +234,16 @@ namespace MyPlugin
         {
             var top = Top("SQL(_S)");
             var run = Item("실행(_X)", "Ctrl+Enter", IconRun, _commands.Run);
+            run.ToolTip = "커서가 있는 문장(선택 영역에 문장이 여럿이면 모두)을 실행합니다";
+            var script = Item("스크립트 실행(_A)", "F5", null, _commands.RunScript);
+            script.ToolTip = "편집기의 모든 문장을 차례로 실행하고 조회마다 결과 탭을 만듭니다(오류가 나면 멈춤)";
             var cancel = Item("실행 취소(_C)", null, IconCancel, _commands.Cancel);
             var fetch = Item("다음 행 가져오기(_N)", null, IconFetch, _commands.FetchNext);
             var commit = Item("커밋(_O)", null, IconCommit, _commands.Commit);
             var rollback = Item("롤백(_R)", null, IconRollback, _commands.Rollback);
-            foreach (var item in new object[] { run, cancel, fetch, new Separator(), commit, rollback })
+            var describe = Item("테이블 정보(_I)…", "F4", null, _commands.Describe);
+            describe.ToolTip = "편집기에서 커서가 있는 이름(또는 선택한 스키마.이름)의 열·인덱스·제약 조건을 봅니다";
+            foreach (var item in new object[] { run, script, cancel, fetch, new Separator(), describe, new Separator(), commit, rollback })
                 top.Items.Add(item);
             top.SubmenuOpened += (s, e) =>
             {
@@ -238,6 +251,7 @@ namespace MyPlugin
                     return;
                 var state = SafeState();
                 run.IsEnabled = state.CanRun;
+                script.IsEnabled = state.CanRun;
                 cancel.IsEnabled = state.CanCancel;
                 fetch.IsEnabled = state.CanFetch;
                 commit.IsEnabled = state.CanCommit;
