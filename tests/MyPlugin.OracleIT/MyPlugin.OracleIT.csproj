@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    실제 Oracle 서버(docker oracle-12c)에 붙어 대표 기능 3개를 실측한다.
+    화면(WPF)을 뺀 플러그인 소스를 단위 테스트 프로젝트와 같은 방식으로 링크한다.
+    접속 정보: 환경 변수 ORACLE_IT_DSN(기본 localhost:1521/xe), ORACLE_IT_SYS_PW(기본 oracle, SYSTEM 계정).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\MyPlugin\OracleConnections.cs" Link="OracleConnections.cs" />
+    <Compile Include="..\..\src\MyPlugin\Db\*.cs" Link="Db\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\MyPlugin\Ui\TreeModel.cs" Link="Ui\TreeModel.cs" />
+    <Compile Include="..\..\src\MyPlugin\Ui\*Logic.cs" Link="Ui\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.26.301" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,1979 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
+
+namespace MyPlugin
+{
+    internal enum MessageKind { Info, Success, Error }
+
+    /// <summary>SqlWorkspace가 셸(DbHelperView)에게 받는 기능. 모든 호출은 UI 스레드에서.</summary>
+    internal interface IDbHost
+    {
+        /// <summary>현재 접속 목록(프로필 순서).</summary>
+        IReadOnlyList<OracleConnectionProfile> Profiles { get; }
+
+        /// <summary>Id로 접속을 찾는다. 없으면 null.</summary>
+        OracleConnectionProfile FindProfile(string dbId);
+
+        /// <summary>연결된 세션. 연결 안 됐으면 null.</summary>
+        DbSession GetSession(string dbId);
+
+        /// <summary>연결한다(필요하면 비밀번호를 묻는다). 연결되면 true. 이미 연결돼 있으면 바로 true.
+        /// 세션이 끊긴 상태(IsBroken)면 그 세션을 버리고 다시 연결한다(이때 커밋 대기 변경은 이미 서버에서 사라졌다고 안내).</summary>
+        Task<bool> ConnectAsync(string dbId);
+
+        /// <summary>트리에서 고른 DB(새 탭의 대상). 없으면 null.</summary>
+        string SelectedDbId { get; }
+
+        /// <summary>툴바의 "가져올 행"(200/1000/5000).</summary>
+        int FetchCount { get; }
+
+        /// <summary>실행 시작·끝, 커밋 대기 변경 등으로 그 DB의 표시(툴바·트리 배지)를 새로 그려야 할 때.</summary>
+        void StateChanged(string dbId);
+    }
+
+    /// <summary>
+    /// SQL 탭들(탭마다 대상 DB) + 편집기 + 결과(그리드·메시지·기록) + 상태줄. PoC의 오른쪽 영역과 같은 동작.
+    /// 화면은 코드로 만든다(XAML 없음). 색은 Theme 도우미로 테마 키에 연결한다.
+    /// </summary>
+    internal sealed class SqlWorkspace : Grid
+    {
+        private const double EditorFontSize = 13;
+        // 편집기와 줄 번호 칸의 줄 높이를 고정해 맞춘다(한글처럼 대체 글꼴로 그리는 줄도 같은 높이가 된다)
+        private const double EditorLineHeight = 19;
+        private const string FirstTabText = "-- 커서가 있는 문장(빈 줄이나 ;로 구분)이나 선택한 부분을 Ctrl+Enter로 실행합니다.\n"
+            + "-- PL/SQL 블록(BEGIN·DECLARE·CREATE PROCEDURE 등)은 끝에 / 만 있는 줄을 두세요(블록 안의 빈 줄·;로는 끝나지 않음).\n";
+
+        private static readonly Thickness EditorPadding = new Thickness(6, 4, 6, 4);
+
+        private readonly IDbHost _host;
+        private readonly List<SqlTabState> _tabs = new List<SqlTabState>();
+        // 세션이 바빠 바로 닫지 못한 커서(탭 닫기·대상 변경). 그 세션의 실행이 끝나면 다시 닫는다.
+        private readonly List<KeyValuePair<DbSession, QueryCursor>> _orphanCursors = new List<KeyValuePair<DbSession, QueryCursor>>();
+        private readonly DispatcherTimer _elapsedTimer;
+        private readonly DispatcherTimer _stateTimer;
+
+        private SqlTabState _active;
+        private int _nextTabNumber = 1;
+        private WorkspacePane _pane = WorkspacePane.Grid;
+        private bool _fillingTarget;
+        private int _gutterLines = -1;
+        private string _stateSignature;
+        private bool _stateTimerFailed;
+
+        private Grid _strip;
+        private StackPanel _tabPanel;
+        private ScrollViewer _tabScroll;
+        private Button _addTab;
+        private StackPanel _rightGroup;
+        private ComboBox _target;
+        private TextBlock _cursorInfo;
+        private Button _run;
+        private TextBlock _runHint;
+        private Button _cancel;
+
+        private Grid _editorHost;
+        private TextBlock _gutterText;
+        private TranslateTransform _gutterShift;
+
+        private PaneTab _gridTab;
+        private PaneTab _messagesTab;
+        private PaneTab _historyTab;
+        private Button _copy;
+        private Grid _gridHost;
+        private TextBlock _gridPlaceholder;
+        private ResultMessageList _messages;
+        private ResultHistoryList _history;
+
+        private TextBlock _statusText;
+        private Button _statusAction;
+
+        public SqlWorkspace(IDbHost host)
+        {
+            if (host == null)
+                throw new ArgumentNullException(nameof(host));
+            _host = host;
+            Theme.Background(this, Theme.PanelBackground);
+
+            RowDefinitions.Add(new RowDefinition { Height = new GridLength(42, GridUnitType.Star), MinHeight = 90 });
+            RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            RowDefinitions.Add(new RowDefinition { Height = new GridLength(58, GridUnitType.Star), MinHeight = 110 });
+
+            var editorArea = new DockPanel();
+            var strip = BuildTabStrip();
+            DockPanel.SetDock(strip, Dock.Top);
+            editorArea.Children.Add(strip);
+            editorArea.Children.Add(BuildEditor());
+            Children.Add(editorArea);
+
+            var splitter = BuildSplitter();
+            Grid.SetRow(splitter, 1);
+            Children.Add(splitter);
+
+            var results = new DockPanel();
+            var header = BuildResultsHeader();
+            DockPanel.SetDock(header, Dock.Top);
+            results.Children.Add(header);
+            var status = BuildStatusBar();
+            DockPanel.SetDock(status, Dock.Bottom);
+            results.Children.Add(status);
+            results.Children.Add(BuildResultsPane());
+            Grid.SetRow(results, 2);
+            Children.Add(results);
+
+            _elapsedTimer = new DispatcherTimer(DispatcherPriority.Normal, Dispatcher) { Interval = TimeSpan.FromMilliseconds(100) };
+            _elapsedTimer.Tick += ElapsedTimer_Tick;
+            // 셸이 연결·끊기·가져올 행 변경을 OnHostStateChanged로 알린다. 알림이 빠진 경로(커서 정리 중 끊김 등)를 위해 1초마다도 맞춘다
+            _stateTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromSeconds(1) };
+            _stateTimer.Tick += StateTimer_Tick;
+            Loaded += Workspace_Loaded;
+            Unloaded += Workspace_Unloaded;
+
+            var first = CreateTab(InitialTarget(), FirstTabText);
+            first.Editor.CaretIndex = first.Editor.Text.Length;
+            ActivateTab(first, false);
+            SelectPane(WorkspacePane.Grid);
+        }
+
+        /// <summary>지금 탭의 대상 DB Id(없으면 null). 셸의 커밋·롤백·모드 표시가 이 DB를 대상으로 한다.</summary>
+        public string ActiveDbId
+        {
+            get { return _active != null ? _active.DbId : null; }
+        }
+
+        /// <summary>지금 탭이 바뀌었거나 그 탭의 대상 DB가 바뀌었을 때.</summary>
+        public event EventHandler ActiveTabChanged;
+
+        /// <summary>트리에서 테이블·뷰를 두 번 눌렀을 때: 그 DB 대상 탭(지금 탭이 다른 DB면 그 DB의 실행 중 아닌 탭, 없으면 새 탭)으로 옮겨 맨 위에 SELECT를 넣는다.</summary>
+        public void InsertSelect(string dbId, string owner, string objectName)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(objectName))
+                    return;
+                bool moved;
+                var tab = TabForInsert(dbId, out moved);
+                InsertAtTop(tab, WorkspaceLogic.SelectStatement(owner, objectName));
+                AddMessage(dbId, WorkspaceLogic.SelectMadeMessage(WorkspaceLogic.QualifiedName(owner, objectName), moved, tab.Title, NameOf(dbId)), MessageKind.Info);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>메시지 탭에 한 줄(시각, DB 배지, 문장). dbId가 null이면 배지 없이.</summary>
+        public void AddMessage(string dbId, string text, MessageKind kind)
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(() => AddMessage(dbId, text, kind)));
+                return;
+            }
+            try
+            {
+                _messages.Add(DateTime.Now, Profile(dbId), dbId != null, text, kind);
+                RenderResultsHeader();
+            }
+            catch (Exception)
+            {
+                // 메시지를 남기지 못하는 화면 오류는 다시 메시지로 알릴 수 없다 — Folderss를 멈추지 않는 것이 우선
+            }
+        }
+
+        /// <summary>그 DB를 대상으로 실행·가져오기 중인 탭이 있으면 true.</summary>
+        public bool IsRunning(string dbId)
+        {
+            return dbId != null && _tabs.Any(t => t.Running && t.RunningDbId == dbId);
+        }
+
+        public bool AnyRunning
+        {
+            get { return _tabs.Any(t => t.Running); }
+        }
+
+        /// <summary>모든 탭의 실행을 취소 요청한다(창 닫기).</summary>
+        public void CancelAll()
+        {
+            foreach (var tab in _tabs)
+            {
+                if (tab.Running)
+                    RequestCancel(tab);
+            }
+        }
+
+        /// <summary>그 DB의 연결을 끊기 직전: 그 DB 탭들의 열린 커서를 닫고 상태줄을 "커서 닫힘"으로.</summary>
+        public async Task OnDisconnectingAsync(string dbId)
+        {
+            try
+            {
+                // 기다리기 전에 모두 놓는다 — 닫는 동안 그 DB 탭에서 [다음 행 가져오기]를 누르지 못하게
+                var closing = new List<KeyValuePair<DbSession, QueryCursor>>();
+                var affected = new List<SqlTabState>();
+                foreach (var tab in _tabs)
+                {
+                    if (tab.Cursor == null || tab.ResultDbId != dbId)
+                        continue;
+                    if (tab.HoldsOpenCursor)
+                        closing.Add(new KeyValuePair<DbSession, QueryCursor>(tab.CursorSession, tab.Cursor));
+                    if (tab.HoldsOpenCursor || (tab.Status != null && tab.Status.ShowsCursor))
+                        affected.Add(tab);
+                    tab.CursorReleased = true;
+                }
+                foreach (var tab in affected)
+                    SetStatus(tab, FetchStatusOf(tab));
+                var session = _host.GetSession(dbId);
+                _orphanCursors.RemoveAll(p => p.Value.IsClosed || ReferenceEquals(p.Key, session));
+                RenderStatus();
+                foreach (var pair in closing)
+                {
+                    try
+                    {
+                        if (pair.Key != null && !pair.Value.IsClosed)
+                            await pair.Key.CloseCursorAsync(pair.Value);
+                    }
+                    catch (Exception)
+                    {
+                        // 바쁘거나 끊긴 세션 — 연결을 닫을 때 커서도 함께 닫힌다
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>툴바 [커밋]·[롤백] 뒤: 트랜잭션이 끝나 닫힌 FOR UPDATE 커서를 보이던 탭의 상태줄을 "커서 닫힘"으로.</summary>
+        public void OnTransactionEnded(string dbId)
+        {
+            try
+            {
+                RefreshCursorStates(dbId);
+                RenderStatus();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>
+        /// 연결·끊기·끊김·가져올 행이 바뀌었을 수 있음(셸이 알린다. 1초 타이머는 알림을 놓친 경우를 위한 것). 바뀐 것이 없으면 아무것도 안 함.
+        /// </summary>
+        public void OnHostStateChanged()
+        {
+            try
+            {
+                RefreshHostState();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>접속 목록이 바뀜: 탭 배지·대상 목록 갱신, 삭제된 접속을 대상으로 하던 탭은 대상을 비우고 메시지를 남긴다.</summary>
+        public void OnProfilesChanged()
+        {
+            try
+            {
+                var activeChanged = false;
+                foreach (var tab in _tabs)
+                {
+                    if (DropMissingTarget(tab) && tab == _active)
+                        activeChanged = true;
+                }
+                _stateSignature = null;
+                RenderTabs();
+                RenderTarget();
+                RenderResults();
+                RenderStatus();
+                if (activeChanged)
+                    RaiseActiveTabChanged();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        public void FocusEditor()
+        {
+            try
+            {
+                FocusActiveEditor();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        // ================= 화면 만들기 =================
+
+        private FrameworkElement BuildTabStrip()
+        {
+            _strip = new Grid { MinHeight = 30 };
+            Theme.Background(_strip, Theme.SurfaceBackground);
+            _strip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            _strip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            _strip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            _strip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            _tabPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            _tabScroll = new ScrollViewer
+            {
+                Content = _tabPanel,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Focusable = false
+            };
+            _tabScroll.PreviewMouseWheel += TabScroll_PreviewMouseWheel;
+            _strip.Children.Add(_tabScroll);
+
+            _addTab = new Button
+            {
+                Content = "＋",
+                ToolTip = "새 SQL 탭 (트리에서 고른 DB 대상)",
+                Padding = new Thickness(8, 1, 8, 1),
+                Margin = new Thickness(3, 3, 3, 3),
+                VerticalAlignment = VerticalAlignment.Center,
+                Focusable = false
+            };
+            AutomationProperties.SetName(_addTab, "새 SQL 탭");
+            _addTab.Click += (s, e) => Safe(AddTab);
+            Grid.SetColumn(_addTab, 1);
+            _strip.Children.Add(_addTab);
+
+            _rightGroup = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 6, 0) };
+            var targetLabel = Theme.Text("대상", Theme.SecondaryText);
+            targetLabel.FontSize = 11.5;
+            targetLabel.VerticalAlignment = VerticalAlignment.Center;
+            targetLabel.Margin = new Thickness(0, 0, 4, 0);
+            _rightGroup.Children.Add(targetLabel);
+
+            _target = new ComboBox { Width = 140, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, ToolTip = "이 탭의 대상 DB" };
+            AutomationProperties.SetName(_target, "이 탭의 대상 DB");
+            _target.SelectionChanged += Target_SelectionChanged;
+            _target.DropDownOpened += (s, e) => Safe(RenderTarget);
+            _target.DropDownClosed += (s, e) => Safe(RenderTarget);
+            _rightGroup.Children.Add(_target);
+
+            _cursorInfo = Theme.Text("줄 1, 열 1", Theme.SecondaryText);
+            _cursorInfo.FontSize = 11;
+            _cursorInfo.MinWidth = 64;
+            _cursorInfo.Margin = new Thickness(10, 0, 8, 0);
+            _cursorInfo.VerticalAlignment = VerticalAlignment.Center;
+            _rightGroup.Children.Add(_cursorInfo);
+
+            var runLabel = new TextBlock { Text = "실행", VerticalAlignment = VerticalAlignment.Center };
+            _runHint = new TextBlock { Text = "Ctrl+Enter", FontSize = 11, Opacity = 0.75, Margin = new Thickness(5, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            var runContent = new StackPanel { Orientation = Orientation.Horizontal };
+            runContent.Children.Add(runLabel);
+            runContent.Children.Add(_runHint);
+            _run = new Button
+            {
+                Content = runContent,
+                Padding = new Thickness(10, 2, 10, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+                // 눌러도 편집기의 캐럿·선택이 그대로 있게(이어서 Ctrl+Enter)
+                Focusable = false,
+                ToolTip = "커서가 있는 문장이나 선택한 부분을 실행 (Ctrl+Enter)"
+            };
+            AutomationProperties.SetName(_run, "실행");
+            WorkspaceUi.MakePrimary(_run, runLabel, _runHint);
+            _run.Click += (s, e) => RunActive();
+            _rightGroup.Children.Add(_run);
+
+            _cancel = new Button
+            {
+                Content = "취소",
+                Padding = new Thickness(10, 2, 10, 2),
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsEnabled = false,
+                Focusable = false,
+                ToolTip = "실행 중인 문장 취소"
+            };
+            _cancel.Click += (s, e) => Safe(CancelActive);
+            _rightGroup.Children.Add(_cancel);
+
+            Grid.SetColumn(_rightGroup, 3);
+            _strip.Children.Add(_rightGroup);
+            _strip.SizeChanged += (s, e) => Safe(UpdateTabStripLayout);
+            _rightGroup.SizeChanged += (s, e) => Safe(UpdateTabStripLayout);
+
+            var border = new Border { BorderThickness = new Thickness(0, 0, 0, 1), Child = _strip };
+            border.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+            return border;
+        }
+
+        private FrameworkElement BuildEditor()
+        {
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            _gutterText = new TextBlock
+            {
+                Text = "1",
+                FontFamily = Theme.Mono,
+                FontSize = 12,
+                TextAlignment = TextAlignment.Right,
+                LineHeight = EditorLineHeight,
+                LineStackingStrategy = LineStackingStrategy.BlockLineHeight
+            };
+            Theme.Foreground(_gutterText, Theme.DisabledText);
+            _gutterShift = new TranslateTransform();
+            _gutterText.RenderTransform = _gutterShift;
+            // 칸보다 긴 줄 번호를 Grid·Border에 바로 넣으면 레이아웃 잘림(로컬 좌표)이 생겨 RenderTransform으로 올려도 아래 번호가 안 보인다.
+            // Canvas 자식은 잘림 없이 자기 크기로 배치되므로 Canvas에 넣고, 잘라 내기는 바깥 Border(ClipToBounds)가 한다.
+            var numbers = new Canvas { HorizontalAlignment = HorizontalAlignment.Right };
+            numbers.SetBinding(FrameworkElement.WidthProperty, new Binding(nameof(FrameworkElement.ActualWidth)) { Source = _gutterText });
+            numbers.Children.Add(_gutterText);
+            var gutter = new Border
+            {
+                Child = numbers,
+                MinWidth = 36,
+                Padding = new Thickness(6, 0, 6, 0),
+                BorderThickness = new Thickness(0, 0, 1, 0),
+                ClipToBounds = true
+            };
+            gutter.SetResourceReference(Border.BackgroundProperty, Theme.SurfaceBackground);
+            gutter.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+            grid.Children.Add(gutter);
+
+            _editorHost = new Grid();
+            Grid.SetColumn(_editorHost, 1);
+            grid.Children.Add(_editorHost);
+            return grid;
+        }
+
+        private GridSplitter BuildSplitter()
+        {
+            var splitter = new GridSplitter
+            {
+                Height = 5,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                ResizeDirection = GridResizeDirection.Rows,
+                ResizeBehavior = GridResizeBehavior.PreviousAndNext,
+                ShowsPreview = false,
+                Focusable = false
+            };
+            Theme.Background(splitter, Theme.SurfaceBackground);
+            splitter.MouseEnter += (s, e) => Theme.Background(splitter, Theme.Accent);
+            splitter.MouseLeave += (s, e) => Theme.Background(splitter, Theme.SurfaceBackground);
+            return splitter;
+        }
+
+        private FrameworkElement BuildResultsHeader()
+        {
+            var bar = new DockPanel();
+            Theme.Background(bar, Theme.SurfaceBackground);
+
+            _copy = new Button
+            {
+                Content = "복사(TSV)",
+                Padding = new Thickness(10, 1, 10, 1),
+                Margin = new Thickness(4, 3, 6, 3),
+                IsEnabled = false,
+                ToolTip = "결과 전체를 머리글과 함께 TSV로 복사"
+            };
+            _copy.Click += CopyAll_Click;
+            DockPanel.SetDock(_copy, Dock.Right);
+            bar.Children.Add(_copy);
+
+            var tabs = new StackPanel { Orientation = Orientation.Horizontal };
+            _gridTab = new PaneTab("결과", true);
+            _messagesTab = new PaneTab("메시지", true);
+            _historyTab = new PaneTab("기록", false);
+            _gridTab.Button.Click += (s, e) => Safe(() => SelectPane(WorkspacePane.Grid));
+            _messagesTab.Button.Click += (s, e) => Safe(() => SelectPane(WorkspacePane.Messages));
+            _historyTab.Button.Click += (s, e) => Safe(() => SelectPane(WorkspacePane.History));
+            tabs.Children.Add(_gridTab.Button);
+            tabs.Children.Add(_messagesTab.Button);
+            tabs.Children.Add(_historyTab.Button);
+            bar.Children.Add(tabs);
+
+            var border = new Border { BorderThickness = new Thickness(0, 0, 0, 1), Child = bar };
+            border.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+            return border;
+        }
+
+        private FrameworkElement BuildResultsPane()
+        {
+            var pane = new Grid();
+            Theme.Background(pane, Theme.PanelBackground);
+
+            _gridHost = new Grid();
+            _gridPlaceholder = Theme.Text("", Theme.SecondaryText);
+            _gridPlaceholder.HorizontalAlignment = HorizontalAlignment.Center;
+            _gridPlaceholder.VerticalAlignment = VerticalAlignment.Center;
+            _gridPlaceholder.TextAlignment = TextAlignment.Center;
+            _gridPlaceholder.TextWrapping = TextWrapping.Wrap;
+            _gridPlaceholder.Margin = new Thickness(16);
+            _gridHost.Children.Add(_gridPlaceholder);
+            pane.Children.Add(_gridHost);
+
+            _messages = new ResultMessageList(text => CopyText(text, null));
+            pane.Children.Add(_messages.View);
+
+            _history = new ResultHistoryList();
+            _history.Activated += entry => Safe(() => InsertHistory(entry));
+            pane.Children.Add(_history.View);
+            return pane;
+        }
+
+        private FrameworkElement BuildStatusBar()
+        {
+            var bar = new DockPanel();
+            _statusAction = new Button
+            {
+                Padding = new Thickness(10, 0, 10, 0),
+                Margin = new Thickness(8, 2, 6, 2),
+                FontSize = 11.5,
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed
+            };
+            _statusAction.Click += StatusAction_Click;
+            DockPanel.SetDock(_statusAction, Dock.Right);
+            bar.Children.Add(_statusAction);
+
+            _statusText = new TextBlock
+            {
+                FontSize = 11.5,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextWrapping = TextWrapping.NoWrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 3, 8, 3)
+            };
+            Theme.Foreground(_statusText, Theme.SecondaryText);
+            bar.Children.Add(_statusText);
+
+            var border = new Border { BorderThickness = new Thickness(0, 1, 0, 0), MinHeight = 26, Child = bar };
+            border.SetResourceReference(Border.BackgroundProperty, Theme.SurfaceBackground);
+            border.SetResourceReference(Border.BorderBrushProperty, Theme.Border);
+            return border;
+        }
+
+        private TextBox CreateEditor(string text)
+        {
+            var editor = new TextBox
+            {
+                AcceptsReturn = true,
+                AcceptsTab = true,
+                TextWrapping = TextWrapping.NoWrap,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                FontFamily = Theme.Mono,
+                FontSize = EditorFontSize,
+                BorderThickness = new Thickness(0),
+                Padding = EditorPadding,
+                IsInactiveSelectionHighlightEnabled = true,
+                Visibility = Visibility.Collapsed,
+                Text = WorkspaceLogic.NormalizeNewlines(text ?? "", Environment.NewLine)
+            };
+            SpellCheck.SetIsEnabled(editor, false);
+            editor.SetValue(TextBlock.LineHeightProperty, EditorLineHeight);
+            editor.SetValue(TextBlock.LineStackingStrategyProperty, LineStackingStrategy.BlockLineHeight);
+            Theme.Background(editor, Theme.PanelBackground);
+            Theme.Foreground(editor);
+            editor.SetResourceReference(TextBoxBase.CaretBrushProperty, Theme.PrimaryText);
+            AutomationProperties.SetName(editor, "SQL 편집기");
+            editor.TextChanged += Editor_TextChanged;
+            editor.SelectionChanged += Editor_SelectionChanged;
+            editor.PreviewKeyDown += Editor_PreviewKeyDown;
+            editor.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(Editor_ScrollChanged));
+            return editor;
+        }
+
+        // ================= 탭 =================
+
+        private string InitialTarget()
+        {
+            var selected = _host.SelectedDbId;
+            if (Profile(selected) != null)
+                return selected;
+            var first = Profiles().FirstOrDefault();
+            return first != null ? first.Id : null;
+        }
+
+        private SqlTabState CreateTab(string dbId, string text)
+        {
+            var number = WorkspaceLogic.NextTabNumber(_tabs.Select(t => t.Title), _nextTabNumber);
+            _nextTabNumber = number + 1;
+            var tab = new SqlTabState(WorkspaceLogic.TabTitle(number), dbId, CreateEditor(text))
+            {
+                Status = WorkspaceLogic.ReadyStatus()
+            };
+            _tabs.Add(tab);
+            _editorHost.Children.Add(tab.Editor);
+            return tab;
+        }
+
+        private void AddTab()
+        {
+            var selected = _host.SelectedDbId;
+            var target = Profile(selected) != null ? selected : (_active != null ? _active.DbId : null);
+            var profile = Profile(target);
+            if (profile == null)
+                target = null;
+            var tab = CreateTab(target, WorkspaceLogic.NewTabText(profile != null ? profile.Name : null));
+            tab.Editor.CaretIndex = tab.Editor.Text.Length;
+            ActivateTab(tab, true);
+        }
+
+        private void ActivateTab(SqlTabState tab, bool focusEditor)
+        {
+            if (tab == null)
+                return;
+            var changed = _active != tab;
+            _active = tab;
+            tab.Done = false;
+            foreach (var t in _tabs)
+                t.Editor.Visibility = t == tab ? Visibility.Visible : Visibility.Collapsed;
+            if (tab.PendingPane.HasValue)
+            {
+                var pane = tab.PendingPane.Value;
+                tab.PendingPane = null;
+                SelectPane(pane);
+            }
+            UpdateGutter(tab, true);
+            PositionGutter(tab, tab.Editor.VerticalOffset);
+            UpdateCursorInfo(tab);
+            RenderTabs();
+            RenderTarget();
+            RenderRunState();
+            RenderResults();
+            RenderStatus();
+            if (focusEditor)
+                FocusActiveEditor();
+            if (changed)
+                RaiseActiveTabChanged();
+        }
+
+        private void CloseTab(SqlTabState tab)
+        {
+            if (_tabs.Count <= 1 || !_tabs.Contains(tab))
+                return;
+            if (tab.Running)
+            {
+                AddMessage(tab.RunningDbId ?? tab.DbId, "'" + tab.Title + "' 탭은 실행 중이라 닫지 않았습니다. 먼저 취소하세요.", MessageKind.Error);
+                return;
+            }
+            if (ReleaseCursor(tab))
+                AddMessage(tab.ResultDbId, "'" + tab.Title + "' 탭을 닫아 열린 커서를 닫았습니다.", MessageKind.Info);
+            var index = _tabs.IndexOf(tab);
+            _tabs.RemoveAt(index);
+            _editorHost.Children.Remove(tab.Editor);
+            if (tab.Grid != null)
+                _gridHost.Children.Remove(tab.Grid.View);
+            if (_active == tab)
+            {
+                _active = null;
+                ActivateTab(_tabs[Math.Max(0, index - 1)], true);
+            }
+            else
+            {
+                RenderTabs();
+            }
+        }
+
+        private void RenderTabs()
+        {
+            _tabPanel.Children.Clear();
+            Button activeHeader = null;
+            foreach (var tab in _tabs)
+            {
+                var header = BuildTabHeader(tab);
+                _tabPanel.Children.Add(header);
+                if (tab == _active)
+                    activeHeader = header;
+            }
+            if (activeHeader != null)
+            {
+                // 탭이 많아 가로로 스크롤될 때 지금 탭이 보이게(배치가 끝난 뒤)
+                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+                {
+                    try
+                    {
+                        if (activeHeader.IsLoaded)
+                            activeHeader.BringIntoView();
+                    }
+                    catch (Exception)
+                    {
+                        // 그 사이 탭 줄을 다시 그렸으면 할 일이 없다
+                    }
+                }));
+            }
+        }
+
+        private Button BuildTabHeader(SqlTabState tab)
+        {
+            var active = tab == _active;
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            if (tab.Running)
+            {
+                var spin = new TextBlock { Text = "◌", Foreground = Theme.Warning, Margin = new Thickness(0, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = "실행 중" };
+                content.Children.Add(spin);
+            }
+            else if (tab.Done)
+            {
+                var done = Theme.Text("●", Theme.Accent);
+                done.FontSize = 9;
+                done.Margin = new Thickness(0, 0, 5, 0);
+                done.VerticalAlignment = VerticalAlignment.Center;
+                done.ToolTip = "새 결과";
+                content.Children.Add(done);
+            }
+            var title = Theme.Text(tab.Title, active ? Theme.PrimaryText : Theme.SecondaryText);
+            title.VerticalAlignment = VerticalAlignment.Center;
+            if (active)
+                title.FontWeight = FontWeights.SemiBold;
+            content.Children.Add(title);
+            var profile = Profile(tab.DbId);
+            var badge = Theme.DbBadge(profile);
+            badge.Margin = new Thickness(6, 0, 0, 0);
+            content.Children.Add(badge);
+
+            TextBlock close = null;
+            if (_tabs.Count > 1)
+            {
+                close = Theme.Text("×", Theme.SecondaryText);
+                close.FontSize = 13;
+                close.Padding = new Thickness(3, 0, 3, 0);
+                close.Margin = new Thickness(5, 0, 0, 0);
+                close.VerticalAlignment = VerticalAlignment.Center;
+                close.ToolTip = "탭 닫기";
+                AutomationProperties.SetName(close, "탭 닫기");
+                var glyph = close;
+                glyph.MouseEnter += (s, e) =>
+                {
+                    Theme.Background(glyph, Theme.ControlHover);
+                    Theme.Foreground(glyph, Theme.PrimaryText);
+                };
+                glyph.MouseLeave += (s, e) =>
+                {
+                    glyph.ClearValue(TextBlock.BackgroundProperty);
+                    Theme.Foreground(glyph, Theme.SecondaryText);
+                };
+                content.Children.Add(close);
+            }
+
+            Border underline;
+            var button = WorkspaceUi.SelectorButton(content, out underline);
+            WorkspaceUi.SetSelected(button, underline, active);
+            button.ToolTip = tab.Title + " — 대상: " + (profile != null ? profile.Name : "없음");
+            AutomationProperties.SetName(button, tab.Title);
+            button.Click += (s, e) => Safe(() => ActivateTab(tab, true));
+            if (close != null)
+            {
+                var glyph = close;
+                // ×는 버튼 안에 있으므로 누르기 전에 가로채 탭 전환(버튼 Click)이 일어나지 않게 한다
+                button.PreviewMouseLeftButtonDown += (s, e) =>
+                {
+                    if (!WorkspaceUi.IsInside(e.OriginalSource, glyph))
+                        return;
+                    e.Handled = true;
+                    Safe(() => CloseTab(tab));
+                };
+                button.MouseUp += (s, e) =>
+                {
+                    if (e.ChangedButton != MouseButton.Middle)
+                        return;
+                    e.Handled = true;
+                    Safe(() => CloseTab(tab));
+                };
+            }
+            return button;
+        }
+
+        private void UpdateTabStripLayout()
+        {
+            var width = _strip.ActualWidth;
+            if (width <= 0)
+                return;
+            // 좁은 창(900×600보다 작게 줄였을 때)에서는 덜 중요한 표시부터 숨겨 탭 자리를 남긴다
+            var hint = width < 600 ? Visibility.Collapsed : Visibility.Visible;
+            if (_runHint.Visibility != hint)
+                _runHint.Visibility = hint;
+            var info = width < 500 ? Visibility.Collapsed : Visibility.Visible;
+            if (_cursorInfo.Visibility != info)
+                _cursorInfo.Visibility = info;
+            var used = _rightGroup.ActualWidth + _rightGroup.Margin.Left + _rightGroup.Margin.Right
+                + _addTab.ActualWidth + _addTab.Margin.Left + _addTab.Margin.Right;
+            _tabScroll.MaxWidth = Math.Max(60, width - used);
+        }
+
+        private void TabScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (_tabScroll.ScrollableWidth <= 0)
+                return;
+            e.Handled = true;
+            Safe(() => _tabScroll.ScrollToHorizontalOffset(_tabScroll.HorizontalOffset - e.Delta / 2.0));
+        }
+
+        // ================= 대상 =================
+
+        private void RenderTarget()
+        {
+            var tab = _active;
+            _target.IsEnabled = tab != null && !tab.Running;
+            var current = IsTargetListCurrent();
+            if (_target.IsDropDownOpen)
+            {
+                // 펼친 목록을 다시 만들면 고르던 항목이 사라진다 — 글자만 맞추고 목록은 닫힌 뒤(DropDownClosed) 맞춘다
+                if (current)
+                    UpdateTargetTexts();
+                return;
+            }
+            _fillingTarget = true;
+            try
+            {
+                if (current)
+                {
+                    UpdateTargetTexts();
+                }
+                else
+                {
+                    _target.Items.Clear();
+                    foreach (var profile in Profiles())
+                        _target.Items.Add(new ComboBoxItem { Content = TargetText(profile), Tag = profile.Id });
+                    if (tab == null || Profile(tab.DbId) == null)
+                        _target.Items.Add(new ComboBoxItem { Content = "대상 없음", Tag = null });
+                }
+                var wanted = tab != null && Profile(tab.DbId) != null ? tab.DbId : null;
+                _target.SelectedItem = _target.Items.OfType<ComboBoxItem>()
+                    .FirstOrDefault(item => string.Equals(item.Tag as string, wanted, StringComparison.Ordinal));
+            }
+            finally
+            {
+                _fillingTarget = false;
+            }
+        }
+
+        // 목록 항목(접속 Id 순서, "대상 없음" 유무)이 지금 접속 목록과 같으면 글자만 바꾸면 된다
+        private bool IsTargetListCurrent()
+        {
+            var wanted = Profiles().Select(p => p.Id).ToList();
+            var tab = _active;
+            var needsNone = tab == null || Profile(tab.DbId) == null;
+            if (needsNone)
+                wanted.Add(null);
+            if (_target.Items.Count != wanted.Count)
+                return false;
+            for (var i = 0; i < wanted.Count; i++)
+            {
+                var item = _target.Items[i] as ComboBoxItem;
+                if (item == null || !string.Equals(item.Tag as string, wanted[i], StringComparison.Ordinal))
+                    return false;
+            }
+            return true;
+        }
+
+        private void UpdateTargetTexts()
+        {
+            foreach (ComboBoxItem item in _target.Items)
+            {
+                var profile = Profile(item.Tag as string);
+                var text = profile != null ? TargetText(profile) : "대상 없음";
+                if (!string.Equals(item.Content as string, text, StringComparison.Ordinal))
+                    item.Content = text;
+            }
+        }
+
+        private string TargetText(OracleConnectionProfile profile)
+        {
+            return WorkspaceLogic.TargetItemText(profile.Name, _host.GetSession(profile.Id) != null, profile.ReadOnly);
+        }
+
+        private void Target_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_fillingTarget)
+                return;
+            Safe(() =>
+            {
+                var tab = _active;
+                var item = _target.SelectedItem as ComboBoxItem;
+                if (tab == null || item == null)
+                    return;
+                var dbId = item.Tag as string;
+                if (tab.Running)
+                {
+                    // 실행 중에는 대상을 바꿀 수 없다 — 고른 항목을 되돌린다
+                    RenderTarget();
+                    return;
+                }
+                if (dbId == null || dbId == tab.DbId || Profile(dbId) == null)
+                    return;
+                ChangeTarget(tab, dbId);
+            });
+        }
+
+        private void ChangeTarget(SqlTabState tab, string dbId)
+        {
+            if (ReleaseCursor(tab))
+                AddMessage(tab.ResultDbId, "대상 DB를 바꿔 '" + tab.Title + "' 탭의 열린 커서를 닫았습니다.", MessageKind.Info);
+            tab.DbId = dbId;
+            // 이전 대상의 연결·바쁨 안내는 더 맞지 않는다
+            tab.Status = tab.Cursor != null ? FetchStatusOf(tab) : WorkspaceLogic.ReadyStatus();
+            RenderTabs();
+            RenderTarget();
+            RenderResults();
+            RenderStatus();
+            AddMessage(dbId, WorkspaceLogic.TargetChangedMessage(tab.Title, NameOf(dbId)), MessageKind.Info);
+            RaiseActiveTabChanged();
+        }
+
+        /// <summary>대상 접속이 삭제된 탭은 대상을 비운다(실행 중이면 끝난 뒤). 비웠으면 true.</summary>
+        private bool DropMissingTarget(SqlTabState tab)
+        {
+            if (tab.DbId == null || tab.Running || Profile(tab.DbId) != null)
+                return false;
+            ReleaseCursor(tab);
+            tab.DbId = null;
+            if (tab.Status != null && tab.Status.Action != WorkspaceLogic.StatusAction.None && tab.Status.Action != WorkspaceLogic.StatusAction.FetchNext)
+                tab.Status = WorkspaceLogic.ReadyStatus();
+            AddMessage(null, WorkspaceLogic.TargetRemovedMessage(tab.Title), MessageKind.Error);
+            return true;
+        }
+
+        // ================= 편집기 =================
+
+        private void Editor_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            Safe(() =>
+            {
+                var tab = _active;
+                if (tab == null || !ReferenceEquals(sender, tab.Editor))
+                    return;
+                UpdateGutter(tab, false);
+            });
+        }
+
+        private void Editor_SelectionChanged(object sender, RoutedEventArgs e)
+        {
+            Safe(() =>
+            {
+                var tab = _active;
+                if (tab != null && ReferenceEquals(sender, tab.Editor))
+                    UpdateCursorInfo(tab);
+            });
+        }
+
+        private void Editor_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            Safe(() =>
+            {
+                var tab = _active;
+                if (tab != null && ReferenceEquals(sender, tab.Editor))
+                    PositionGutter(tab, e.VerticalOffset);
+            });
+        }
+
+        private void Editor_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            // 한글 입력 중이면 Enter가 ImeProcessed로 온다
+            var key = e.Key == Key.ImeProcessed ? e.ImeProcessedKey : e.Key;
+            if (key != Key.Enter || (Keyboard.Modifiers & ModifierKeys.Control) == 0)
+                return;
+            e.Handled = true;
+            RunActive();
+        }
+
+        private void UpdateGutter(SqlTabState tab, bool force)
+        {
+            var lines = WorkspaceLogic.CountLines(tab.Editor.Text);
+            if (!force && lines == _gutterLines)
+                return;
+            _gutterLines = lines;
+            _gutterText.Text = WorkspaceLogic.LineNumbers(lines);
+        }
+
+        /// <summary>줄 번호를 편집기 첫 줄 위치와 세로 스크롤에 맞춘다(편집기 템플릿의 여백은 처음 배치 뒤 잰다).</summary>
+        private void PositionGutter(SqlTabState tab, double verticalOffset)
+        {
+            var editor = tab.Editor;
+            if (double.IsNaN(tab.FirstLineTop) && editor.IsLoaded)
+            {
+                var rect = editor.GetRectFromCharacterIndex(0);
+                if (!rect.IsEmpty)
+                    tab.FirstLineTop = rect.Top + editor.VerticalOffset;
+            }
+            var top = double.IsNaN(tab.FirstLineTop) ? editor.Padding.Top + editor.BorderThickness.Top : tab.FirstLineTop;
+            _gutterShift.Y = top - verticalOffset;
+        }
+
+        private void UpdateCursorInfo(SqlTabState tab)
+        {
+            var editor = tab.Editor;
+            _cursorInfo.Text = WorkspaceLogic.CursorInfo(editor.Text, editor.CaretIndex, editor.SelectionStart, editor.SelectionLength);
+        }
+
+        /// <param name="afterInput">트리 더블클릭처럼 지금 입력 처리가 끝난 뒤 그쪽이 포커스를 다시 가져갈 수 있으면 true.</param>
+        private void FocusActiveEditor(bool afterInput = false)
+        {
+            var editor = _active != null ? _active.Editor : null;
+            if (editor == null)
+                return;
+            if (!afterInput && editor.IsVisible && editor.Focus())
+                return;
+            // 창을 막 열었거나 탭을 막 바꿔 아직 배치 전이면 배치가 끝난 뒤 옮긴다
+            Dispatcher.BeginInvoke(afterInput ? DispatcherPriority.Input : DispatcherPriority.Loaded, new Action(() =>
+            {
+                try
+                {
+                    if (_active != null && _active.Editor == editor)
+                        editor.Focus();
+                }
+                catch (Exception)
+                {
+                    // 그 사이 창이 닫혔으면 할 일이 없다
+                }
+            }));
+        }
+
+        /// <summary>트리·기록에서 넣을 탭: 지금 탭이 그 DB 대상이고 실행 중이 아니면 그 탭, 아니면 그 DB의 실행 중 아닌 탭, 없으면 새 탭.</summary>
+        private SqlTabState TabForInsert(string dbId, out bool moved)
+        {
+            moved = false;
+            var active = _active;
+            if (active != null && active.DbId == dbId && !active.Running)
+                return active;
+            moved = true;
+            var tab = _tabs.FirstOrDefault(t => t.DbId == dbId && !t.Running) ?? CreateTab(dbId, "");
+            ActivateTab(tab, false);
+            return tab;
+        }
+
+        /// <summary>편집기 맨 위에 넣고 캐럿을 처음으로. 되돌리기(Ctrl+Z)로 뺄 수 있게 편집으로 넣는다.</summary>
+        private void InsertAtTop(SqlTabState tab, string text)
+        {
+            var editor = tab.Editor;
+            editor.Select(0, 0);
+            editor.SelectedText = WorkspaceLogic.NormalizeNewlines(text, Environment.NewLine);
+            editor.Select(0, 0);
+            editor.ScrollToHome();
+            if (tab == _active)
+            {
+                UpdateGutter(tab, false);
+                UpdateCursorInfo(tab);
+            }
+            FocusActiveEditor(true);
+        }
+
+        private void InsertHistory(HistoryEntry entry)
+        {
+            // 접속이 삭제된 기록은 대상 없는 탭으로
+            var dbId = Profile(entry.DbId) != null ? entry.DbId : null;
+            bool moved;
+            var tab = TabForInsert(dbId, out moved);
+            InsertAtTop(tab, WorkspaceLogic.HistoryInsertText(entry.Sql));
+            if (moved)
+                AddMessage(dbId, WorkspaceLogic.HistoryInsertedMessage(entry.Sql, tab.Title, NameOf(dbId)), MessageKind.Info);
+        }
+
+        // ================= 실행 =================
+
+        /// <summary>실행 버튼·Ctrl+Enter. async void 처리기이므로 예외가 밖으로 나가지 않게 전체를 감싼다.</summary>
+        private async void RunActive()
+        {
+            try
+            {
+                var tab = _active;
+                if (tab != null)
+                    await RunAsync(tab);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private async Task RunAsync(SqlTabState tab)
+        {
+            if (tab.Running)
+                return;
+            var profile = Profile(tab.DbId);
+            if (profile == null)
+            {
+                SetStatus(tab, WorkspaceLogic.NoTargetStatus());
+                return;
+            }
+            var dbId = profile.Id;
+            var session = CheckSession(tab, profile);
+            if (session == null)
+                return;
+
+            var statement = StatementToRun(tab.Editor);
+            if (statement == null)
+            {
+                AddMessage(dbId, "실행할 문장이 없습니다.", MessageKind.Error);
+                SetStatus(tab, WorkspaceLogic.NoStatementStatus());
+                return;
+            }
+            if (profile.ReadOnly && !WorkspaceLogic.AllowedOnReadOnly(statement))
+            {
+                AddMessage(dbId, WorkspaceLogic.ReadOnlyBlockedMessage(statement.Text), MessageKind.Error);
+                SetStatus(tab, WorkspaceLogic.ReadOnlyStatus());
+                ShowPane(tab, WorkspacePane.Messages);
+                return;
+            }
+            var owner = Window.GetWindow(this);
+            if (statement.Danger != null && !Dialogs.ConfirmDanger(owner, profile, statement))
+            {
+                AddMessage(dbId, "위험한 문장 실행을 취소했습니다.", MessageKind.Info);
+                return;
+            }
+            if (statement.Kind == SqlKind.Ddl && session.HasPendingChanges && !Dialogs.ConfirmDdlWithPending(owner, profile, session.PendingText))
+            {
+                AddMessage(dbId, "DDL 실행을 취소했습니다.", MessageKind.Info);
+                return;
+            }
+            // 확인 창을 띄운 사이 다른 실행이 끝나거나 연결 상태가 바뀌었을 수 있다
+            if (tab.Running || tab.DbId != dbId)
+                return;
+            session = CheckSession(tab, profile);
+            if (session == null)
+                return;
+
+            var fetchCount = FetchCount();
+            BeginRun(tab, session, dbId, false, 0);
+            var watch = tab.RunWatch;
+            var token = tab.RunCancel.Token;
+            var sent = false;
+            try
+            {
+                await ClosePreviousCursorAsync(tab);
+                sent = true;
+                var result = await session.ExecuteAsync(statement, fetchCount, token);
+                var elapsed = watch.Elapsed;
+                AddHistory(dbId, statement.Text, elapsed);
+                ApplyResult(tab, session, dbId, statement, result, elapsed);
+            }
+            catch (Exception ex)
+            {
+                OnRunFailed(tab, session, profile, statement, ex, watch.Elapsed, sent && !(ex is SessionBusyException));
+            }
+            finally
+            {
+                EndRun(tab);
+            }
+        }
+
+        /// <summary>실행 전 세션 확인. 쓸 수 없으면 상태줄에 이유(연결·다시 연결 버튼)를 보이고 null.</summary>
+        private DbSession CheckSession(SqlTabState tab, OracleConnectionProfile profile)
+        {
+            var session = _host.GetSession(profile.Id);
+            if (session == null)
+            {
+                SetStatus(tab, WorkspaceLogic.NotConnectedStatus(profile.Name));
+                return null;
+            }
+            if (session.IsBroken)
+            {
+                SetStatus(tab, WorkspaceLogic.BrokenStatus(profile.Name));
+                return null;
+            }
+            // 같은 DB의 다른 탭이 세션을 쓰는 중(DB마다 세션 1개) — 확인 창을 띄우기 전에 알린다
+            if (IsRunningOther(profile.Id, tab))
+            {
+                SetStatus(tab, WorkspaceLogic.BusyStatus(profile.Name));
+                return null;
+            }
+            return session;
+        }
+
+        private static SqlStatement StatementToRun(TextBox editor)
+        {
+            if (editor.SelectionLength > 0)
+                return SqlScript.Parse(editor.SelectedText);
+            return SqlScript.AtCaret(editor.Text, editor.CaretIndex);
+        }
+
+        /// <summary>이 탭의 이전 커서를 닫는다(같은 연결의 다른 커서는 세션이 그대로 둔다). 세션이 바쁘면 SessionBusyException.</summary>
+        private async Task ClosePreviousCursorAsync(SqlTabState tab)
+        {
+            if (!tab.HoldsOpenCursor)
+                return;
+            try
+            {
+                await tab.CursorSession.CloseCursorAsync(tab.Cursor);
+            }
+            catch (SessionBusyException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // 끊긴 세션 등 — 커서는 쓸 수 없게 됐고 실제 문제는 이어지는 실행이 알린다
+            }
+            tab.CursorReleased = true;
+            if (tab.CursorHadMore)
+                AddMessage(tab.ResultDbId, "다른 문장을 실행해 '" + tab.Title + "' 탭의 이전 커서를 닫았습니다.", MessageKind.Info);
+        }
+
+        private void ApplyResult(SqlTabState tab, DbSession session, string dbId, SqlStatement statement, ExecuteResult result, TimeSpan elapsed)
+        {
+            var background = tab != _active;
+            // 실행은 됐어도 경고(컴파일 오류 ORA-24344 등)는 오류로 보인다 — 예외가 없어 성공처럼 보이기 쉽다
+            var warned = !string.IsNullOrEmpty(result.Warning);
+            AddMessage(dbId, WorkspaceLogic.ExecutedMessage(result.Summary, elapsed, statement.Text), warned ? MessageKind.Error : MessageKind.Success);
+            if (warned)
+            {
+                AddMessage(dbId, result.Warning, MessageKind.Error);
+                foreach (var detail in result.WarningDetails)
+                    AddMessage(dbId, detail, MessageKind.Error);
+            }
+            if (result.Kind == SqlKind.Query && result.Cursor != null)
+            {
+                tab.SetResult(session, dbId, result);
+                tab.LastElapsed = elapsed;
+                tab.StrippedSemicolon = statement.StrippedSemicolon;
+                ShowGrid(tab);
+                SetStatus(tab, FetchStatusOf(tab));
+                ShowPane(tab, WorkspacePane.Grid);
+            }
+            else
+            {
+                SetStatus(tab, WorkspaceLogic.ExecutedStatus(statement, result, elapsed));
+                ShowPane(tab, WorkspacePane.Messages);
+            }
+            if (background)
+                tab.Done = true;
+            // COMMIT·ROLLBACK·DDL로 트랜잭션이 끝나면 같은 DB 다른 탭의 FOR UPDATE 커서가 닫힌다
+            RefreshCursorStates(dbId);
+        }
+
+        private void OnRunFailed(SqlTabState tab, DbSession session, OracleConnectionProfile profile, SqlStatement statement, Exception ex, TimeSpan elapsed, bool sent)
+        {
+            var dbId = profile.Id;
+            if (ex is SessionBusyException)
+            {
+                // 같은 DB에서 바쁜 동안 다시 눌러도 메시지가 쌓이지 않게 상태줄에만 알린다
+                SetStatus(tab, IsRunningOther(dbId, tab) ? WorkspaceLogic.BusyStatus(profile.Name) : WorkspaceLogic.BusyOtherStatus(profile.Name));
+                return;
+            }
+            if (sent)
+                AddHistory(dbId, statement.Text, elapsed);
+            if (DbSession.IsCancellation(ex))
+            {
+                AddMessage(dbId, "실행을 취소했습니다.", MessageKind.Error);
+                SetStatus(tab, WorkspaceLogic.TextStatus("취소됨"));
+            }
+            else
+            {
+                AddMessage(dbId, WorkspaceLogic.ErrorMessage(DbSession.DescribeError(ex), statement.Text), MessageKind.Error);
+                SetStatus(tab, session.IsBroken ? WorkspaceLogic.BrokenStatus(profile.Name) : WorkspaceLogic.TextStatus("오류 — 메시지 탭을 보세요."));
+                ShowPane(tab, WorkspacePane.Messages);
+            }
+            if (tab != _active)
+                tab.Done = true;
+            RefreshCursorStates(dbId);
+        }
+
+        // ================= 다음 행 =================
+
+        private async Task FetchNextAsync(SqlTabState tab)
+        {
+            if (tab.Running || tab.Cursor == null || tab.CursorSession == null)
+                return;
+            var cursor = tab.Cursor;
+            var session = tab.CursorSession;
+            var dbId = tab.ResultDbId;
+            if (!tab.HasMoreRows)
+            {
+                SetStatus(tab, FetchStatusOf(tab));
+                if (tab.CursorClosedEarly)
+                    AddMessage(dbId, "커서가 이미 닫혀 더 가져올 수 없습니다. 다시 실행하세요.", MessageKind.Info);
+                return;
+            }
+            var name = NameOf(dbId);
+            if (IsRunningOther(dbId, tab))
+            {
+                SetStatus(tab, WorkspaceLogic.BusyFetchStatus(name, true));
+                return;
+            }
+            var count = FetchCount();
+            var from = tab.Rows.Count + 1;
+            BeginRun(tab, session, dbId, true, count);
+            var watch = tab.RunWatch;
+            var token = tab.RunCancel.Token;
+            try
+            {
+                var rows = await session.FetchAsync(cursor, count, token);
+                var elapsed = watch.Elapsed;
+                var first = tab.AppendRows(rows);
+                tab.LastElapsed = elapsed;
+                if (tab.Grid != null)
+                    tab.Grid.FitRowNumbers(tab.Rows.Count);
+                AddMessage(dbId, WorkspaceLogic.FetchedMessage(rows.Count, from, tab.Rows.Count, elapsed, !tab.HasMoreRows), MessageKind.Success);
+                SetStatus(tab, FetchStatusOf(tab));
+                if (tab == _active)
+                {
+                    RenderResultsHeader();
+                    if (first != null && tab.Grid != null)
+                        tab.Grid.ScrollIntoView(first);
+                }
+                else
+                {
+                    tab.Done = true;
+                    tab.PendingPane = WorkspacePane.Grid;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (ex is SessionBusyException)
+                {
+                    SetStatus(tab, WorkspaceLogic.BusyFetchStatus(name, IsRunningOther(dbId, tab)));
+                }
+                else if (DbSession.IsCancellation(ex))
+                {
+                    AddMessage(dbId, "실행을 취소했습니다.", MessageKind.Error);
+                    SetStatus(tab, FetchStatusOf(tab, "취소됨"));
+                }
+                else
+                {
+                    AddMessage(dbId, WorkspaceLogic.FetchErrorMessage(DbSession.DescribeError(ex)), MessageKind.Error);
+                    SetStatus(tab, session.IsBroken ? WorkspaceLogic.BrokenStatus(name) : FetchStatusOf(tab, "오류 — 메시지 탭을 보세요."));
+                    ShowPane(tab, WorkspacePane.Messages);
+                }
+                if (tab != _active)
+                    tab.Done = true;
+            }
+            finally
+            {
+                EndRun(tab);
+            }
+        }
+
+        private void BeginRun(SqlTabState tab, DbSession session, string dbId, bool fetching, int fetchCount)
+        {
+            tab.Running = true;
+            tab.Fetching = fetching;
+            tab.FetchingCount = fetchCount;
+            tab.CancelRequested = false;
+            tab.RunningSession = session;
+            tab.RunningDbId = dbId;
+            tab.RunWatch = Stopwatch.StartNew();
+            tab.RunCancel = new CancellationTokenSource();
+            tab.Done = false;
+            RenderTabs();
+            RenderRunState();
+            RenderTarget();
+            RenderStatus();
+            if (!_elapsedTimer.IsEnabled)
+                _elapsedTimer.Start();
+            NotifyStateChanged(dbId);
+        }
+
+        private void EndRun(SqlTabState tab)
+        {
+            var dbId = tab.RunningDbId;
+            var session = tab.RunningSession;
+            tab.Running = false;
+            tab.Fetching = false;
+            tab.CancelRequested = false;
+            tab.RunningSession = null;
+            tab.RunningDbId = null;
+            tab.RunCancel = null;
+            if (tab.RunWatch != null)
+                tab.RunWatch.Stop();
+            if (!AnyRunning)
+                _elapsedTimer.Stop();
+            // 실행하는 동안 접속이 삭제됐으면 이제 대상을 비운다
+            var targetDropped = DropMissingTarget(tab) && tab == _active;
+            RenderTabs();
+            RenderRunState();
+            RenderTarget();
+            RenderResults();
+            RenderStatus();
+            FlushOrphanCursors(session);
+            NotifyStateChanged(dbId);
+            if (targetDropped)
+                RaiseActiveTabChanged();
+        }
+
+        private void RequestCancel(SqlTabState tab)
+        {
+            var cancel = tab.RunCancel;
+            if (cancel == null)
+                return;
+            tab.CancelRequested = true;
+            if (tab == _active)
+                RenderStatus();
+            // 취소 콜백(DbCommand.Cancel)은 서버에 중단 신호를 보내는 네트워크 호출이라 UI 스레드를 막지 않게 작업 스레드에서 한다
+            Task.Run(() =>
+            {
+                try
+                {
+                    cancel.Cancel();
+                }
+                catch (Exception)
+                {
+                    // 막 끝났거나 끊긴 명령 — 실행 쪽이 결과(취소·오류)로 알린다
+                }
+            });
+        }
+
+        private void CancelActive()
+        {
+            var tab = _active;
+            if (tab != null && tab.Running)
+                RequestCancel(tab);
+        }
+
+        // ================= 결과 =================
+
+        private void ShowGrid(SqlTabState tab)
+        {
+            if (tab.Grid == null)
+            {
+                var owner = tab;
+                tab.Grid = new ResultGridView(all => CopyRows(owner, all));
+                tab.Grid.View.Visibility = Visibility.Collapsed;
+                _gridHost.Children.Add(tab.Grid.View);
+            }
+            tab.Grid.Show(tab.Columns, tab.Rows);
+            if (tab == _active)
+                RenderResults();
+        }
+
+        private void RenderResults()
+        {
+            var tab = _active;
+            foreach (var t in _tabs)
+            {
+                if (t.Grid != null)
+                    t.Grid.View.Visibility = t == tab && t.Columns != null ? Visibility.Visible : Visibility.Collapsed;
+            }
+            var hasGrid = tab != null && tab.Columns != null && tab.Grid != null;
+            _gridPlaceholder.Visibility = hasGrid ? Visibility.Collapsed : Visibility.Visible;
+            if (!hasGrid)
+            {
+                var profile = tab != null ? Profile(tab.DbId) : null;
+                _gridPlaceholder.Text = profile != null ? profile.Name + "에서 실행한 결과가 여기에 표시됩니다." : "실행 결과가 여기에 표시됩니다.";
+            }
+            RenderResultsHeader();
+        }
+
+        private void RenderResultsHeader()
+        {
+            var tab = _active;
+            var rows = tab != null && tab.Rows != null ? tab.Rows.Count : 0;
+            _gridTab.SetCount(rows);
+            _messagesTab.SetCount(_messages.Count);
+            _gridTab.SetSelected(_pane == WorkspacePane.Grid);
+            _messagesTab.SetSelected(_pane == WorkspacePane.Messages);
+            _historyTab.SetSelected(_pane == WorkspacePane.History);
+            _copy.IsEnabled = rows > 0;
+        }
+
+        private void SelectPane(WorkspacePane pane)
+        {
+            _pane = pane;
+            _gridHost.Visibility = pane == WorkspacePane.Grid ? Visibility.Visible : Visibility.Collapsed;
+            _messages.View.Visibility = pane == WorkspacePane.Messages ? Visibility.Visible : Visibility.Collapsed;
+            _history.View.Visibility = pane == WorkspacePane.History ? Visibility.Visible : Visibility.Collapsed;
+            RenderResultsHeader();
+        }
+
+        /// <summary>지금 탭이면 그 칸을 바로 보이고, 뒤의 탭이면 그 탭으로 옮길 때 보인다.</summary>
+        private void ShowPane(SqlTabState tab, WorkspacePane pane)
+        {
+            if (tab == _active)
+                SelectPane(pane);
+            else
+                tab.PendingPane = pane;
+        }
+
+        private void AddHistory(string dbId, string sql, TimeSpan elapsed)
+        {
+            _history.Add(new HistoryEntry { Time = DateTime.Now, DbId = dbId, Sql = sql, Elapsed = elapsed }, Profile(dbId));
+        }
+
+        private async void CopyAll_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var tab = _active;
+                if (tab != null)
+                    await CopyRowsAsync(tab, true);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private async void CopyRows(SqlTabState tab, bool all)
+        {
+            try
+            {
+                await CopyRowsAsync(tab, all);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private async Task CopyRowsAsync(SqlTabState tab, bool all)
+        {
+            if (tab.Rows == null || tab.Rows.Count == 0 || tab.Columns == null)
+                return;
+            if (all)
+            {
+                var tsv = WorkspaceLogic.ToTsv(tab.Columns.Select(c => c.Name), tab.Rows.Select(r => r.Values));
+                await CopyTextAsync(tsv, WorkspaceLogic.CopiedMessage(tab.Rows.Count), tab.ResultDbId);
+            }
+            else if (tab.Grid != null)
+            {
+                var rows = tab.Grid.SelectedRows();
+                if (rows.Count > 0)
+                    await CopyTextAsync(WorkspaceLogic.ToTsv(null, rows.Select(r => r.Values)), null, tab.ResultDbId);
+            }
+        }
+
+        private async void CopyText(string text, string doneMessage)
+        {
+            try
+            {
+                await CopyTextAsync(text, doneMessage, null);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private async Task CopyTextAsync(string text, string doneMessage, string dbId)
+        {
+            var error = await ResultClipboard.SetTextAsync(text);
+            if (error != null)
+                AddMessage(null, "클립보드에 복사하지 못했습니다: " + error, MessageKind.Error);
+            else if (doneMessage != null)
+                AddMessage(dbId, doneMessage, MessageKind.Info);
+        }
+
+        // ================= 상태줄 =================
+
+        private void SetStatus(SqlTabState tab, WorkspaceLogic.StatusInfo status)
+        {
+            tab.Status = status;
+            if (tab == _active)
+                RenderStatus();
+        }
+
+        private WorkspaceLogic.StatusInfo FetchStatusOf(SqlTabState tab, string lead = null)
+        {
+            var rows = tab.Rows != null ? tab.Rows.Count : 0;
+            return WorkspaceLogic.FetchStatus(rows, tab.LastElapsed, tab.HasMoreRows, tab.CursorClosedEarly, tab.StrippedSemicolon, lead);
+        }
+
+        private static WorkspaceLogic.StatusInfo RunningStatusOf(SqlTabState tab)
+        {
+            var elapsed = tab.RunWatch != null ? tab.RunWatch.Elapsed : TimeSpan.Zero;
+            return tab.Fetching
+                ? WorkspaceLogic.FetchingStatus(tab.FetchingCount, elapsed, tab.CancelRequested)
+                : WorkspaceLogic.RunningStatus(elapsed, tab.CancelRequested);
+        }
+
+        private void RenderStatus()
+        {
+            var tab = _active;
+            var status = tab == null ? WorkspaceLogic.ReadyStatus() : tab.Running ? RunningStatusOf(tab) : tab.Status ?? WorkspaceLogic.ReadyStatus();
+            _statusText.Inlines.Clear();
+            foreach (var segment in status.Segments)
+            {
+                if (segment.NewPart)
+                    _statusText.Inlines.Add(new Run(" "));
+                var run = new Run(segment.Text);
+                if (segment.Strong)
+                {
+                    run.FontWeight = FontWeights.SemiBold;
+                    run.SetResourceReference(TextElement.ForegroundProperty, Theme.PrimaryText);
+                }
+                _statusText.Inlines.Add(run);
+            }
+            _statusText.ToolTip = status.PlainText;
+
+            var action = status.Action;
+            // 다른 안내(바쁨·읽기 전용 등)를 보이는 동안에도 열린 커서의 다음 행 버튼은 남긴다
+            if (action == WorkspaceLogic.StatusAction.None && tab != null && !tab.Running && tab.HasMoreRows)
+                action = WorkspaceLogic.StatusAction.FetchNext;
+            _statusAction.Tag = action;
+            switch (action)
+            {
+                case WorkspaceLogic.StatusAction.None:
+                    _statusAction.Visibility = Visibility.Collapsed;
+                    break;
+                case WorkspaceLogic.StatusAction.FetchNext:
+                    var more = tab != null && tab.HasMoreRows;
+                    _statusAction.Content = WorkspaceLogic.FetchButtonText(more, FetchCount());
+                    _statusAction.IsEnabled = more && !tab.Running;
+                    _statusAction.Visibility = Visibility.Visible;
+                    break;
+                default:
+                    _statusAction.Content = status.ActionText;
+                    _statusAction.IsEnabled = tab != null && !tab.Running && !tab.Connecting;
+                    _statusAction.Visibility = Visibility.Visible;
+                    break;
+            }
+        }
+
+        private void RenderRunState()
+        {
+            var tab = _active;
+            var running = tab != null && tab.Running;
+            _run.IsEnabled = tab != null && !running;
+            _cancel.IsEnabled = running;
+            _target.IsEnabled = tab != null && !running;
+        }
+
+        private async void StatusAction_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var tab = _active;
+                if (tab == null || tab.Running || !(_statusAction.Tag is WorkspaceLogic.StatusAction))
+                    return;
+                switch ((WorkspaceLogic.StatusAction)_statusAction.Tag)
+                {
+                    case WorkspaceLogic.StatusAction.Connect:
+                        await ConnectFromStatusAsync(tab, false);
+                        break;
+                    case WorkspaceLogic.StatusAction.Reconnect:
+                        await ConnectFromStatusAsync(tab, true);
+                        break;
+                    case WorkspaceLogic.StatusAction.FetchNext:
+                        await FetchNextAsync(tab);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private async Task ConnectFromStatusAsync(SqlTabState tab, bool reconnect)
+        {
+            var dbId = tab.DbId;
+            if (Profile(dbId) == null || tab.Connecting)
+                return;
+            tab.Connecting = true;
+            RenderStatus();
+            var connected = false;
+            try
+            {
+                connected = await _host.ConnectAsync(dbId);
+            }
+            catch (Exception ex)
+            {
+                AddMessage(dbId, "연결하지 못했습니다: " + DbSession.DescribeError(ex), MessageKind.Error);
+            }
+            finally
+            {
+                tab.Connecting = false;
+            }
+            // 다시 연결하면 끊긴 세션의 커서는 모두 닫혔다
+            RefreshCursorStates(dbId);
+            if (connected && tab.DbId == dbId && !tab.Running)
+                SetStatus(tab, WorkspaceLogic.ConnectedStatus(reconnect));
+            _stateSignature = null;
+            RenderTarget();
+            RenderStatus();
+        }
+
+        /// <summary>트랜잭션 끝·다시 연결 등으로 밖에서 닫힌 커서를 보이던 탭의 상태줄을 "커서 닫힘"으로 맞춘다.</summary>
+        private void RefreshCursorStates(string dbId)
+        {
+            foreach (var tab in _tabs)
+            {
+                if (tab.Running || tab.Cursor == null || tab.ResultDbId != dbId || tab.Status == null || !tab.Status.ShowsCursor)
+                    continue;
+                if (tab.CursorHadMore && !tab.HasMoreRows)
+                    SetStatus(tab, FetchStatusOf(tab));
+            }
+        }
+
+        // ================= 타이머 =================
+
+        private void ElapsedTimer_Tick(object sender, EventArgs e)
+        {
+            try
+            {
+                var tab = _active;
+                if (tab != null && tab.Running)
+                    RenderStatus();
+                if (!AnyRunning)
+                    _elapsedTimer.Stop();
+            }
+            catch (Exception ex)
+            {
+                _elapsedTimer.Stop();
+                ReportUnexpected(ex);
+            }
+        }
+
+        private void StateTimer_Tick(object sender, EventArgs e)
+        {
+            try
+            {
+                RefreshHostState();
+            }
+            catch (Exception ex)
+            {
+                // 타이머를 멈추면 대상 목록의 "(연결 안 됨)"이 다시는 맞춰지지 않는다 — 계속 돌리되 같은 오류를 매초 쌓지 않는다
+                if (!_stateTimerFailed)
+                    ReportUnexpected(ex);
+                _stateTimerFailed = true;
+            }
+        }
+
+        private void RefreshHostState()
+        {
+            var signature = StateSignature();
+            if (signature == _stateSignature)
+                return;
+            _stateSignature = signature;
+            // 트리·툴바에서 연결했으면 [연결] 안내는 더 맞지 않는다
+            foreach (var tab in _tabs)
+            {
+                var status = tab.Status;
+                if (tab.Running || status == null || tab.DbId == null)
+                    continue;
+                var session = _host.GetSession(tab.DbId);
+                var usable = session != null && !session.IsBroken;
+                if (usable && (status.Action == WorkspaceLogic.StatusAction.Connect || status.Action == WorkspaceLogic.StatusAction.Reconnect))
+                    SetStatus(tab, WorkspaceLogic.ConnectedStatus(status.Action == WorkspaceLogic.StatusAction.Reconnect));
+            }
+            // 연결하거나 끊으면 탭 배지 색이 열린 세션의 값과 저장된 값 사이에서 바뀐다
+            RenderTabs();
+            RenderTarget();
+            RenderStatus();
+        }
+
+        // 대상 목록·상태줄이 의존하는 바깥 상태: 접속마다 연결 여부·끊김, 가져올 행 수
+        private string StateSignature()
+        {
+            var sb = new StringBuilder();
+            foreach (var profile in Profiles())
+            {
+                var session = _host.GetSession(profile.Id);
+                sb.Append(profile.Id).Append(session == null ? '-' : session.IsBroken ? 'b' : 'c').Append(';');
+            }
+            sb.Append(FetchCount());
+            return sb.ToString();
+        }
+
+        private void Workspace_Loaded(object sender, RoutedEventArgs e)
+        {
+            Safe(() =>
+            {
+                _stateTimer.Start();
+                if (AnyRunning)
+                    _elapsedTimer.Start();
+                if (_active != null)
+                    PositionGutter(_active, _active.Editor.VerticalOffset);
+            });
+        }
+
+        private void Workspace_Unloaded(object sender, RoutedEventArgs e)
+        {
+            // 멈추지 않으면 Dispatcher가 타이머를 통해 닫힌 창의 화면을 계속 붙잡는다
+            _stateTimer.Stop();
+            _elapsedTimer.Stop();
+        }
+
+        // ================= 커서 정리 =================
+
+        /// <summary>탭이 쥔 열린 커서를 놓고 닫는다(세션이 바쁘면 나중에). 놓은 커서가 있었으면 true.</summary>
+        private bool ReleaseCursor(SqlTabState tab)
+        {
+            if (!tab.HoldsOpenCursor)
+                return false;
+            tab.CursorReleased = true;
+            CloseCursorsQuietly(tab.CursorSession, new List<QueryCursor> { tab.Cursor });
+            return true;
+        }
+
+        private void FlushOrphanCursors(DbSession session)
+        {
+            _orphanCursors.RemoveAll(p => p.Value.IsClosed);
+            if (session == null || _orphanCursors.Count == 0)
+                return;
+            var cursors = _orphanCursors.Where(p => ReferenceEquals(p.Key, session)).Select(p => p.Value).ToList();
+            if (cursors.Count == 0)
+                return;
+            _orphanCursors.RemoveAll(p => ReferenceEquals(p.Key, session));
+            CloseCursorsQuietly(session, cursors);
+        }
+
+        /// <summary>커서들을 차례로 닫는다. async void이므로 예외가 밖으로 나가지 않게 전체를 감싼다.</summary>
+        private async void CloseCursorsQuietly(DbSession session, List<QueryCursor> cursors)
+        {
+            try
+            {
+                for (var i = 0; i < cursors.Count; i++)
+                {
+                    var cursor = cursors[i];
+                    if (session == null || cursor == null || cursor.IsClosed)
+                        continue;
+                    try
+                    {
+                        await session.CloseCursorAsync(cursor);
+                    }
+                    catch (SessionBusyException)
+                    {
+                        // 같은 DB에서 다른 실행 중 — 그 실행이 끝나면(EndRun) 다시 닫는다
+                        for (var j = i; j < cursors.Count; j++)
+                            _orphanCursors.Add(new KeyValuePair<DbSession, QueryCursor>(session, cursors[j]));
+                        return;
+                    }
+                    catch (Exception)
+                    {
+                        // 닫히거나 끊긴 세션 — 서버 쪽 커서도 연결과 함께 정리된다
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        // ================= 도우미 =================
+
+        private IReadOnlyList<OracleConnectionProfile> Profiles()
+        {
+            return _host.Profiles ?? (IReadOnlyList<OracleConnectionProfile>)Array.Empty<OracleConnectionProfile>();
+        }
+
+        private OracleConnectionProfile Profile(string dbId)
+        {
+            return string.IsNullOrEmpty(dbId) ? null : _host.FindProfile(dbId);
+        }
+
+        private string NameOf(string dbId)
+        {
+            var profile = Profile(dbId);
+            return profile != null ? profile.Name : "(없음)";
+        }
+
+        private int FetchCount()
+        {
+            return Math.Max(1, _host.FetchCount);
+        }
+
+        private bool IsRunningOther(string dbId, SqlTabState except)
+        {
+            return dbId != null && _tabs.Any(t => t != except && t.Running && t.RunningDbId == dbId);
+        }
+
+        private void NotifyStateChanged(string dbId)
+        {
+            if (dbId == null)
+                return;
+            try
+            {
+                _host.StateChanged(dbId);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private void RaiseActiveTabChanged()
+        {
+            try
+            {
+                var handler = ActiveTabChanged;
+                if (handler != null)
+                    handler(this, EventArgs.Empty);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private void Safe(Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        private void ReportUnexpected(Exception ex)
+        {
+            try
+            {
+                AddMessage(null, "처리 중 오류가 발생했습니다: " + DbSession.DescribeError(ex), MessageKind.Error);
+            }
+            catch (Exception)
+            {
+                // 알릴 길이 없는 오류 — Folderss를 멈추지 않는 것이 우선
+            }
+        }
+
+        /// <summary>결과 머리의 버튼 하나(결과·메시지·기록)와 개수 표시.</summary>
+        private sealed class PaneTab
+        {
+            private readonly Border _underline;
+            private readonly TextBlock _label;
+            private readonly TextBlock _count;
+
+            public PaneTab(string title, bool counted)
+            {
+                var content = new StackPanel { Orientation = Orientation.Horizontal };
+                _label = Theme.Text(title, Theme.SecondaryText);
+                _label.VerticalAlignment = VerticalAlignment.Center;
+                content.Children.Add(_label);
+                if (counted)
+                {
+                    _count = new TextBlock { Text = "0" };
+                    content.Children.Add(WorkspaceUi.CountPill(_count));
+                }
+                Button = WorkspaceUi.SelectorButton(content, out _underline);
+                AutomationProperties.SetName(Button, title);
+            }
+
+            public Button Button { get; }
+
+            public void SetCount(int count)
+            {
+                if (_count != null)
+                    _count.Text = WorkspaceLogic.Count(count);
+            }
+
+            public void SetSelected(bool selected)
+            {
+                WorkspaceUi.SetSelected(Button, _underline, selected);
+                Theme.Foreground(_label, selected ? Theme.PrimaryText : Theme.SecondaryText);
+            }
+        }
+    }
+}
