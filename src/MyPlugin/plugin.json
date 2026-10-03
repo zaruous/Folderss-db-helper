@@ -1,7 +1,7 @@
 {
   "id": "zaruous.folderss-db-helper",
   "name": "DB Helper",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Oracle 접속·조회 도우미 (DB·스키마 트리, SQL 실행, 조회 결과)",
   "assembly": "MyPlugin.dll",
   "type": "MyPlugin.MyPlugin",
