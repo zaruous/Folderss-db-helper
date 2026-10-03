@@ -100,5 +100,60 @@ namespace MyPlugin.Tests
             Assert.Equal("select * from emp where name = '한글'", EditorLogic.ChangeCase("SELECT * FROM EMP WHERE NAME = '한글'", false));
             Assert.Equal("", EditorLogic.ChangeCase(null, true));
         }
+
+        // ---------- F4 대상 이름 ----------
+
+        [Theory]
+        [InlineData("SELECT * FROM sample1.orders o", "sample1.orders", "SAMPLE1", "ORDERS")]   // 캐럿이 이름 가운데
+        [InlineData("SELECT * FROM orders;", "orders", null, "ORDERS")]
+        [InlineData("SELECT * FROM \"My_Tab\" t", "\"My_Tab\"", null, "My_Tab")]
+        [InlineData("SELECT * FROM SCOTT.\"Emp\"", "SCOTT.\"Emp\"", "SCOTT", "Emp")]
+        [InlineData("SELECT * FROM 고객정보", "고객정보", null, "고객정보")]
+        public void ObjectNameAt_Caret(string text, string word, string owner, string name)
+        {
+            var caret = text.IndexOf(word) + word.Length / 2;
+
+            var result = EditorLogic.ObjectNameAt(text, caret, 0);
+
+            Assert.Equal(owner, result.Owner);
+            Assert.Equal(name, result.Name);
+        }
+
+        [Fact]
+        public void ObjectNameAt_CaretRightAfterName()
+        {
+            var text = "SELECT * FROM emp";
+            Assert.Equal("EMP", EditorLogic.ObjectNameAt(text, text.Length, 0).Name);
+        }
+
+        [Fact]
+        public void ObjectNameAt_Selection_TrimsSpacesAndSemicolon()
+        {
+            var text = "FROM  sample1.audit_log ;\n";
+            var start = text.IndexOf("sample1") - 1;
+            var result = EditorLogic.ObjectNameAt(text, start, text.IndexOf(";") + 1 - start);
+
+            Assert.Equal("SAMPLE1", result.Owner);
+            Assert.Equal("AUDIT_LOG", result.Name);
+        }
+
+        [Theory]
+        [InlineData("orders o")]           // 공백이 섞인 블록
+        [InlineData("a.b.c")]              // 세 부분
+        [InlineData("1abc")]               // 숫자로 시작
+        [InlineData("a..b")]
+        [InlineData("\"\"")]
+        [InlineData("   ")]
+        [InlineData("emp@dblink")]
+        public void ParseObjectName_RejectsNonNames(string token)
+        {
+            Assert.Null(EditorLogic.ParseObjectName(token));
+        }
+
+        [Fact]
+        public void ObjectNameAt_CaretOnSpace_IsNull()
+        {
+            Assert.Null(EditorLogic.ObjectNameAt("SELECT   FROM", 7, 0));
+        }
     }
 }

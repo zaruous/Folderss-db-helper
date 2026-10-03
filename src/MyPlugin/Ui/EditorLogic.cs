@@ -15,10 +15,92 @@ namespace MyPlugin
         public int SelectLength { get; set; }
     }
 
-    /// <summary>SQL 편집기의 글 다루기(순수 로직, 테스트 대상): 줄 주석 토글, 대·소문자 바꾸기.</summary>
+    /// <summary>스키마(없으면 null)와 객체 이름. 따옴표 없는 이름은 대문자로 바꾼 값.</summary>
+    internal sealed class ObjectName
+    {
+        public string Owner { get; set; }
+        public string Name { get; set; }
+    }
+
+    /// <summary>SQL 편집기의 글 다루기(순수 로직, 테스트 대상): 줄 주석 토글, 대·소문자 바꾸기, F4 대상 이름.</summary>
     internal static class EditorLogic
     {
         private const string Comment = "--";
+
+        /// <summary>
+        /// F4(테이블 정보) 대상 이름. 선택이 있으면 선택한 글(앞뒤 공백과 끝의 ;·, 는 무시), 없으면 캐럿에 걸친 낱말
+        /// (글자·숫자·_ $ # . 따옴표). 이름이 아니면(공백이 섞인 블록, 세 부분 이상 등) null.
+        /// </summary>
+        public static ObjectName ObjectNameAt(string text, int selectionStart, int selectionLength)
+        {
+            text = text ?? "";
+            selectionStart = Clamp(selectionStart, 0, text.Length);
+            selectionLength = Clamp(selectionLength, 0, text.Length - selectionStart);
+            string token;
+            if (selectionLength > 0)
+            {
+                token = text.Substring(selectionStart, selectionLength).Trim().TrimEnd(';', ',').Trim();
+            }
+            else
+            {
+                var start = selectionStart;
+                while (start > 0 && IsNameChar(text[start - 1]))
+                    start--;
+                var end = selectionStart;
+                while (end < text.Length && IsNameChar(text[end]))
+                    end++;
+                token = text.Substring(start, end - start).Trim('.');
+            }
+            return ParseObjectName(token);
+        }
+
+        /// <summary>"SCOTT.EMP" → (SCOTT, EMP), "emp" → (null, EMP), "\"My Tab\"" → (null, My Tab). 이름이 아니면 null.</summary>
+        public static ObjectName ParseObjectName(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+            var parts = new List<string>();
+            var i = 0;
+            while (i < token.Length)
+            {
+                string part;
+                if (token[i] == '"')
+                {
+                    var close = token.IndexOf('"', i + 1);
+                    if (close < 0 || close == i + 1)
+                        return null;
+                    part = token.Substring(i + 1, close - i - 1);
+                    i = close + 1;
+                }
+                else
+                {
+                    var start = i;
+                    while (i < token.Length && token[i] != '.')
+                        i++;
+                    part = token.Substring(start, i - start);
+                    if (part.Length == 0 || !char.IsLetter(part[0]) || part.Any(c => !(char.IsLetterOrDigit(c) || c == '_' || c == '$' || c == '#')))
+                        return null;
+                    part = part.ToUpperInvariant();
+                }
+                parts.Add(part);
+                if (i < token.Length)
+                {
+                    if (token[i] != '.' || i == token.Length - 1)
+                        return null;
+                    i++;
+                }
+            }
+            if (parts.Count == 1)
+                return new ObjectName { Name = parts[0] };
+            if (parts.Count == 2)
+                return new ObjectName { Owner = parts[0], Name = parts[1] };
+            return null;
+        }
+
+        private static bool IsNameChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == '$' || c == '#' || c == '.' || c == '"';
+        }
 
         /// <summary>
         /// 줄 주석 토글(Ctrl+/). 대상은 선택이 걸친 줄들(선택이 없으면 캐럿 줄, 선택이 다음 줄 맨 앞에서 끝나면 그 줄은 빼고).

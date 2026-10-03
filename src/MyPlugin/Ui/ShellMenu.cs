@@ -29,6 +29,10 @@ namespace MyPlugin
         void ChangeCase(bool upper);
 
         void Run();
+        void RunScript();
+
+        /// <summary>편집기에서 커서가 있는 이름의 테이블 정보(F4).</summary>
+        void Describe();
         void Cancel();
         void FetchNext();
         void Commit();
@@ -230,11 +234,16 @@ namespace MyPlugin
         {
             var top = Top("SQL(_S)");
             var run = Item("실행(_X)", "Ctrl+Enter", IconRun, _commands.Run);
+            run.ToolTip = "커서가 있는 문장(선택 영역에 문장이 여럿이면 모두)을 실행합니다";
+            var script = Item("스크립트 실행(_A)", "F5", null, _commands.RunScript);
+            script.ToolTip = "편집기의 모든 문장을 차례로 실행하고 조회마다 결과 탭을 만듭니다(오류가 나면 멈춤)";
             var cancel = Item("실행 취소(_C)", null, IconCancel, _commands.Cancel);
             var fetch = Item("다음 행 가져오기(_N)", null, IconFetch, _commands.FetchNext);
             var commit = Item("커밋(_O)", null, IconCommit, _commands.Commit);
             var rollback = Item("롤백(_R)", null, IconRollback, _commands.Rollback);
-            foreach (var item in new object[] { run, cancel, fetch, new Separator(), commit, rollback })
+            var describe = Item("테이블 정보(_I)…", "F4", null, _commands.Describe);
+            describe.ToolTip = "편집기에서 커서가 있는 이름(또는 선택한 스키마.이름)의 열·인덱스·제약 조건을 봅니다";
+            foreach (var item in new object[] { run, script, cancel, fetch, new Separator(), describe, new Separator(), commit, rollback })
                 top.Items.Add(item);
             top.SubmenuOpened += (s, e) =>
             {
@@ -242,6 +251,7 @@ namespace MyPlugin
                     return;
                 var state = SafeState();
                 run.IsEnabled = state.CanRun;
+                script.IsEnabled = state.CanRun;
                 cancel.IsEnabled = state.CanCancel;
                 fetch.IsEnabled = state.CanFetch;
                 commit.IsEnabled = state.CanCommit;

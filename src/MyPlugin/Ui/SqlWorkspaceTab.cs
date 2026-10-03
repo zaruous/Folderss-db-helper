@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Windows.Controls;
 
@@ -66,56 +67,109 @@ namespace MyPlugin
         public double FirstLineTop { get; set; } = double.NaN;
 
         // ---- 조회 결과 ----
+        // 문장 하나를 실행하면 결과 하나, 여러 문장(선택 영역·스크립트)을 실행하면 조회마다 결과 하나(결과 하위 탭).
+        // 아래 속성들은 지금 고른 결과(ActiveResult)를 가리킨다 — 결과 하나일 때와 같은 코드로 그리드·상태줄·다음 행을 다룬다.
+
+        /// <summary>이 탭의 조회 결과들(실행 순서). 조회한 적 없으면 비어 있다.</summary>
+        public List<ResultSetState> Results { get; } = new List<ResultSetState>();
+
+        /// <summary>지금 보이는 결과. 없으면 null.</summary>
+        public ResultSetState ActiveResult { get; set; }
 
         /// <summary>마지막 조회의 열. 조회한 적 없으면 null.</summary>
-        public List<ResultColumn> Columns { get; private set; }
-
-        public ObservableCollection<ResultGridRow> Rows { get; private set; }
-
-        /// <summary>이 탭의 결과 그리드(처음 조회할 때 만든다).</summary>
-        public ResultGridView Grid { get; set; }
-
-        public QueryCursor Cursor { get; private set; }
-
-        public DbSession CursorSession { get; private set; }
-
-        /// <summary>결과(커서)를 만든 DB. 대상을 바꿔도 결과는 이 DB의 것이다.</summary>
-        public string ResultDbId { get; private set; }
-
-        /// <summary>이 탭이 커서를 놓았음(대상 변경·탭 닫기·끊기·새 실행). 실제로 닫혔는지와 무관하게 더 가져오지 않는다.</summary>
-        public bool CursorReleased { get; set; }
-
-        /// <summary>마지막 실행·가져오기 직후 커서에 행이 더 있었음. 지금 닫혔으면 "끝까지 읽음"이 아니라 중간에 닫힌 것이다.</summary>
-        public bool CursorHadMore { get; set; }
-
-        public TimeSpan? LastElapsed { get; set; }
-
-        public bool StrippedSemicolon { get; set; }
-
-        /// <summary>이 결과에서 "가져온 행 안에서만 정렬" 안내를 이미 했음.</summary>
-        public bool SortNoticeShown { get; set; }
-
-        /// <summary>열린 커서에서 더 가져올 수 있음.</summary>
-        public bool HasMoreRows
+        public List<ResultColumn> Columns
         {
-            get { return Cursor != null && !CursorReleased && !Cursor.IsClosed && Cursor.HasMore; }
+            get { return ActiveResult != null ? ActiveResult.Columns : null; }
         }
 
-        /// <summary>이 탭이 아직 쥐고 있는 열린 커서가 있음(닫아야 할 서버 자원).</summary>
+        public ObservableCollection<ResultGridRow> Rows
+        {
+            get { return ActiveResult != null ? ActiveResult.Rows : null; }
+        }
+
+        /// <summary>지금 결과의 그리드(처음 보일 때 만든다).</summary>
+        public ResultGridView Grid
+        {
+            get { return ActiveResult != null ? ActiveResult.Grid : null; }
+            set
+            {
+                if (ActiveResult != null)
+                    ActiveResult.Grid = value;
+            }
+        }
+
+        public QueryCursor Cursor
+        {
+            get { return ActiveResult != null ? ActiveResult.Cursor : null; }
+        }
+
+        public DbSession CursorSession
+        {
+            get { return ActiveResult != null ? ActiveResult.CursorSession : null; }
+        }
+
+        /// <summary>결과(커서)를 만든 DB. 대상을 바꿔도 결과는 이 DB의 것이다.</summary>
+        public string ResultDbId
+        {
+            get { return ActiveResult != null ? ActiveResult.ResultDbId : null; }
+        }
+
+        public bool CursorHadMore
+        {
+            get { return ActiveResult != null && ActiveResult.CursorHadMore; }
+        }
+
+        public TimeSpan? LastElapsed
+        {
+            get { return ActiveResult != null ? ActiveResult.LastElapsed : null; }
+            set
+            {
+                if (ActiveResult != null)
+                    ActiveResult.LastElapsed = value;
+            }
+        }
+
+        public bool StrippedSemicolon
+        {
+            get { return ActiveResult != null && ActiveResult.StrippedSemicolon; }
+        }
+
+        public bool SortNoticeShown
+        {
+            get { return ActiveResult != null && ActiveResult.SortNoticeShown; }
+            set
+            {
+                if (ActiveResult != null)
+                    ActiveResult.SortNoticeShown = value;
+            }
+        }
+
+        /// <summary>지금 결과의 열린 커서에서 더 가져올 수 있음.</summary>
+        public bool HasMoreRows
+        {
+            get { return ActiveResult != null && ActiveResult.HasMoreRows; }
+        }
+
+        /// <summary>이 탭의 결과 중 아직 열린 커서(닫아야 할 서버 자원)를 쥔 것이 있음.</summary>
         public bool HoldsOpenCursor
         {
-            get { return Cursor != null && !CursorReleased && !Cursor.IsClosed; }
+            get { return Results.Any(r => r.HoldsOpenCursor); }
         }
 
         public bool CursorClosedEarly
         {
-            get { return Cursor != null && CursorHadMore && !HasMoreRows; }
+            get { return ActiveResult != null && ActiveResult.CursorClosedEarly; }
         }
 
         // ---- 실행 ----
 
         /// <summary>실행 또는 다음 행 가져오기 중.</summary>
         public bool Running { get; set; }
+
+        /// <summary>여러 문장 실행 중: 모두 몇 개(아니면 0)와 지금 몇 번째.</summary>
+        public int ScriptTotal { get; set; }
+
+        public int ScriptIndex { get; set; }
 
         public bool Fetching { get; set; }
 
@@ -148,14 +202,48 @@ namespace MyPlugin
 
         public WorkspaceLogic.StatusInfo Status { get; set; }
 
-        /// <summary>새 조회 결과로 바꾼다(첫 묶음).</summary>
-        public void SetResult(DbSession session, string dbId, ExecuteResult result)
+        /// <summary>새 조회 결과 하나로 바꾼다(문장 하나 실행). 이전 결과들은 버린다(그리드는 부른 쪽이 화면에서 뗀다).</summary>
+        public ResultSetState SetResult(DbSession session, string dbId, ExecuteResult result, SqlStatement statement)
         {
+            Results.Clear();
+            return AddResult(session, dbId, result, statement);
+        }
+
+        /// <summary>조회 결과를 하나 더한다(여러 문장 실행). 처음 더한 결과가 보인다.</summary>
+        public ResultSetState AddResult(DbSession session, string dbId, ExecuteResult result, SqlStatement statement)
+        {
+            var set = new ResultSetState(session, dbId, result, statement, Results.Count + 1);
+            Results.Add(set);
+            if (ActiveResult == null || !Results.Contains(ActiveResult))
+                ActiveResult = set;
+            return set;
+        }
+
+        /// <summary>결과를 모두 버린다(여러 문장 실행 시작). 그리드는 부른 쪽이 화면에서 뗀다.</summary>
+        public void ClearResults()
+        {
+            Results.Clear();
+            ActiveResult = null;
+        }
+
+        /// <summary>가져온 행을 지금 결과 끝에 붙이고 처음 붙인 행을 돌려준다(없으면 null).</summary>
+        public ResultGridRow AppendRows(List<string[]> rows)
+        {
+            return ActiveResult != null ? ActiveResult.AppendRows(rows) : null;
+        }
+    }
+
+    /// <summary>조회 결과 하나(열·행·열린 커서·그리드). 여러 문장을 실행하면 한 탭에 여럿이 생긴다.</summary>
+    internal sealed class ResultSetState
+    {
+        public ResultSetState(DbSession session, string dbId, ExecuteResult result, SqlStatement statement, int number)
+        {
+            Number = number;
+            Sql = statement != null ? statement.Text : null;
+            StrippedSemicolon = statement != null && statement.StrippedSemicolon;
             Cursor = result.Cursor;
             CursorSession = session;
             ResultDbId = dbId;
-            CursorReleased = false;
-            SortNoticeShown = false;
             CursorHadMore = result.Cursor != null && result.Cursor.HasMore;
             Columns = result.Cursor != null ? new List<ResultColumn>(result.Cursor.Columns) : new List<ResultColumn>();
             var rows = new List<ResultGridRow>(result.Rows != null ? result.Rows.Count : 0);
@@ -167,11 +255,58 @@ namespace MyPlugin
             Rows = new ObservableCollection<ResultGridRow>(rows);
         }
 
+        /// <summary>실행 안에서 몇 번째 조회 결과인지(1부터).</summary>
+        public int Number { get; }
+
+        /// <summary>결과를 만든 문장.</summary>
+        public string Sql { get; }
+
+        public List<ResultColumn> Columns { get; }
+
+        public ObservableCollection<ResultGridRow> Rows { get; }
+
+        /// <summary>이 결과의 그리드(처음 보일 때 만든다).</summary>
+        public ResultGridView Grid { get; set; }
+
+        public QueryCursor Cursor { get; }
+
+        public DbSession CursorSession { get; }
+
+        public string ResultDbId { get; }
+
+        /// <summary>이 결과가 커서를 놓았음(대상 변경·탭 닫기·끊기·새 실행). 실제로 닫혔는지와 무관하게 더 가져오지 않는다.</summary>
+        public bool CursorReleased { get; set; }
+
+        /// <summary>마지막 실행·가져오기 직후 커서에 행이 더 있었음. 지금 닫혔으면 "끝까지 읽음"이 아니라 중간에 닫힌 것이다.</summary>
+        public bool CursorHadMore { get; set; }
+
+        public TimeSpan? LastElapsed { get; set; }
+
+        public bool StrippedSemicolon { get; }
+
+        /// <summary>이 결과에서 "가져온 행 안에서만 정렬" 안내를 이미 했음.</summary>
+        public bool SortNoticeShown { get; set; }
+
+        public bool HasMoreRows
+        {
+            get { return Cursor != null && !CursorReleased && !Cursor.IsClosed && Cursor.HasMore; }
+        }
+
+        public bool HoldsOpenCursor
+        {
+            get { return Cursor != null && !CursorReleased && !Cursor.IsClosed; }
+        }
+
+        public bool CursorClosedEarly
+        {
+            get { return Cursor != null && CursorHadMore && !HasMoreRows; }
+        }
+
         /// <summary>가져온 행을 끝에 붙이고 처음 붙인 행을 돌려준다(없으면 null).</summary>
         public ResultGridRow AppendRows(List<string[]> rows)
         {
             ResultGridRow first = null;
-            if (Rows == null || rows == null)
+            if (rows == null)
                 return null;
             foreach (var values in rows)
             {

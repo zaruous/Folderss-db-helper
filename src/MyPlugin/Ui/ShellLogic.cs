@@ -6,17 +6,19 @@ using System.Linq;
 namespace MyPlugin
 {
     /// <summary>창 전체 단축키.</summary>
-    internal enum ShellShortcut { None, NewTab, Open, Save, SaveAs, CloseTab }
+    internal enum ShellShortcut { None, NewTab, Open, Save, SaveAs, CloseTab, RunScript }
 
     /// <summary>DB Helper 화면 틀(툴바·연결·창 닫기)의 화면과 무관한 판단과 문장(순수 로직, 테스트 대상).</summary>
     internal static class ShellLogic
     {
         /// <summary>
-        /// 창 전체 단축키(key는 WPF Key의 이름): Ctrl+N 새 SQL 탭, Ctrl+O 열기, Ctrl+S 저장, Ctrl+Shift+S 다른 이름으로 저장, Ctrl+W 탭 닫기.
-        /// Alt가 함께 눌렸거나 Ctrl이 없으면 None(메뉴 Alt 키·글자 입력과 섞이지 않게).
+        /// 창 전체 단축키(key는 WPF Key의 이름): Ctrl+N 새 SQL 탭, Ctrl+O 열기, Ctrl+S 저장, Ctrl+Shift+S 다른 이름으로 저장, Ctrl+W 탭 닫기,
+        /// F5 스크립트 실행(편집기의 모든 문장). Alt가 함께 눌렸거나 Ctrl이 없으면(F5 말고) None(메뉴 Alt 키·글자 입력과 섞이지 않게).
         /// </summary>
         public static ShellShortcut WindowShortcut(string key, bool control, bool shift, bool alt)
         {
+            if (key == "F5")
+                return !control && !shift && !alt ? ShellShortcut.RunScript : ShellShortcut.None;
             if (!control || alt)
                 return ShellShortcut.None;
             switch (key)
@@ -45,9 +47,11 @@ namespace MyPlugin
             "Ctrl+W — 탭 닫기 (저장하지 않은 SQL이 있으면 물어봄)",
             "",
             "[편집기]",
-            "Ctrl+Enter — 커서가 있는 문장(또는 선택 영역) 실행",
+            "Ctrl+Enter — 커서가 있는 문장 실행 (선택 영역에 문장이 여럿이면 차례로 실행하고 조회마다 결과 탭)",
+            "F5 — 스크립트 실행 (편집기의 모든 문장, 조회마다 결과 탭, 오류가 나면 멈춤)",
             "Ctrl+/ — 줄 주석 토글",
             "Ctrl+Shift+U / Ctrl+Shift+L — 선택 영역 대문자 / 소문자",
+            "F4 — 커서가 있는 테이블 이름(또는 선택한 스키마.이름)의 정보: 열 · 인덱스 · 제약 조건",
             "Ctrl+Z / Ctrl+Y — 실행 취소 / 다시 실행",
             "",
             "[결과]",
@@ -56,6 +60,8 @@ namespace MyPlugin
             "",
             "[트리]",
             "Enter — SELECT 넣기 · 펼치기 · 연결",
+            "F1 — 테이블·뷰 빠른 조회 (앞 100행, 편집기는 그대로)",
+            "F4 — 테이블·뷰 정보",
             "Shift+F10 또는 오른쪽 클릭 — 연결 · 다시 연결 · 연결 끊기",
             "Esc — 검색 지우기",
             "",

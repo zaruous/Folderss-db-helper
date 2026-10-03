@@ -58,6 +58,12 @@ namespace MyPlugin
         /// <summary>트리 메뉴 [연결 끊기]: 툴바 [끊기]와 같다.</summary>
         void Disconnect(string dbId);
 
+        /// <summary>트리 F1: 테이블·뷰의 앞 100행을 그 DB 탭에서 바로 조회(편집기 글은 그대로).</summary>
+        void QuickQuery(string dbId, string owner, string objectName);
+
+        /// <summary>트리 F4: 테이블·뷰 정보 창.</summary>
+        void DescribeObject(string dbId, string owner, string objectName);
+
         /// <summary>트리 조회 중 세션이 끊긴 것을 알았을 때 등 툴바·배지를 새로 그려야 할 때.</summary>
         void StateChanged(string dbId);
 
@@ -821,6 +827,12 @@ namespace MyPlugin
                 var owner = row.Owner;
                 var name = row.ObjectName;
                 menu.Items.Add(new Separator());
+                var quick = MenuAction("빠른 조회 (앞 " + WorkspaceLogic.QuickQueryRows + "행)", true, () => _host.QuickQuery(dbId, owner, name));
+                quick.InputGestureText = "F1";
+                menu.Items.Add(quick);
+                var describe = MenuAction("테이블 정보", true, () => _host.DescribeObject(dbId, owner, name));
+                describe.InputGestureText = "F4";
+                menu.Items.Add(describe);
                 menu.Items.Add(MenuAction("SELECT 문 넣기", true, () => _host.InsertSelect(dbId, owner, name)));
             }
         }
@@ -860,6 +872,20 @@ namespace MyPlugin
                     return;
                 }
                 var entry = _list.SelectedItem as TreeEntry;
+                // F1 빠른 조회(앞 100행) · F4 테이블 정보: 테이블·뷰 행에서
+                if ((e.Key == Key.F1 || e.Key == Key.F4) && Keyboard.Modifiers == ModifierKeys.None)
+                {
+                    var target = entry == null ? null : entry.Row;
+                    if (target != null && target.Kind == TreeRowKind.Object && TreeGroups.HasColumns(target.ObjectType))
+                    {
+                        e.Handled = true;
+                        if (e.Key == Key.F1)
+                            _host.QuickQuery(target.DbId, target.Owner, target.ObjectName);
+                        else
+                            _host.DescribeObject(target.DbId, target.Owner, target.ObjectName);
+                    }
+                    return;
+                }
                 if (entry == null || entry.Row == null || (e.Key != Key.Enter && e.Key != Key.Right && e.Key != Key.Left))
                     return;
                 if ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0)

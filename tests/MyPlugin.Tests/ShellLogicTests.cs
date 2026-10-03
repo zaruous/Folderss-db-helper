@@ -231,6 +231,9 @@ namespace MyPlugin.Tests
         [InlineData("W", true, true, false, "None")]
         [InlineData("Enter", true, false, false, "None")] // 실행은 편집기가 처리
         [InlineData("Q", true, false, false, "None")]
+        [InlineData("F5", false, false, false, "RunScript")]
+        [InlineData("F5", true, false, false, "None")]
+        [InlineData("F5", false, true, false, "None")]
         public void WindowShortcut_MapsCtrlKeys(string key, bool control, bool shift, bool alt, string expected)
         {
             Assert.Equal(expected, ShellLogic.WindowShortcut(key, control, shift, alt).ToString());
@@ -239,7 +242,7 @@ namespace MyPlugin.Tests
         [Fact]
         public void ShortcutsText_ListsEveryShortcut()
         {
-            foreach (var shortcut in new[] { "Ctrl+N", "Ctrl+O", "Ctrl+S", "Ctrl+Shift+S", "Ctrl+W", "Ctrl+Enter", "Ctrl+/", "Ctrl+Shift+U", "Ctrl+Shift+L", "Shift+F10" })
+            foreach (var shortcut in new[] { "Ctrl+N", "Ctrl+O", "Ctrl+S", "Ctrl+Shift+S", "Ctrl+W", "Ctrl+Enter", "Ctrl+/", "Ctrl+Shift+U", "Ctrl+Shift+L", "Shift+F10", "F5" })
                 Assert.Contains(shortcut, ShellLogic.ShortcutsText);
         }
     }
