@@ -30,7 +30,21 @@
 - **비밀번호**는 이 PC의 이 Windows 사용자만 풀 수 있게 저장합니다. 다른 PC로 옮기면 다시 입력해야 합니다.
 - **문장 구분**: `;`, 빈 줄, `/`만 있는 줄. PL/SQL 블록(BEGIN·DECLARE·CREATE PROCEDURE 등)은 `/` 줄로 끝내세요.
 - **접속 방식**: 호스트·포트·서비스명(EZConnect)만 지원합니다. TNS 별칭과 Wallet(mTLS)은 아직 지원하지 않습니다.
-- **확인 상태**: 문장 분석·조회 SQL·세션·트리 로직은 Linux에서 단위 테스트(900개)로 확인했습니다. Windows 화면과 실제 Oracle 서버 접속은 아직 확인 전입니다.
+- **확인 상태**: 문장 분석·조회 SQL·세션·트리 로직은 단위 테스트(900여 개, Linux·Windows)로, 접속·트리 조회·SQL 실행·트랜잭션·취소는 실제 Oracle 12.1(Docker)에 붙는 시험(`tests/MyPlugin.OracleIT`)으로 확인했습니다. Windows 화면은 아직 확인 전입니다.
+- **취소**: [취소]는 in-band break로 보냅니다. 기본값(OOB, TCP 긴급 데이터)은 Docker Desktop·일부 방화벽·NAT를 지나지 못해 서버가 취소를 받지 못합니다.
+
+### 실제 Oracle로 시험
+
+`ORACLE_IT_DSN`이 없으면 모든 시험을 건너뜁니다(CI는 단위 테스트만 실행). SYSTEM 계정으로 시험 스키마(`DBH_IT`)를 만들고 끝나면 지웁니다.
+
+```powershell
+docker start oracle-12c            # 예: truevoly/oracle-12c (system/oracle, 서비스 xe)
+$env:ORACLE_IT_DSN = "localhost:1521/xe"
+$env:ORACLE_IT_SYS_PW = "oracle"   # 기본값 oracle
+dotnet test tests/MyPlugin.OracleIT
+```
+
+측정값(연결·조회 시간, 사용자에게 보이는 오류 문장 등)은 `tests/MyPlugin.OracleIT/bin/Debug/net8.0/oracle-it-report.txt`에 남습니다.
 
 ---
 
