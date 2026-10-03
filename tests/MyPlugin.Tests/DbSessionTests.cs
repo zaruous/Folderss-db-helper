@@ -990,6 +990,43 @@ namespace MyPlugin.Tests
             Assert.Equal("ORA-06550: line 1, column 7: PLS-00201: identifier 'NO_SUCH_PROC' must be declared", DbSession.DescribeError(error));
         }
 
+        [Fact]
+        public void DescribeError_ConnectFailure_PutsInnerCauseFirst()
+        {
+            // ODP.NET 23의 실제 모양(Oracle 12.1 실측): OracleException ORA-50201 ← NetworkException ORA-50201 ← NetworkException ORA-12514
+            const string generic = "ORA-50201: Oracle Communication: Failed to connect to server or failed to parse connect string";
+            var error = new Exception(generic + "\nhttps://docs.oracle.com/error-help/db/ora-50201/",
+                new Exception(generic, new Exception("ORA-12514: TNS:listener does not currently know of service requested in connect descriptor")));
+
+            Assert.Equal("ORA-12514: TNS:listener does not currently know of service requested in connect descriptor (ORA-50201)", DbSession.DescribeError(error));
+            Assert.Equal("ORA-12541: TNS:no listener (ORA-50201)",
+                DbSession.DescribeError(new AggregateException(new Exception(generic, new Exception("ORA-12541: TNS:no listener")))));
+        }
+
+        [Fact]
+        public void DescribeError_InnerWithoutDifferentCode_KeepsOuterLine()
+        {
+            // 안쪽이 같은 번호이거나 번호가 없으면 겉 줄 그대로
+            Assert.Equal("ORA-12154: TNS:could not resolve the connect identifier specified",
+                DbSession.DescribeError(new Exception("ORA-12154: TNS:could not resolve the connect identifier specified",
+                    new Exception("ORA-12154: TNS:could not resolve the connect identifier specified"))));
+            Assert.Equal("ORA-50201: failed", DbSession.DescribeError(new Exception("ORA-50201: failed", new System.Net.Sockets.SocketException(10061))));
+            // 겉 줄에 번호가 없으면 안쪽 번호를 끌어오지 않는다
+            Assert.Equal("저장하지 못했습니다", DbSession.DescribeError(new Exception("저장하지 못했습니다", new Exception("ORA-00001: unique constraint"))));
+            // "ORA-1234x"처럼 번호가 다섯 자리가 아니면 번호로 보지 않는다
+            Assert.Equal("ORA-50201: failed", DbSession.DescribeError(new Exception("ORA-50201: failed", new Exception("ORA-1234x: odd"))));
+        }
+
+        [Fact]
+        public void CreateOracle_UsesInBandBreakForCancel()
+        {
+            // OOB(TCP 긴급 데이터) 취소는 Docker·NAT를 지나면 서버에 닿지 않는다 — 세션을 만들 때 in-band로 바꾼다
+            using (DbSession.CreateOracle("Data Source=localhost:1521/xe;User Id=u;Password=p"))
+            {
+                Assert.True(OracleConfiguration.DisableOOB);
+            }
+        }
+
         [Theory]
         [InlineData(3113, "ORA-03113")]
         [InlineData(3135, "ORA-03135")]

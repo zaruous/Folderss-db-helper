@@ -444,6 +444,17 @@ namespace MyPlugin.Tests
             Assert.Equal(DbSession.DescribeError(denied), ConnectionManagerLogic.DescribeConnectError(denied));
         }
 
+        [Fact]
+        public void DescribeConnectError_GenericConnectFailure_ShowsListenerCause()
+        {
+            // 서비스명이 틀리면 ODP.NET은 겉에 ORA-50201만 둔다 — 접속 테스트·연결 메시지에는 실제 원인이 보여야 한다
+            var error = new Exception("ORA-50201: Oracle Communication: Failed to connect to server or failed to parse connect string",
+                new Exception("ORA-12514: TNS:listener does not currently know of service requested in connect descriptor"));
+
+            Assert.Equal("ORA-12514: TNS:listener does not currently know of service requested in connect descriptor (ORA-50201)",
+                ConnectionManagerLogic.DescribeConnectError(error));
+        }
+
         /// <summary>ODP.NET의 OracleException은 공개 생성자가 없어 내부 생성자로 만든다(DbSessionTests와 같음).</summary>
         private static Oracle.ManagedDataAccess.Client.OracleException NewOracleException(int number, string message)
         {
