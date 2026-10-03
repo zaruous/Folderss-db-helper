@@ -16,6 +16,15 @@ namespace MyPlugin
         Cancel
     }
 
+    internal enum SaveChoice
+    {
+        Save,
+        /// <summary>저장하지 않고 닫기(변경을 버림)</summary>
+        Discard,
+        /// <summary>돌아가기(닫지 않음)</summary>
+        Cancel
+    }
+
     /// <summary>
     /// 확인 대화상자들. 모두 Theme.ApplyWindow로 테마를 맞춘 모달 창(Owner = 넘겨받은 창, 가운데 정렬, 크기 조절 없음, 작업 표시줄에 안 보임).
     /// 되돌릴 수 없는 선택은 경고 문구 + 확인 체크를 거쳐야 실행 버튼이 켜진다(Folderss 원칙). 기본값은 가장 안전한 선택.
@@ -107,6 +116,39 @@ namespace MyPlugin
             if (window.ShowDialog() != true)
                 return PendingChoice.Cancel;
             return commit.IsChecked == true ? PendingChoice.Commit : PendingChoice.Rollback;
+        }
+
+        /// <summary>
+        /// 탭을 닫기 전 저장 확인: "'orders.sql'에 저장하지 않은 변경이 있습니다(경로). 저장할까요?" [저장] [저장 안 함] [취소].
+        /// 기본 버튼(Enter·Esc)은 [취소] — 잘못 눌러도 변경을 버리지 않게.
+        /// </summary>
+        public static SaveChoice AskSaveChanges(Window owner, string title, string filePath)
+        {
+            var window = DialogKit.Create(owner, "저장하지 않은 SQL", 440);
+            var body = DialogKit.Body(window);
+            var what = filePath != null
+                ? "'" + title + "'에 저장하지 않은 변경이 있습니다." + Environment.NewLine + filePath
+                : "'" + title + "' 탭의 SQL을 파일로 저장한 적이 없습니다.";
+            body.Children.Add(DialogKit.Text(what + Environment.NewLine + Environment.NewLine + "탭을 닫기 전에 저장할까요?", 0));
+            var result = SaveChoice.Cancel;
+            var save = DialogKit.PrimaryButton(filePath != null ? "저장" : "저장…");
+            var discard = DialogKit.PlainButton("저장 안 함");
+            discard.Margin = new Thickness(8, 0, 0, 0);
+            var cancel = DialogKit.CancelButton("취소", true);
+            cancel.Margin = new Thickness(8, 0, 0, 0);
+            save.Click += (s, e) =>
+            {
+                result = SaveChoice.Save;
+                window.DialogResult = true;
+            };
+            discard.Click += (s, e) =>
+            {
+                result = SaveChoice.Discard;
+                window.DialogResult = true;
+            };
+            body.Children.Add(DialogKit.Buttons(save, discard, cancel));
+            DialogKit.FocusOnLoad(window, cancel);
+            return window.ShowDialog() == true ? result : SaveChoice.Cancel;
         }
 
         /// <summary>단순 안내(확인 버튼 하나). error면 위험색 아이콘·문구.</summary>

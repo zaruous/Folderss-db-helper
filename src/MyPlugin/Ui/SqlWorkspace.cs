@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -43,6 +44,15 @@ namespace MyPlugin
 
         /// <summary>실행 시작·끝, 커밋 대기 변경 등으로 그 DB의 표시(툴바·트리 배지)를 새로 그려야 할 때.</summary>
         void StateChanged(string dbId);
+
+        /// <summary>플러그인 데이터 폴더(SQL 임시 저장 위치). 쓸 수 없으면 null.</summary>
+        string DataDirectory { get; }
+
+        /// <summary>SQL 파일을 열거나 저장한 마지막 폴더(열기·저장 창의 처음 위치). 없으면 null.</summary>
+        string LastSqlFolder { get; set; }
+
+        /// <summary>최근에 열거나 저장한 SQL 파일을 맨 앞에 넣는다.</summary>
+        void AddRecentSqlFile(string path);
     }
 
     /// <summary>
@@ -73,6 +83,14 @@ namespace MyPlugin
         private int _gutterLines = -1;
         private string _stateSignature;
         private bool _stateTimerFailed;
+
+        // SQL 임시 저장: 지금 열린 DB Helper 창들의 파일 Id(같은 프로세스의 창끼리 파일을 덮어쓰거나 넘겨받지 않게. 모두 UI 스레드지만 잠근다)
+        private static readonly HashSet<string> LiveDraftOwners = new HashSet<string>(StringComparer.Ordinal);
+        private readonly string _draftOwner = Guid.NewGuid().ToString("N");
+        private readonly DispatcherTimer _draftTimer;
+        // 넘겨받았지만 이 창 파일에 아직 저장하지 못한 파일(저장에 성공하면 지운다)
+        private readonly List<string> _adoptedDrafts = new List<string>();
+        private bool _draftSaveFailed;
 
         private Grid _strip;
         private StackPanel _tabPanel;
@@ -141,12 +159,19 @@ namespace MyPlugin
             // 셸이 연결·끊기·가져올 행 변경을 OnHostStateChanged로 알린다. 알림이 빠진 경로(커서 정리 중 끊김 등)를 위해 1초마다도 맞춘다
             _stateTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromSeconds(1) };
             _stateTimer.Tick += StateTimer_Tick;
+            _draftTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = SqlDraftLogic.SaveDelay };
+            _draftTimer.Tick += (s, e) => Safe(() => SaveDrafts());
             Loaded += Workspace_Loaded;
             Unloaded += Workspace_Unloaded;
 
-            var first = CreateTab(InitialTarget(), FirstTabText);
-            first.Editor.CaretIndex = first.Editor.Text.Length;
-            ActivateTab(first, false);
+            lock (LiveDraftOwners)
+                LiveDraftOwners.Add(_draftOwner);
+            if (!RestoreDrafts())
+            {
+                var first = CreateTab(InitialTarget(), FirstTabText);
+                first.Editor.CaretIndex = first.Editor.Text.Length;
+                ActivateTab(first, false);
+            }
             SelectPane(WorkspacePane.Grid);
         }
 
@@ -628,18 +653,24 @@ namespace MyPlugin
             {
                 Status = WorkspaceLogic.ReadyStatus()
             };
+            tab.InitialText = tab.Editor.Text;
             _tabs.Add(tab);
             _editorHost.Children.Add(tab.Editor);
             return tab;
         }
 
-        private void AddTab()
+        /// <summary>새 탭의 대상: 트리에서 고른 DB, 없으면 지금 탭의 대상.</summary>
+        private string NewTabTarget()
         {
             var selected = _host.SelectedDbId;
             var target = Profile(selected) != null ? selected : (_active != null ? _active.DbId : null);
+            return Profile(target) != null ? target : null;
+        }
+
+        private void AddTab()
+        {
+            var target = NewTabTarget();
             var profile = Profile(target);
-            if (profile == null)
-                target = null;
             var tab = CreateTab(target, WorkspaceLogic.NewTabText(profile != null ? profile.Name : null));
             tab.Editor.CaretIndex = tab.Editor.Text.Length;
             ActivateTab(tab, true);
@@ -683,10 +714,14 @@ namespace MyPlugin
                 AddMessage(tab.RunningDbId ?? tab.DbId, "'" + tab.Title + "' 탭은 실행 중이라 닫지 않았습니다. 먼저 취소하세요.", MessageKind.Error);
                 return;
             }
+            if (!ConfirmCloseUnsaved(tab) || !_tabs.Contains(tab) || tab.Running)
+                return;
             if (ReleaseCursor(tab))
                 AddMessage(tab.ResultDbId, "'" + tab.Title + "' 탭을 닫아 열린 커서를 닫았습니다.", MessageKind.Info);
             var index = _tabs.IndexOf(tab);
             _tabs.RemoveAt(index);
+            // 닫은 탭은 임시 저장에서도 뺀다
+            ScheduleDraftSave();
             _editorHost.Children.Remove(tab.Editor);
             if (tab.Grid != null)
                 _gridHost.Children.Remove(tab.Grid.View);
@@ -748,7 +783,7 @@ namespace MyPlugin
                 done.ToolTip = "새 결과";
                 content.Children.Add(done);
             }
-            var title = Theme.Text(tab.Title, active ? Theme.PrimaryText : Theme.SecondaryText);
+            var title = Theme.Text(tab.Title + (tab.ShownDirty ? "*" : ""), active ? Theme.PrimaryText : Theme.SecondaryText);
             title.VerticalAlignment = VerticalAlignment.Center;
             if (active)
                 title.FontWeight = FontWeights.SemiBold;
@@ -785,7 +820,7 @@ namespace MyPlugin
             Border underline;
             var button = WorkspaceUi.SelectorButton(content, out underline);
             WorkspaceUi.SetSelected(button, underline, active);
-            button.ToolTip = tab.Title + " — 대상: " + (profile != null ? profile.Name : "없음");
+            button.ToolTip = (tab.FilePath ?? tab.Title) + (tab.ShownDirty ? " (저장하지 않은 변경 있음)" : "") + " — 대상: " + (profile != null ? profile.Name : "없음");
             AutomationProperties.SetName(button, tab.Title);
             button.Click += (s, e) => Safe(() => ActivateTab(tab, true));
             if (close != null)
@@ -937,6 +972,7 @@ namespace MyPlugin
             if (ReleaseCursor(tab))
                 AddMessage(tab.ResultDbId, "대상 DB를 바꿔 '" + tab.Title + "' 탭의 열린 커서를 닫았습니다.", MessageKind.Info);
             tab.DbId = dbId;
+            ScheduleDraftSave();
             // 이전 대상의 연결·바쁨 안내는 더 맞지 않는다
             tab.Status = tab.Cursor != null ? FetchStatusOf(tab) : WorkspaceLogic.ReadyStatus();
             RenderTabs();
@@ -966,6 +1002,11 @@ namespace MyPlugin
         {
             Safe(() =>
             {
+                // 이 처리기는 이 작업 영역의 편집기에만 붙는다 — 어느 탭이 바뀌어도 임시 저장한다
+                ScheduleDraftSave();
+                var changed = _tabs.FirstOrDefault(t => ReferenceEquals(t.Editor, sender));
+                if (changed != null && changed.FilePath != null)
+                    UpdateDirty(changed, false);
                 var tab = _active;
                 if (tab == null || !ReferenceEquals(sender, tab.Editor))
                     return;
@@ -995,12 +1036,515 @@ namespace MyPlugin
 
         private void Editor_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            // 한글 입력 중이면 Enter가 ImeProcessed로 온다
+            // 한글 입력 중이면 Enter 등이 ImeProcessed로 온다
             var key = e.Key == Key.ImeProcessed ? e.ImeProcessedKey : e.Key;
-            if (key != Key.Enter || (Keyboard.Modifiers & ModifierKeys.Control) == 0)
+            var modifiers = Keyboard.Modifiers;
+            if ((modifiers & ModifierKeys.Control) == 0 || (modifiers & ModifierKeys.Alt) != 0)
                 return;
-            e.Handled = true;
+            var shift = (modifiers & ModifierKeys.Shift) != 0;
+            if (key == Key.Enter && !shift)
+            {
+                e.Handled = true;
+                RunActive();
+            }
+            else if ((key == Key.Oem2 || key == Key.Divide) && !shift)
+            {
+                // Ctrl+/ : 줄 주석 토글
+                e.Handled = true;
+                Safe(ToggleComment);
+            }
+            else if (shift && (key == Key.U || key == Key.L))
+            {
+                // Ctrl+Shift+U·L : 선택한 글 대·소문자
+                e.Handled = true;
+                Safe(() => ChangeCase(key == Key.U));
+            }
+        }
+
+        // ================= SQL 임시 저장 =================
+
+        /// <summary>
+        /// 닫힌 창(또는 비정상 종료)이 남긴 임시 저장을 넘겨받아 탭으로 되살린다. 되살린 탭이 있으면 true(첫 탭 안내문을 만들지 않음).
+        /// 넘겨받은 내용을 이 창 파일에 저장한 뒤 원래 파일을 지운다.
+        /// 파일 탭: 저장하지 않은 변경이 있었으면 그 내용을, 없었으면 파일을 다시 읽어(그 사이 바뀌었을 수 있음) 되살린다.
+        /// </summary>
+        private bool RestoreDrafts()
+        {
+            var folder = DraftFolder();
+            if (folder == null)
+                return false;
+            List<KeyValuePair<string, SqlDraftSet>> orphans;
+            try
+            {
+                List<string> live;
+                lock (LiveDraftOwners)
+                    live = LiveDraftOwners.ToList();
+                orphans = SqlDraftLogic.LoadOrphans(folder, live);
+            }
+            catch (Exception ex)
+            {
+                AddMessage(null, SqlDraftLogic.LoadFailedMessage(ex.Message), MessageKind.Error);
+                return false;
+            }
+            if (orphans.Count == 0)
+                return false;
+            var merged = SqlDraftLogic.Merge(orphans.Select(p => p.Value));
+            _adoptedDrafts.AddRange(orphans.Select(p => p.Key));
+            if (merged.Tabs.Count == 0)
+            {
+                // 탭이 없는 파일뿐 — 지우기만 한다
+                SqlDraftLogic.DeleteQuietly(_adoptedDrafts);
+                _adoptedDrafts.Clear();
+                return false;
+            }
+            SqlTabState active = null;
+            for (var i = 0; i < merged.Tabs.Count; i++)
+            {
+                var tab = RestoreTab(merged.Tabs[i]);
+                if (i == merged.Active)
+                    active = tab;
+            }
+            ActivateTab(active ?? _tabs[_tabs.Count - 1], false);
+            SaveDrafts();
+            AddMessage(null, SqlDraftLogic.RestoredMessage(merged.Tabs.Count), MessageKind.Info);
+            return true;
+        }
+
+        private SqlTabState RestoreTab(SqlDraft draft)
+        {
+            // 그 사이 지운 접속이면 대상 없이 되살린다
+            var dbId = Profile(draft.DbId) != null ? draft.DbId : null;
+            SqlFileContent fresh = null;
+            if (!string.IsNullOrEmpty(draft.FilePath) && !draft.Dirty)
+            {
+                try
+                {
+                    fresh = SqlFileLogic.Read(draft.FilePath);
+                }
+                catch (Exception ex)
+                {
+                    AddMessage(null, SqlFileLogic.OpenFailedMessage(draft.FilePath, ex.Message) + " — 임시 저장한 내용으로 되살립니다.", MessageKind.Error);
+                }
+            }
+            var tab = CreateTab(dbId, fresh != null ? fresh.Text : draft.Text);
+            tab.InitialText = "";
+            if (!string.IsNullOrEmpty(draft.FilePath))
+            {
+                SqlFileEncoding encoding;
+                tab.FilePath = draft.FilePath;
+                tab.FileEncoding = fresh != null ? fresh.Encoding
+                    : Enum.TryParse(draft.FileEncoding, out encoding) ? encoding : SqlFileEncoding.Utf8;
+                tab.FileNewline = fresh != null ? fresh.Newline : draft.Newline;
+                // 다시 읽었으면 저장된 상태, 아니면(변경이 있었거나 읽지 못함) 변경됨
+                tab.SavedText = fresh != null ? tab.Editor.Text : null;
+                tab.ShownDirty = tab.Dirty;
+            }
+            tab.Editor.CaretIndex = Math.Max(0, Math.Min(draft.Caret, tab.Editor.Text.Length));
+            return tab;
+        }
+
+        /// <summary>입력이 멈춘 뒤(SaveDelay) 저장하도록 미룬다.</summary>
+        private void ScheduleDraftSave()
+        {
+            if (_draftTimer == null)
+                return;
+            _draftTimer.Stop();
+            _draftTimer.Start();
+        }
+
+        /// <summary>
+        /// 연 탭들의 SQL을 이 창의 임시 저장 파일에 쓴다(빈 탭·만들 때 글 그대로인 탭은 빼고, 파일 탭은 늘 넣는다). 성공하면 true.
+        /// 실패는 연달아 알리지 않는다.
+        /// </summary>
+        private bool SaveDrafts()
+        {
+            if (_draftTimer != null)
+                _draftTimer.Stop();
+            var folder = DraftFolder();
+            if (folder == null)
+                return false;
+            var set = new SqlDraftSet { SavedAtUtc = DateTime.UtcNow };
+            foreach (var tab in _tabs)
+            {
+                var text = tab.Editor.Text;
+                if (tab.FilePath == null && !SqlDraftLogic.IsWorthSaving(text, tab.InitialText))
+                    continue;
+                if (tab == _active)
+                    set.Active = set.Tabs.Count;
+                set.Tabs.Add(new SqlDraft
+                {
+                    DbId = tab.DbId,
+                    Text = text,
+                    Caret = tab.Editor.CaretIndex,
+                    FilePath = tab.FilePath,
+                    FileEncoding = tab.FilePath != null ? tab.FileEncoding.ToString() : null,
+                    Newline = tab.FileNewline,
+                    Dirty = tab.Dirty
+                });
+            }
+            try
+            {
+                SqlDraftLogic.Save(folder, _draftOwner, set);
+            }
+            catch (Exception ex)
+            {
+                if (!_draftSaveFailed)
+                    AddMessage(null, SqlDraftLogic.SaveFailedMessage(ex.Message), MessageKind.Error);
+                _draftSaveFailed = true;
+                return false;
+            }
+            _draftSaveFailed = false;
+            if (_adoptedDrafts.Count > 0)
+            {
+                SqlDraftLogic.DeleteQuietly(_adoptedDrafts);
+                _adoptedDrafts.Clear();
+            }
+            return true;
+        }
+
+        // ================= SQL 파일·메뉴 명령 =================
+
+        /// <summary>메뉴·아이콘이 따르는 상태가 바뀜(탭 바꿈·실행 시작과 끝·저장하지 않은 변경 표시).</summary>
+        public event EventHandler CommandStateChanged;
+
+        /// <summary>지금 탭의 편집기(편집 메뉴의 잘라내기·복사·되돌리기 대상).</summary>
+        public TextBox ActiveEditor
+        {
+            get { return _active != null ? _active.Editor : null; }
+        }
+
+        public bool ActiveRunning
+        {
+            get { return _active != null && _active.Running; }
+        }
+
+        public bool ActiveCanFetch
+        {
+            get { return _active != null && !_active.Running && _active.HasMoreRows; }
+        }
+
+        public bool ActiveHasSelection
+        {
+            get { return _active != null && _active.Editor.SelectionLength > 0; }
+        }
+
+        /// <summary>새 SQL 탭(Ctrl+N).</summary>
+        public void NewTab()
+        {
+            Safe(AddTab);
+        }
+
+        /// <summary>SQL 파일 열기(Ctrl+O): 여러 개를 고를 수 있다.</summary>
+        public void OpenFileWithDialog()
+        {
+            Safe(() =>
+            {
+                var dialog = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "SQL 파일 열기",
+                    Filter = SqlFileLogic.DialogFilter,
+                    Multiselect = true,
+                    CheckFileExists = true
+                };
+                var folder = LastFolder();
+                if (folder != null)
+                    dialog.InitialDirectory = folder;
+                if (dialog.ShowDialog(Window.GetWindow(this)) == true)
+                    OpenPaths(dialog.FileNames);
+            });
+        }
+
+        /// <summary>파일들을 연다(최근 파일 메뉴 등). 이미 연 파일은 그 탭으로 옮긴다.</summary>
+        public void OpenPaths(IEnumerable<string> paths)
+        {
+            Safe(() =>
+            {
+                foreach (var path in paths ?? Enumerable.Empty<string>())
+                    OpenPath(path);
+            });
+        }
+
+        /// <summary>지금 탭 저장(Ctrl+S) 또는 다른 이름으로 저장(Ctrl+Shift+S). 저장했으면 true.</summary>
+        public bool SaveActive(bool saveAs)
+        {
+            try
+            {
+                return _active != null && SaveTab(_active, saveAs);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+                return false;
+            }
+        }
+
+        /// <summary>지금 탭 닫기(Ctrl+W). 저장하지 않은 변경이 있으면 묻는다.</summary>
+        public void CloseActiveTab()
+        {
+            Safe(() =>
+            {
+                if (_active != null)
+                    CloseTab(_active);
+            });
+        }
+
+        public void RunActiveStatement()
+        {
             RunActive();
+        }
+
+        public void CancelActiveRun()
+        {
+            Safe(CancelActive);
+        }
+
+        public async void FetchNextActive()
+        {
+            try
+            {
+                if (ActiveCanFetch)
+                    await FetchNextAsync(_active);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>줄 주석 토글(Ctrl+/). 되돌리기(Ctrl+Z) 한 번으로 돌아간다.</summary>
+        public void ToggleComment()
+        {
+            var editor = ActiveEditor;
+            if (editor == null || editor.IsReadOnly)
+                return;
+            ApplyEdit(editor, EditorLogic.ToggleLineComment(editor.Text, editor.SelectionStart, editor.SelectionLength));
+            editor.Focus();
+        }
+
+        /// <summary>선택한 글을 대문자(Ctrl+Shift+U)·소문자(Ctrl+Shift+L)로.</summary>
+        public void ChangeCase(bool upper)
+        {
+            var editor = ActiveEditor;
+            if (editor == null || editor.IsReadOnly || editor.SelectionLength == 0)
+                return;
+            var start = editor.SelectionStart;
+            var replaced = EditorLogic.ChangeCase(editor.SelectedText, upper);
+            editor.SelectedText = replaced;
+            editor.Select(start, replaced.Length);
+            editor.Focus();
+        }
+
+        private static void ApplyEdit(TextBox editor, TextEdit edit)
+        {
+            if (edit.Length > 0 || edit.Replacement.Length > 0)
+            {
+                // SelectedText로 바꿔야 되돌리기 한 번에 돌아간다
+                editor.Select(edit.Start, edit.Length);
+                editor.SelectedText = edit.Replacement;
+            }
+            editor.Select(edit.SelectStart, edit.SelectLength);
+        }
+
+        private void OpenPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+            var existing = _tabs.FirstOrDefault(t => SqlFileLogic.SamePath(t.FilePath, path));
+            if (existing != null)
+            {
+                ActivateTab(existing, true);
+                AddMessage(null, SqlFileLogic.AlreadyOpenMessage(path), MessageKind.Info);
+                return;
+            }
+            SqlFileContent content;
+            try
+            {
+                content = SqlFileLogic.Read(path);
+            }
+            catch (Exception ex)
+            {
+                var message = SqlFileLogic.OpenFailedMessage(path, ex.Message);
+                AddMessage(null, message, MessageKind.Error);
+                Dialogs.Show(Window.GetWindow(this), "파일을 열지 못했습니다", message, true);
+                return;
+            }
+            var text = WorkspaceLogic.NormalizeNewlines(content.Text, Environment.NewLine);
+            // 아무것도 쓰지 않은 지금 탭이면 그 탭에 연다(탭이 쌓이지 않게)
+            var reuse = IsPristine(_active);
+            var tab = reuse ? _active : CreateTab(NewTabTarget(), text);
+            if (reuse)
+                tab.Editor.Text = text;
+            tab.FilePath = FullPath(path);
+            tab.FileEncoding = content.Encoding;
+            tab.FileNewline = content.Newline;
+            tab.SavedText = tab.Editor.Text;
+            tab.ShownDirty = false;
+            tab.Editor.CaretIndex = 0;
+            tab.Editor.ScrollToHome();
+            ActivateTab(tab, true);
+            RememberFile(tab.FilePath);
+            AddMessage(tab.DbId, SqlFileLogic.OpenedMessage(tab.FilePath, content.Encoding), MessageKind.Info);
+            ScheduleDraftSave();
+            RaiseCommandStateChanged();
+        }
+
+        /// <summary>
+        /// 탭 저장. 파일이 없거나 saveAs면 저장 창을 띄운다. 연 파일의 인코딩·줄바꿈을 그대로 쓰고(새 파일은 BOM 없는 UTF-8·CRLF),
+        /// 다른 탭이 연 파일에는 덮어쓰지 않는다. 저장했으면 true.
+        /// </summary>
+        private bool SaveTab(SqlTabState tab, bool saveAs)
+        {
+            var owner = Window.GetWindow(this);
+            var path = tab.FilePath;
+            if (saveAs || path == null)
+            {
+                var dialog = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = path == null ? "SQL 파일 저장" : "다른 이름으로 저장",
+                    Filter = SqlFileLogic.DialogFilter,
+                    DefaultExt = SqlFileLogic.DefaultExtension,
+                    AddExtension = true,
+                    OverwritePrompt = true,
+                    FileName = path != null ? Path.GetFileName(path) : SqlFileLogic.DefaultFileName(tab.Title)
+                };
+                var folder = path != null ? Path.GetDirectoryName(path) : LastFolder();
+                if (!string.IsNullOrEmpty(folder) && Directory.Exists(folder))
+                    dialog.InitialDirectory = folder;
+                if (dialog.ShowDialog(owner) != true)
+                    return false;
+                path = dialog.FileName;
+                var other = _tabs.FirstOrDefault(t => t != tab && SqlFileLogic.SamePath(t.FilePath, path));
+                if (other != null)
+                {
+                    var busy = "'" + other.Title + "' 탭이 이미 이 파일을 열고 있어 저장하지 않았습니다. 그 탭에서 저장하거나 탭을 닫은 뒤 다시 저장하세요.";
+                    AddMessage(null, busy, MessageKind.Error);
+                    Dialogs.Show(owner, "저장하지 않았습니다", busy, true);
+                    return false;
+                }
+            }
+            var newline = tab.FileNewline ?? "\r\n";
+            var encoding = tab.FilePath != null ? tab.FileEncoding : SqlFileEncoding.Utf8;
+            SqlFileEncoding used;
+            try
+            {
+                used = SqlFileLogic.Write(path, WorkspaceLogic.NormalizeNewlines(tab.Editor.Text, newline), encoding);
+            }
+            catch (Exception ex)
+            {
+                var message = SqlFileLogic.SaveFailedMessage(path, ex.Message);
+                AddMessage(null, message, MessageKind.Error);
+                Dialogs.Show(owner, "파일을 저장하지 못했습니다", message, true);
+                return false;
+            }
+            tab.FilePath = FullPath(path);
+            tab.FileEncoding = used;
+            tab.FileNewline = newline;
+            tab.SavedText = tab.Editor.Text;
+            if (used != encoding)
+                AddMessage(null, SqlFileLogic.FallbackMessage(tab.FilePath), MessageKind.Info);
+            RememberFile(tab.FilePath);
+            AddMessage(tab.DbId, SqlFileLogic.SavedMessage(tab.FilePath, used), MessageKind.Success);
+            UpdateDirty(tab, true);
+            ScheduleDraftSave();
+            return true;
+        }
+
+        /// <summary>
+        /// 닫기 전 확인: 저장하지 않은 변경(파일 탭)이나 저장한 적 없는 SQL(새 탭)이 있으면 [저장]·[저장 안 함]·[취소]를 묻는다.
+        /// 닫아도 되면 true. 창을 닫을 때는 묻지 않는다(임시 저장이 다음에 되살린다).
+        /// </summary>
+        private bool ConfirmCloseUnsaved(SqlTabState tab)
+        {
+            var unsaved = tab.Dirty || (tab.FilePath == null && SqlDraftLogic.IsWorthSaving(tab.Editor.Text, tab.InitialText));
+            if (!unsaved)
+                return true;
+            if (tab != _active)
+                ActivateTab(tab, false);
+            switch (Dialogs.AskSaveChanges(Window.GetWindow(this), tab.Title, tab.FilePath))
+            {
+                case SaveChoice.Save:
+                    return SaveTab(tab, false);
+                case SaveChoice.Discard:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>아무것도 쓰지 않은 탭(파일 없음, 만들 때 글 그대로, 실행·결과 없음): 파일을 그 탭에 연다.</summary>
+        private static bool IsPristine(SqlTabState tab)
+        {
+            return tab != null && tab.FilePath == null && !tab.Running && tab.Columns == null
+                && !SqlDraftLogic.IsWorthSaving(tab.Editor.Text, tab.InitialText);
+        }
+
+        /// <summary>파일 탭의 "저장하지 않은 변경" 표시가 바뀌었으면 탭 머리를 다시 그린다.</summary>
+        private void UpdateDirty(SqlTabState tab, bool force)
+        {
+            var dirty = tab.Dirty;
+            if (!force && dirty == tab.ShownDirty)
+                return;
+            tab.ShownDirty = dirty;
+            RenderTabs();
+            RaiseCommandStateChanged();
+        }
+
+        private void RememberFile(string path)
+        {
+            try
+            {
+                _host.AddRecentSqlFile(path);
+                _host.LastSqlFolder = Path.GetDirectoryName(path);
+            }
+            catch (Exception)
+            {
+                // 최근 파일을 기억하지 못해도 열기·저장은 끝났다
+            }
+        }
+
+        private string LastFolder()
+        {
+            try
+            {
+                var folder = _host.LastSqlFolder;
+                return !string.IsNullOrEmpty(folder) && Directory.Exists(folder) ? folder : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static string FullPath(string path)
+        {
+            try
+            {
+                return Path.GetFullPath(path);
+            }
+            catch (Exception)
+            {
+                return path;
+            }
+        }
+
+        private void RaiseCommandStateChanged()
+        {
+            var handler = CommandStateChanged;
+            if (handler != null)
+                handler(this, EventArgs.Empty);
+        }
+
+        private string DraftFolder()
+        {
+            try
+            {
+                var directory = _host.DataDirectory;
+                return string.IsNullOrEmpty(directory) ? null : SqlDraftLogic.FolderOf(directory);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         private void UpdateGutter(SqlTabState tab, bool force)
@@ -1676,6 +2220,7 @@ namespace MyPlugin
             _run.IsEnabled = tab != null && !running;
             _cancel.IsEnabled = running;
             _target.IsEnabled = tab != null && !running;
+            RaiseCommandStateChanged();
         }
 
         private async void StatusAction_Click(object sender, RoutedEventArgs e)
@@ -1819,6 +2364,8 @@ namespace MyPlugin
         {
             Safe(() =>
             {
+                lock (LiveDraftOwners)
+                    LiveDraftOwners.Add(_draftOwner);
                 _stateTimer.Start();
                 if (AnyRunning)
                     _elapsedTimer.Start();
@@ -1832,6 +2379,10 @@ namespace MyPlugin
             // 멈추지 않으면 Dispatcher가 타이머를 통해 닫힌 창의 화면을 계속 붙잡는다
             _stateTimer.Stop();
             _elapsedTimer.Stop();
+            // 창을 닫음: 마지막 내용을 저장하고, 다음에 여는 창이 넘겨받을 수 있게 열린 창 목록에서 뺀다
+            Safe(() => SaveDrafts());
+            lock (LiveDraftOwners)
+                LiveDraftOwners.Remove(_draftOwner);
         }
 
         // ================= 커서 정리 =================
