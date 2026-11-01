@@ -529,6 +529,22 @@ namespace MyPlugin
             return new TreeEntry(row, badges, stripe);
         }
 
+        /// <summary>안내 글을 보이는 행들 아래에 둔다(행 높이는 그려진 첫 행에서, 없으면 기본값).</summary>
+        private void PlaceOverlayBelowRows(int count)
+        {
+            const double top = 30, fallbackRow = 24;
+            var first = count > 0 ? _list.ItemContainerGenerator.ContainerFromIndex(0) as FrameworkElement : null;
+            var height = first != null && first.ActualHeight > 0 ? first.ActualHeight : fallbackRow;
+            _overlay.Margin = new Thickness(14, count == 0 ? top : count * height + 14, 14, 0);
+            if (first == null && count > 0)
+                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+                {
+                    var drawn = _list.ItemContainerGenerator.ContainerFromIndex(0) as FrameworkElement;
+                    if (drawn != null && drawn.ActualHeight > 0 && _overlay.Visibility == Visibility.Visible)
+                        _overlay.Margin = new Thickness(14, _entries.Count * drawn.ActualHeight + 14, 14, 0);
+                }));
+        }
+
         /// <summary>새 행 목록을 목록에 맞춘다. 같은 키의 앞뒤 행은 그 자리에서 내용만 바꾼다. 목록을 통째로 바꿨으면 true.</summary>
         private bool Apply(List<TreeEntry> next)
         {
@@ -587,12 +603,15 @@ namespace MyPlugin
                 overlayIsError = !string.IsNullOrEmpty(_host.ProfilesError);
                 overlay = overlayIsError ? _host.ProfilesError : "등록된 DB가 없습니다.\n[접속 관리…]에서 추가하세요.";
             }
-            else if (searching && rows.All(r => r.Key == TreePanelLogic.OfflineNoteKey))
+            else if (searching && rows.All(r => r.Kind == TreeRowKind.Database && !r.IsHit && !r.Expanded || r.Key == TreePanelLogic.OfflineNoteKey))
             {
+                // 일치가 없어도 DB 행은 남는다 — 안내는 그 행들 아래에 둔다
                 overlay = _searchWaiting.Count > 0 ? "검색 중…" : TreePanelLogic.NoMatchText(_appliedTerm, ColumnsScope, showSystem);
             }
             _overlay.Text = overlay ?? "";
             _overlay.Visibility = overlay == null ? Visibility.Collapsed : Visibility.Visible;
+            if (overlay != null)
+                PlaceOverlayBelowRows(rows.Count);
             if (overlayIsError)
                 _overlay.Foreground = Theme.Danger;
             else
