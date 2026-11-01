@@ -209,7 +209,7 @@ namespace MyPlugin
     /// <summary>
     /// PostgreSQL DDL. 컬럼 변경은 ALTER COLUMN … TYPE(USING으로 형 변환)/SET·DROP NOT NULL/SET·DROP DEFAULT.
     /// 인덱스는 테이블과 같은 스키마에 만들어지므로 CREATE INDEX의 이름에는 스키마를 붙이지 않는다. 제약을 끌 수는 없다.
-    /// DDL도 트랜잭션 안에서 돌 수 있지만 세션이 DDL을 트랜잭션 밖(자동 커밋)에서 실행한다.
+    /// DDL은 세션이 트랜잭션 안에서 실행하고(트랜잭션 DDL), 구조 편집 저장 경로가 문장마다 커밋한다.
     /// </summary>
     internal sealed class PostgresSchemaDdl : DoubleQuoteDdl
     {

@@ -63,7 +63,7 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 커밋 대기 변경이 있는데 DDL을 실행할 때. "DDL을 실행하면 커밋하지 않은 변경(pendingText)도 함께 커밋되어 되돌릴 수 없습니다." + 확인 체크.
+        /// 커밋 대기 변경이 있는데 DDL을 실행할 때(DDL이 자동 커밋하는 공급자 — Oracle만, <see cref="IDbProvider.DdlAutoCommits"/>). "DDL을 실행하면 커밋하지 않은 변경(pendingText)도 함께 커밋되어 되돌릴 수 없습니다." + 확인 체크.
         /// 실행이면 true.
         /// </summary>
         public static bool ConfirmDdlWithPending(Window owner, OracleConnectionProfile profile, string pendingText)
@@ -137,7 +137,7 @@ namespace MyPlugin
 
         /// <summary>
         /// 테이블 구조 저장 확인. "table에 DDL n문장을 실행할까요?", 실행 순서대로의 문장(고정폭, 스크롤, [SQL 복사]),
-        /// DDL 자동 커밋 안내. 컬럼 삭제(데이터 손실)가 있으면 경고 + 확인 체크(체크 전 [실행] 비활성). 실행이면 true.
+        /// 단계마다 커밋된다는 안내. 컬럼 삭제(데이터 손실)가 있으면 경고 + 확인 체크(체크 전 [실행] 비활성). 실행이면 true.
         /// </summary>
         public static bool ConfirmSchemaChanges(Window owner, OracleConnectionProfile profile, string table, System.Collections.Generic.IList<string> statements, int droppedColumns)
         {
@@ -150,7 +150,7 @@ namespace MyPlugin
             box.TextWrapping = TextWrapping.NoWrap;
             box.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             body.Children.Add(box);
-            body.Children.Add(DialogKit.Hint("위에서부터 차례로 실행합니다(제약·인덱스 삭제 → 컬럼 → 인덱스 생성 → 제약 추가). 오류가 나면 그 문장에서 멈추고, 앞 문장은 이미 반영된 상태로 남습니다. Oracle DDL은 자동 커밋되어 [롤백]으로 되돌릴 수 없습니다.", 8));
+            body.Children.Add(DialogKit.Hint("위에서부터 차례로 실행합니다(제약·인덱스 삭제 → 컬럼 → 인덱스 생성 → 제약 추가). 오류가 나면 그 문장에서 멈추고, 앞 문장은 이미 반영된 상태로 남습니다. 문장마다 성공하면 바로 커밋되어(Oracle은 DDL 자동 커밋, PostgreSQL·SQL Server는 문장마다 커밋) [롤백]으로 되돌릴 수 없습니다.", 8));
             CheckBox check = null;
             if (droppedColumns > 0)
             {

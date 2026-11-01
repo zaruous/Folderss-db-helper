@@ -62,10 +62,10 @@ namespace MyPlugin
 
         public TimeSpan Elapsed { get; set; }
 
-        /// <summary>COMMIT·ROLLBACK·DDL(자동 커밋)로, 또는 PL/SQL 블록 안의 커밋·롤백으로 트랜잭션이 끝났으면(열린 트랜잭션이 없으면) true.</summary>
+        /// <summary>COMMIT·ROLLBACK·DDL(자동 커밋하는 공급자 — Oracle)로, 또는 PL/SQL 블록 안의 커밋·롤백으로 트랜잭션이 끝났으면(열린 트랜잭션이 없으면) true.</summary>
         public bool TransactionEnded { get; set; }
 
-        /// <summary>메시지 탭에 쓸 한 줄. 예: "200행 · 더 있음", "3행 변경됨 (커밋 전)", "커밋함", "실행함(DDL은 자동 커밋됨)".</summary>
+        /// <summary>메시지 탭에 쓸 한 줄. 예: "200행 · 더 있음", "3행 변경됨 (커밋 전)", "커밋함", "실행함 (DDL은 자동 커밋됨)", "실행함 (DDL 커밋 전)".</summary>
         public string Summary { get; set; }
 
         /// <summary>
@@ -116,7 +116,13 @@ namespace MyPlugin
     /// - RunAsync(트리·검색 같은 메타데이터 조회): 잠금을 기다린다(ct로 기다림 취소).
     /// - 실제 DB 호출은 Task.Run 안에서 동기 ADO.NET으로 한다(공급자의 async가 동기로 동작해도 UI가 멈추지 않게).
     /// - 자동 커밋 끔: DML·PL/SQL·SELECT FOR UPDATE·SAVEPOINT 전에 트랜잭션을 시작하고(없으면), 그 뒤 모든 명령의 Transaction에 넣는다.
-    /// - DDL: 트랜잭션이 있으면 먼저 Commit(Oracle의 묵시적 커밋과 같은 결과를 모든 공급자에서 보장) 후 트랜잭션 없이 실행. TransactionEnded = true.
+    /// - DDL은 공급자 정책(<see cref="IDbProvider.DdlAutoCommits"/>)을 따른다.
+    ///   자동 커밋(Oracle·Generic): 트랜잭션이 있으면 먼저 Commit(Oracle의 묵시적 커밋) 후 트랜잭션 없이 실행. TransactionEnded = true.
+    ///   트랜잭션 DDL(PostgreSQL·SQL Server): 트랜잭션 안에서 실행하고 커밋 대기로 둔다(앞선 DML도 커밋하지 않음). 실패하면 앞선 대기가 있을 때
+    ///   세이브포인트로 DDL만 되돌리고(앞선 DML은 커밋·롤백 가능한 대기로 남음), 없을 때는 빈 트랜잭션을 롤백한다.
+    ///   서버가 트랜잭션을 통째로 롤백한 오류(SQL Server 일부 DDL 오류)면 대기를 지우고 TransactionEndedException.
+    ///   트랜잭션 안에서 못 하는 문장(<see cref="IDbProvider.RequiresNoTransaction"/>, DDL·기타 모두): 커밋 대기가 있으면 실행하지 않고
+    ///   InvalidOperationException, 없으면 트랜잭션 밖에서 실행(바로 반영).
     ///   컴파일 오류가 있는 PL/SQL 객체(ORA-24344)는 예외가 아니라 InfoMessage 경고로만 오므로 ExecuteResult.Warning으로 알린다.
     /// - PL/SQL 블록·CALL 뒤에는 서버에 트랜잭션이 남았는지 물어(Oracle) 블록 안의 커밋·롤백을 대기 표시에 반영한다.
     /// - LOCK TABLE은 트랜잭션 안에서 실행하고 커밋 대기(잠금 보유)로 표시한다.
@@ -175,6 +181,8 @@ namespace MyPlugin
         private volatile bool _locksHeld;
         // 이 트랜잭션에서 LOCK TABLE을 실행했다. 그 잠금(TM)은 트랜잭션 ID 없이 잡혀 서버 확인(LOCAL_TRANSACTION_ID)이 NULL이어도 남아 있을 수 있다.
         private volatile bool _tableLocked;
+        // 이 트랜잭션에 커밋 전 DDL이 있다(트랜잭션 DDL 공급자). 대기 표시용.
+        private volatile bool _ddlPending;
         private volatile int _pendingRows;
         private int _disposed;
 
@@ -276,11 +284,14 @@ namespace MyPlugin
                 if (!_hasPending)
                     return null;
                 var locks = _locksHeld ? " · 잠금" : "";
+                var ddl = _ddlPending ? " · DDL" : "";
                 if (_countUnknown)
-                    return "커밋 대기(행 수 모름)" + locks;
+                    return "커밋 대기(행 수 모름)" + locks + ddl;
+                if (_ddlPending && !_locksHeld && _pendingRows == 0)
+                    return "커밋 대기(DDL)";
                 if (_locksHeld && _pendingRows == 0)
-                    return "커밋 대기(잠금 보유)";
-                return "커밋 대기 " + _pendingRows.ToString(CultureInfo.InvariantCulture) + "행" + locks;
+                    return "커밋 대기(잠금 보유)" + ddl;
+                return "커밋 대기 " + _pendingRows.ToString(CultureInfo.InvariantCulture) + "행" + locks + ddl;
             }
         }
 
@@ -829,6 +840,16 @@ namespace MyPlugin
                         ExecutePlSql(statement, result);
                         break;
                     case SqlKind.Ddl:
+                        if (Provider.RequiresNoTransaction(statement))
+                        {
+                            ExecuteOutsideTransaction(statement, result);
+                            break;
+                        }
+                        if (!Provider.DdlAutoCommits)
+                        {
+                            ExecuteTransactionalDdl(statement, result);
+                            break;
+                        }
                         if (_transaction != null)
                             CommitCore();
                         ExecuteNonQuery(statement.Text);
@@ -856,6 +877,12 @@ namespace MyPlugin
                             result.Summary = "실행함 (잠금 보유 — 커밋·롤백하면 풀림)";
                             break;
                         }
+                        // VACUUM·BACKUP 등 트랜잭션 블록 안에서 못 하는 문장
+                        if (Provider.RequiresNoTransaction(statement))
+                        {
+                            ExecuteOutsideTransaction(statement, result);
+                            break;
+                        }
                         // ALTER SESSION 등: 열린 트랜잭션이 있으면 그 안에서 실행하고 대기 상태는 바꾸지 않는다
                         ExecuteNonQuery(statement.Text);
                         result.Summary = "실행함";
@@ -864,6 +891,104 @@ namespace MyPlugin
             }
             result.Elapsed = stopwatch.Elapsed;
             return result;
+        }
+
+        // 트랜잭션 DDL에서 실패한 DDL만 되돌릴 세이브포인트(결과 편집 등 다른 세이브포인트와 이름이 겹치지 않게)
+        private const string DdlSavepoint = "dbhelper_ddl";
+
+        /// <summary>
+        /// 트랜잭션 DDL(PostgreSQL·SQL Server): 트랜잭션 안에서 실행하고 커밋 대기로 둔다. 실패하면 앞선 대기가 있으면 세이브포인트까지 되돌려
+        /// 앞선 DML을 커밋·롤백 가능한 대기로 남기고(PostgreSQL은 오류 난 트랜잭션을 그대로 두면 COMMIT도 롤백이 된다), 없으면 빈 트랜잭션을 롤백한다.
+        /// 서버가 트랜잭션 전체를 이미 롤백했거나(SQL Server는 이미 있는 객체 등 DDL 오류 일부에 트랜잭션을 통째로 롤백한다) 되돌릴 수 없는 상태면
+        /// 대기 상태를 지우고, 앞선 대기가 있었으면 <see cref="TransactionEndedException"/>으로 "앞선 변경도 사라짐"을 알린다.
+        /// </summary>
+        private void ExecuteTransactionalDdl(SqlStatement statement, ExecuteResult result)
+        {
+            var wasPending = _hasPending;
+            EnsureTransaction();
+            var transaction = _transaction;
+            var savepoint = wasPending && transaction.SupportsSavepoints;
+            if (savepoint)
+                transaction.Save(DdlSavepoint);
+            try
+            {
+                ExecuteNonQuery(statement.Text);
+            }
+            catch (Exception ex)
+            {
+                NoteFailure(ex);
+                if (!_broken && AfterFailedDdl(transaction, wasPending, savepoint))
+                    throw new TransactionEndedException(ex);
+                throw;
+            }
+            if (savepoint)
+                transaction.Release(DdlSavepoint);
+            _hasPending = true;
+            _ddlPending = true;
+            result.Summary = "실행함 (DDL 커밋 전)";
+        }
+
+        /// <summary>실패한 트랜잭션 DDL 뒤 정리. 앞선 커밋 대기 변경이 함께 사라졌으면 true. 정리 오류는 원래 오류를 가리지 않게 삼킨다.</summary>
+        private bool AfterFailedDdl(DbTransaction transaction, bool wasPending, bool savepoint)
+        {
+            // 서버가 트랜잭션을 끝내면 공급자가 트랜잭션 객체를 끝난 것으로 만든다(SqlTransaction.Connection == null)
+            var ended = transaction.Connection == null;
+            if (!ended && wasPending)
+            {
+                if (!savepoint)
+                    return false;
+                try
+                {
+                    transaction.Rollback(DdlSavepoint);
+                    return false;
+                }
+                catch (Exception cleanup)
+                {
+                    // 커밋할 수 없게 된 트랜잭션(SQL Server XACT_STATE -1 등) — 통째로 롤백한다
+                    NoteFailure(cleanup);
+                }
+            }
+            try
+            {
+                if (!ended)
+                {
+                    ReleaseReadersIfSingle();
+                    transaction.Rollback();
+                }
+            }
+            catch (Exception cleanup)
+            {
+                NoteFailure(cleanup);
+            }
+            if (ReferenceEquals(_transaction, transaction))
+                _transaction = null;
+            DisposeQuietly(transaction);
+            EndTransaction();
+            return wasPending;
+        }
+
+        /// <summary>
+        /// 트랜잭션 블록 안에서 못 하는 문장(<see cref="IDbProvider.RequiresNoTransaction"/>). 커밋 대기 변경을 몰래 커밋하지 않도록 대기가 있으면 거부하고,
+        /// 없으면(빈 트랜잭션은 끝내고) 트랜잭션 밖에서 실행한다 — 바로 반영되어 [롤백]으로 되돌릴 수 없다.
+        /// </summary>
+        private void ExecuteOutsideTransaction(SqlStatement statement, ExecuteResult result)
+        {
+            if (_hasPending)
+                throw new InvalidOperationException(NoTransactionPendingMessage(statement));
+            if (_transaction != null)
+                CommitCore();
+            ExecuteNonQuery(statement.Text);
+            // 열린 트랜잭션이 없다
+            result.TransactionEnded = true;
+            result.Summary = "실행함 (트랜잭션 밖에서 실행 — 바로 반영됨)";
+        }
+
+        /// <summary>커밋 대기 중에 트랜잭션 밖 전용 문장을 실행하려 할 때의 안내.</summary>
+        internal static string NoTransactionPendingMessage(SqlStatement statement)
+        {
+            var words = DdlTransactionRules.LeadingWords(statement, 2);
+            var what = words.Count == 0 ? "이 문장" : string.Join(" ", words);
+            return what + "은(는) 트랜잭션 안에서 실행할 수 없어 커밋 대기 변경과 함께 실행하지 않았습니다. 먼저 [커밋]하거나 [롤백]한 뒤 다시 실행하세요.";
         }
 
         private void ExecuteQuery(SqlStatement statement, int fetchCount, ExecuteResult result)
@@ -1430,6 +1555,7 @@ namespace MyPlugin
             _countUnknown = false;
             _locksHeld = false;
             _tableLocked = false;
+            _ddlPending = false;
             _pendingRows = 0;
             foreach (var cursor in SnapshotCursors())
             {

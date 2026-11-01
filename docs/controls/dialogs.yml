@@ -13,7 +13,9 @@ features:
     description: >-
       WHERE 없는 UPDATE·DELETE, DROP·TRUNCATE·ALTER 등. 접속 배지·주소, 문장, 경고, 확인 체크 뒤 [실행].
   - name: 커밋 대기 중 DDL(ConfirmDdlWithPending)
-    description: DDL이 커밋 대기 변경까지 함께 커밋한다는 경고와 확인 체크.
+    description: >-
+      DDL이 커밋 대기 변경까지 함께 커밋한다는 경고와 확인 체크. DDL이 자동 커밋하는 공급자(Oracle, IDbProvider.DdlAutoCommits)에서만 띄운다 —
+      PostgreSQL·SQL Server는 DDL도 커밋 대기가 되어 함께 롤백할 수 있다.
   - name: 커밋하지 않은 변경(AskPending)
     description: >-
       끊기·창 닫기 전에 롤백(기본)·커밋을 고른다. 기본 버튼은 아무것도 하지 않는 [돌아가기].

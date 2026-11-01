@@ -69,6 +69,11 @@ namespace MyPlugin
 
         public bool SupportsMultipleOpenReaders { get { return true; } }
 
+        /// <summary>Oracle DDL은 실행 전후로 묵시적 커밋한다.</summary>
+        public bool DdlAutoCommits { get { return true; } }
+
+        public bool RequiresNoTransaction(SqlStatement statement) { return false; }
+
         public bool IsCancellation(Exception ex)
         {
             var oracle = ex as OracleException;
@@ -165,6 +170,9 @@ namespace MyPlugin
         public string ServerVersionOf(DbConnection connection) { return connection.ServerVersion; }
         public string Address(OracleConnectionProfile profile) { return ProviderRules.Address(profile); }
         public bool SupportsMultipleOpenReaders { get { return true; } }
+        // 모르는 연결은 Oracle처럼(DDL 앞 커밋) — 롤백할 수 있다고 잘못 알리지 않게
+        public bool DdlAutoCommits { get { return true; } }
+        public bool RequiresNoTransaction(SqlStatement statement) { return false; }
         public bool IsCancellation(Exception ex) { return false; }
         public bool IsBroken(Exception ex) { return false; }
         public bool IsPermissionDenied(Exception ex) { return false; }

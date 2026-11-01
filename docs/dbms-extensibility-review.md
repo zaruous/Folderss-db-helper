@@ -34,7 +34,7 @@
 | 1211-1220 | `CreateCommand`: `BindByName`, `InitialLOBFetchSize`, `InitialLONGFetchSize = -1`, `CommandTimeout = 0` | OracleCommand 전용. MSSQL은 `CommandTimeout = 0` 가능, SQLite는 두면 안 됨(이미 주석에 있음) | `ISessionBehavior.PrepareCommand(DbCommand)` |
 | 1307 | `AfterFailedEnd`의 `transaction is OracleTransaction` | 실패한 트랜잭션 객체를 버릴지가 공급자 동작 | `ISessionBehavior.TransactionDiesOnFailure` (bool) |
 | 1388 | `CloseConnection`의 `InfoMessage -=` | 위 경고 부착의 짝 | `ISessionBehavior.DetachWarnings` |
-| `Execute` 795-830(DDL 자동 커밋, LOCK TABLE, PL/SQL 블록 뒤 서버 확인) | DDL은 "트랜잭션 있으면 먼저 커밋 후 트랜잭션 없이 실행" — Oracle 의미를 모든 공급자에서 흉내 냄 | PG는 DDL이 트랜잭션 안에 들어간다(롤백 가능). 지금 구조는 "DDL 전 자동 커밋"을 강제하므로 PG에서는 사용자 기대와 다를 수 있다 | `ISqlDialect.DdlAutoCommits`(bool)로 분기. 당장 바꾸지 말고 공급자 추가 때 결정 |
+| `Execute` 795-830(DDL 자동 커밋, LOCK TABLE, PL/SQL 블록 뒤 서버 확인) | DDL은 "트랜잭션 있으면 먼저 커밋 후 트랜잭션 없이 실행" — Oracle 의미를 모든 공급자에서 흉내 냄 | PG는 DDL이 트랜잭션 안에 들어간다(롤백 가능). 지금 구조는 "DDL 전 자동 커밋"을 강제하므로 PG에서는 사용자 기대와 다를 수 있다 | **완료(#30)**: `IDbProvider.DdlAutoCommits`(Oracle·Generic true, PG·MSSQL false — 트랜잭션 DDL)와 `RequiresNoTransaction(statement)`(트랜잭션 밖 전용 문장, `DdlTransactionRules`)로 분기 |
 
 중립인 것(그대로 둘 것): `SemaphoreSlim` 잠금과 `EnterNow/RunAsync`, 커서 `Lookahead`·`HasMore`, `Cancel()`, `CloseAsync/Dispose` 순서, `QueryTableAsync` 뼈대, `RunDb`, `Unwrap`. 즉 `DbSession`의 60% 이상은 그대로 쓴다.
 
@@ -198,7 +198,7 @@ Ui ── 중립 모델만 안다(ConnectionProfile, SchemaInfo, DbObjectInfo, C
 | `DbSession` 분기 분리 | 상 | 상 | 취소(ORA-01013)·커밋 실패 뒤 트랜잭션 재부착·InfoMessage는 실제 Oracle에서만 검증됨. 단계적으로, 메서드 하나씩 |
 | `ValueFormatter` 분리 | 중 | 하 | 순수 함수. `ValueFormatterTests`가 보호 |
 | `SqlScript` 방언화 | 상 | 중 | 토크나이저 규칙이 Oracle 관례와 얽힘. 공급자별 실행 기능 범위를 먼저 정할 것 |
-| DDL 자동 커밋 의미(`Execute`) | 중 | 중 | PG는 트랜잭션 DDL. 지금 로직은 "DDL 전 커밋" 강제 — 공급자 플래그 필요 |
+| DDL 자동 커밋 의미(`Execute`) | 중 | 중 | 완료(#30) — `IDbProvider.DdlAutoCommits`·`RequiresNoTransaction` |
 
 ## 7. 이번에 적용한 변경
 
@@ -225,7 +225,7 @@ Ui ── 중립 모델만 안다(ConnectionProfile, SchemaInfo, DbObjectInfo, C
 - 화면: 접속 관리에 [DBMS] 콤보(라벨·기본 포트 전환, 접속 테스트는 공급자 연결), 연결 흐름이 `DbSession.Create`·`provider.Metadata.CurrentSchema()`, 트리·검색이 `session.Provider.Metadata`, F4·테이블 정의서는 `SupportsTableInfo`로 가드.
 - 테스트: `DbProvidersTests`(등록·호환·연결 문자열·PG SQL·읽기), `PostgresIT`(PG_IT_DSN·PG_IT_USER·PG_IT_PW가 있을 때 실제 서버로 연결·트리·검색·SELECT 커서·GCM 조회 — 사내 mesdb로 통과 확인).
 - 남은 것(3단계): `DbSession`의 Oracle 분기 14곳, `ValueFormatter`, `SqlScript` 방언, 이름 바꾸기(`OracleConnectionProfile → ConnectionProfile`). 테이블 정의서의 PostgreSQL·SQL Server 조회.
-- 테이블 정보(F4)·구조 편집(2026-11): `IDbProvider.TableSchema`(`ITableSchemaProvider` — `DescribeAsync` + `ISchemaDdl`)로 분리. 구현은 `Db/Schema/`의 `OracleTableSchema`(기존 `TableInfo` ALL_* 조회에 위임)·`PostgresTableSchema`(pg_catalog)·`SqlServerTableSchema`(sys.*). 편집 모델(`SchemaRow`·`SchemaPlan`)과 화면은 `ISchemaDdl`만 쓴다 — 작업 단위(컬럼 추가·형식·NULL·기본값·주석, 인덱스, 제약)마다 실행 단위 SQL 하나를 받고, 실행 순서·부분 실패 재시도는 공통. 생성 SQL은 `SchemaRead.DdlStatement`로 DDL 종류를 정해 실행(세션이 열린 트랜잭션을 먼저 끝내고 자동 커밋). `TableSchemaIT`가 세 DBMS 실제 DB에서 왕복을 확인한다.
+- 테이블 정보(F4)·구조 편집(2026-11): `IDbProvider.TableSchema`(`ITableSchemaProvider` — `DescribeAsync` + `ISchemaDdl`)로 분리. 구현은 `Db/Schema/`의 `OracleTableSchema`(기존 `TableInfo` ALL_* 조회에 위임)·`PostgresTableSchema`(pg_catalog)·`SqlServerTableSchema`(sys.*). 편집 모델(`SchemaRow`·`SchemaPlan`)과 화면은 `ISchemaDdl`만 쓴다 — 작업 단위(컬럼 추가·형식·NULL·기본값·주석, 인덱스, 제약)마다 실행 단위 SQL 하나를 받고, 실행 순서·부분 실패 재시도는 공통. 생성 SQL은 `SchemaRead.DdlStatement`로 DDL 종류를 정해 실행하고 문장마다 커밋(Oracle은 DDL 자동 커밋, PG·MSSQL은 트랜잭션 DDL이라 저장 경로가 커밋 — #30). `TableSchemaIT`가 세 DBMS 실제 DB에서 왕복을 확인한다.
 
 ## 9. `SqlScript` 방언 적용 기록 (2026-10-20, PR #23 · v1.10.0)
 

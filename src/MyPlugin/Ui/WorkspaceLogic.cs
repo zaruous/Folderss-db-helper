@@ -900,7 +900,8 @@ namespace MyPlugin
                 return "같은 DB의 모든 탭에 적용됩니다.";
             // PL/SQL은 블록이 커밋·롤백했거나 아무것도 바꾸지 않았으면 TransactionEnded(남은 트랜잭션 없음)
             var ended = result != null && result.TransactionEnded;
-            if (!ended && (statement.Kind == SqlKind.Dml || statement.Kind == SqlKind.PlSql))
+            // 트랜잭션 DDL(PostgreSQL·SQL Server)도 커밋 대기 — TransactionEnded가 아니다
+            if (!ended && (statement.Kind == SqlKind.Dml || statement.Kind == SqlKind.PlSql || statement.Kind == SqlKind.Ddl))
                 return "커밋 전에는 다른 세션에 보이지 않습니다. 같은 DB의 다른 탭에는 보입니다(세션 공유).";
             return null;
         }
