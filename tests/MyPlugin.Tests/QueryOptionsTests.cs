@@ -3,6 +3,8 @@ using Xunit;
 
 namespace MyPlugin.Tests
 {
+    // 전역 QueryOptions.QuickRows를 바꾸는 시험과 그 값을 읽는 시험은 같은 묶음 — 병렬로 돌면 "앞 250행"을 읽는다
+    [Collection("QueryOptions")]
     public class QueryOptionsTests
     {
         [Fact]

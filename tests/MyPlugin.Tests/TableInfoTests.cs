@@ -6,6 +6,8 @@ using Xunit;
 namespace MyPlugin.Tests
 {
     /// <summary>TableInfo(F4): 대상 찾기 SQL·순위·모호함, 정보 SQL, 정보 글. 여러 문장 실행·빠른 조회의 문장(WorkspaceLogic).</summary>
+    // 전역 QueryOptions.QuickRows를 바꾸는 시험과 그 값을 읽는 시험은 같은 묶음 — 병렬로 돌면 "앞 250행"을 읽는다
+    [Collection("QueryOptions")]
     public class TableInfoTests
     {
         private static ResolvedObject Candidate(string owner, string name, int priority, string via = null)
