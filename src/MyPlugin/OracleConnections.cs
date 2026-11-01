@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MyPlugin
 {
@@ -36,6 +37,21 @@ namespace MyPlugin
         /// <summary>색 표시: <see cref="OracleConnectionStore.Colors"/> 중 하나("" = 없음).</summary>
         public string Color { get; set; } = "";
 
+        /// <summary>
+        /// SQL Server 암호화("mandatory"·"strict"·"optional"). null이면 새 접속 기본값(필수). 다른 공급자는 null.
+        /// 이 값이 없던 이전 버전의 SQL Server 접속은 읽을 때 "optional"+신뢰로 채운다(<see cref="SqlServerSecurity.ApplyLegacy"/>).
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string SqlEncrypt { get; set; }
+
+        /// <summary>SQL Server 서버 인증서를 검증 없이 신뢰(자체 서명 예외). null이면 false(검증).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? SqlTrustServerCertificate { get; set; }
+
+        /// <summary>SQL Server 인증서 검증에 쓸 호스트 이름(접속 호스트와 인증서 이름이 다를 때). null이면 호스트.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string SqlHostNameInCertificate { get; set; }
+
         /// <summary>모든 저장 값을 복사한 새 객체.</summary>
         public OracleConnectionProfile Copy()
         {
@@ -50,7 +66,10 @@ namespace MyPlugin
                 UserId = UserId,
                 ProtectedPassword = ProtectedPassword,
                 ReadOnly = ReadOnly,
-                Color = Color
+                Color = Color,
+                SqlEncrypt = SqlEncrypt,
+                SqlTrustServerCertificate = SqlTrustServerCertificate,
+                SqlHostNameInCertificate = SqlHostNameInCertificate
             };
         }
 
@@ -61,7 +80,9 @@ namespace MyPlugin
                 return false;
             return (!withId || Same(Id, other.Id)) && Same(Name, other.Name) && Same(Provider, other.Provider) && Same(Host, other.Host) && Port == other.Port
                 && Same(ServiceName, other.ServiceName) && Same(UserId, other.UserId)
-                && Same(ProtectedPassword, other.ProtectedPassword) && ReadOnly == other.ReadOnly && Same(Color, other.Color);
+                && Same(ProtectedPassword, other.ProtectedPassword) && ReadOnly == other.ReadOnly && Same(Color, other.Color)
+                && Same(SqlEncrypt, other.SqlEncrypt) && SqlTrustServerCertificate == other.SqlTrustServerCertificate
+                && Same(SqlHostNameInCertificate, other.SqlHostNameInCertificate);
         }
 
         private static bool Same(string a, string b)
@@ -97,6 +118,8 @@ namespace MyPlugin
                     p.Color = "";
                 // provider가 없던 이전 형식·모르는 값은 Oracle(새 JSON을 이전 버전이 읽어도 모르는 속성을 무시하므로 양방향 호환)
                 p.Provider = DbProviders.For(p.Provider).Kind;
+                // 암호화 설정이 없던 이전 SQL Server 접속은 이전 동작(Optional + 인증서 신뢰)으로
+                SqlServerSecurity.ApplyLegacy(p);
             }
             return profiles;
         }
@@ -108,7 +131,14 @@ namespace MyPlugin
 
         public static string Serialize(IEnumerable<OracleConnectionProfile> profiles)
         {
-            return JsonSerializer.Serialize(profiles.ToList(), JsonOptions);
+            // SQL Server 암호화 설정은 실제로 쓰는 값을 명시해 저장한다(사본에 — 넘겨받은 객체는 그대로)
+            var list = profiles.Select(p =>
+            {
+                var copy = p.Copy();
+                SqlServerSecurity.Materialize(copy);
+                return copy;
+            }).ToList();
+            return JsonSerializer.Serialize(list, JsonOptions);
         }
 
         /// <summary>저장할 수 없는 항목을 사람이 읽을 문장으로 돌려준다. 문제가 없으면 빈 목록.</summary>

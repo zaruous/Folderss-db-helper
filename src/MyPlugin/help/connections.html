@@ -16,9 +16,12 @@
 <tr><th>DBMS</th><th>드라이버</th><th>기본 포트</th><th>"서비스명" 칸</th><th>주소 형식</th></tr>
 <tr><td>Oracle</td><td>ODP.NET Core</td><td>1521</td><td>서비스명(EZConnect)</td><td>host:port/service</td></tr>
 <tr><td>PostgreSQL</td><td>Npgsql</td><td>5432</td><td>데이터베이스</td><td>host:port/database</td></tr>
-<tr><td>SQL Server</td><td>Microsoft.Data.SqlClient</td><td>1433</td><td>데이터베이스</td><td>host,port · 암호화 Optional · TrustServerCertificate · MARS</td></tr>
+<tr><td>SQL Server</td><td>Microsoft.Data.SqlClient</td><td>1433</td><td>데이터베이스</td><td>host,port · 접속별 암호화·인증서 검증 · MARS</td></tr>
 </table>
 <p>TNS 별칭과 Oracle Wallet(mTLS)은 아직 지원하지 않습니다. 이전 버전에서 저장한 접속은 그대로 Oracle로 읽힙니다.</p>
+<h3>SQL Server 암호화·인증서</h3>
+<p>SQL Server를 고르면 [암호화](필수 · 엄격(TDS 8.0, SQL Server 2022 이상) · 선택), [서버 인증서 신뢰], [인증서 이름] 칸이 보입니다. 새 접속은 <b>암호화 필수 + 서버 인증서 검증</b>이 기본입니다. 사내 자체 서명 인증서라 [접속 테스트]가 "서버 인증서를 신뢰할 수 없습니다"로 실패하면 [서버 인증서 신뢰]를 직접 켜세요(검증을 하지 않으므로 운영 접속에는 신뢰할 수 있는 인증서를 권장). 인증서의 이름이 접속 호스트와 다르면(IP로 접속 등) [인증서 이름]에 인증서의 이름을 넣습니다. 엄격은 신뢰 설정과 관계없이 항상 검증합니다.</p>
+<div class="note">이 설정이 생기기 전에 저장한 SQL Server 접속은 갑자기 붙지 못하지 않도록 이전 동작(암호화 선택 + 서버 인증서 신뢰)으로 읽고, 접속 관리에 강화를 권하는 안내를 노랗게 보입니다. [암호화]를 필수로 바꾸고 인증서를 검증하도록 고친 뒤 [접속 테스트]로 확인하세요. 오류 문장에는 비밀번호를 남기지 않습니다.</div>
 
 <h2>DBMS별 지원 범위</h2>
 <table>
