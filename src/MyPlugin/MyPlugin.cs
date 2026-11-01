@@ -20,6 +20,7 @@ namespace MyPlugin
             manager.AddSettingsPage(new MonitorSettingsPage(manager));
             manager.AddSettingsPage(new SqlEditorSettingsPage(manager));
             manager.AddSettingsPage(new QuerySettingsPage(manager));
+            manager.AddSettingsPage(new ExcelFormatSettingsPage(manager));
         }
 
         /// <summary>

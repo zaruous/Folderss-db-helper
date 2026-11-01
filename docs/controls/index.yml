@@ -50,6 +50,7 @@ controls:
   - {id: monitor-settings-page, name: MonitorSettingsPage, kind: settings-page, title: 설정 창 성능 모니터 탭}
   - {id: sql-editor-settings-page, name: SqlEditorSettingsPage, kind: settings-page, title: 설정 창 SQL 편집기 탭}
   - {id: query-settings-page, name: QuerySettingsPage, kind: settings-page, title: 설정 창 데이터 조회 탭}
+  - {id: excel-format-settings-page, name: ExcelFormatSettingsPage, kind: settings-page, title: 설정 창 엑셀 서식 탭}
   - {id: sql-editor, name: SqlEditor, kind: control, title: SQL 편집기}
   - {id: help-window, name: HelpWindow, kind: window, title: 도움말 창}
   - {id: theme, name: Theme, kind: helper, title: 테마 연결·공용 화면 조각}

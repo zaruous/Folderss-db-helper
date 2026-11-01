@@ -26,7 +26,6 @@ namespace MyPlugin
         private TextBox _editWhere;
         private Button _requery;
         private Button _excelExport;
-        private Button _excelTemplate;
         private Button _excelImport;
         // WHERE 칸을 마지막으로 채운 결과: 같은 결과를 다시 그릴 때 입력 중인 조건을 덮어쓰지 않게
         private ResultSetState _editWhereResult;
@@ -39,16 +38,16 @@ namespace MyPlugin
             var excelButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 0, 0) };
             DockPanel.SetDock(excelButtons, Dock.Right);
             bar.Children.Add(excelButtons);
-            _excelExport = EditBarButton("엑셀 내보내기", "조회된 행을 엑셀(.xlsx) 파일로 내보냅니다.");
-            _excelExport.Click += (s, e) => Safe(() => TransferExcel("엑셀 내보내기"));
+            // [엑셀 내보내기 ▾]: 이 테이블에 쓸 엑셀 서식(설정 창 "엑셀 서식") 목록 + 이 결과로 서식 만들기
+            _excelExport = EditBarButton("엑셀 내보내기 ▾", "보이는 행(정렬·열 필터 반영)을 엑셀 서식에 맞춰 내보냅니다. 서식은 설정 창 \"엑셀 서식\"에서 관리합니다.");
+            _excelExport.ContextMenu = new ContextMenu { PlacementTarget = _excelExport, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+            _excelExport.Click += (s, e) => Safe(OpenExportMenu);
+            AutomationProperties.SetAutomationId(_excelExport, "excel-export");
             excelButtons.Children.Add(_excelExport);
 
-            _excelTemplate = EditBarButton("엑셀 템플릿", "컬럼 헤더만 있는 빈 엑셀(.xlsx) 서식 파일을 만듭니다.");
-            _excelTemplate.Click += (s, e) => Safe(() => TransferExcel("엑셀 템플릿"));
-            excelButtons.Children.Add(_excelTemplate);
-
-            _excelImport = EditBarButton("엑셀 임포트", "엑셀(.xlsx) 파일의 데이터를 새 행으로 추가합니다. [저장]하면 INSERT");
-            _excelImport.Click += (s, e) => Safe(() => TransferExcel("엑셀 임포트"));
+            _excelImport = EditBarButton("엑셀 임포트", "엑셀(.xlsx)의 데이터를 새 행으로 추가합니다(첫 행 = 컬럼명, 열 순서·서식 무관). [저장]하면 INSERT");
+            _excelImport.Click += (s, e) => Safe(ImportExcel);
+            AutomationProperties.SetAutomationId(_excelImport, "excel-import");
             excelButtons.Children.Add(_excelImport);
             // 순서: 행을 바꾸는 버튼(추가 → 복제 → 편집 → 삭제) │ DB에 보내는 [저장] │ 다시 조회
             _addRow = EditBarButton("행 추가", "빈 새 행을 편집 창에서 채워 추가합니다. [저장]하면 INSERT");
@@ -122,94 +121,155 @@ namespace MyPlugin
             return _editBar;
         }
 
-        private void TransferExcel(string action)
+        /// <summary>[엑셀 내보내기 ▾] 메뉴: 기본 서식 · 이 테이블에 맞는 등록 서식 · 이 결과로 서식 만들기.</summary>
+        private void OpenExportMenu()
         {
             var tab = _active;
             var result = tab != null ? tab.ActiveResult : null;
             if (result == null || tab.Running || result.Columns == null)
                 return;
-
-            if (action == "엑셀 임포트")
+            var menu = _excelExport.ContextMenu;
+            menu.Items.Clear();
+            foreach (var format in ExcelFormats.For(result.Edit?.Owner, result.Edit?.Name))
             {
-                var profile = Profile(result.ResultDbId);
-                if (result.Edit == null || !result.Edit.CanEdit || profile == null || profile.ReadOnly)
-                    return;
-
-                var open = new Microsoft.Win32.OpenFileDialog
-                {
-                    Title = "엑셀 데이터 가져오기",
-                    Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx"
-                };
-                if (open.ShowDialog() != true)
-                    return;
-
-                List<string[]> values;
-                try
-                {
-                    values = ResultExcel.Read(open.FileName, result.Columns);
-                }
-                catch (Exception ex)
-                {
-                    SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 임포트 실패: " + ex.Message));
-                    throw;
-                }
-
-                if (values.Count == 0)
-                {
-                    SetStatus(tab, WorkspaceLogic.TextStatus("가져올 데이터 행이 없습니다."));
-                    return;
-                }
-
-                var number = result.Rows.Count == 0 ? 1 : result.Rows.Max(r => r.Number) + 1;
-                ResultGridRow firstAdded = null;
-                foreach (var rowValues in values)
-                {
-                    var row = ResultGridRow.NewInserted(number++, rowValues);
-                    if (firstAdded == null)
-                        firstAdded = row;
-                    result.Rows.Add(row);
-                }
-
-                result.Grid.FitRowNumbers(result.Rows.Count);
-                if (firstAdded != null)
-                {
-                    result.Grid.View.SelectedItem = firstAdded;
-                    result.Grid.ScrollIntoView(firstAdded);
-                }
-                RenderEditBar();
-                SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    "엑셀에서 {0}개 행을 추가했습니다 — [저장]하면 INSERT합니다(커밋 전).", values.Count)));
+                var chosen = format;
+                var item = new MenuItem { Header = format.BuiltIn ? format.Name : format.Name + (string.IsNullOrWhiteSpace(format.Table) ? "" : "  (" + format.Table + ")") };
+                item.Click += (s, e) => Safe(() => ExportExcel(chosen));
+                menu.Items.Add(item);
             }
-            else
+            menu.Items.Add(new Separator());
+            var make = new MenuItem { Header = "이 결과로 서식 만들기… (설정 \"엑셀 서식\"에 등록)" };
+            make.Click += (s, e) => Safe(MakeExcelFormat);
+            menu.Items.Add(make);
+            menu.IsOpen = true;
+        }
+
+        /// <summary>보이는 행(정렬·열 필터 반영, 삭제 표시 제외)을 고른 서식으로 내보낸다. 등록 서식은 그 파일의 열 순서·서식을 그대로 두고 값만 채운다.</summary>
+        private void ExportExcel(ExcelFormatEntry format)
+        {
+            var tab = _active;
+            var result = tab != null ? tab.ActiveResult : null;
+            if (result == null || tab.Running || result.Columns == null)
+                return;
+            var templatePath = ExcelFormats.PathOf(format);
+            if (!format.BuiltIn && (templatePath == null || !System.IO.File.Exists(templatePath)))
             {
-                var isTemplate = action == "엑셀 템플릿";
-                var save = new Microsoft.Win32.SaveFileDialog
-                {
-                    Title = isTemplate ? "엑셀 서식 템플릿 저장" : "조회 결과 엑셀 저장",
-                    Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx",
-                    DefaultExt = ".xlsx",
-                    FileName = (result.Edit != null ? result.Edit.Name : "Result") + (isTemplate ? "_Template" : "") + ".xlsx"
-                };
-                if (save.ShowDialog() != true)
-                    return;
-
-                try
-                {
-                    var rowsToExport = isTemplate
-                        ? Enumerable.Empty<string[]>()
-                        : result.Rows.Where(r => r.State != RowEditState.Deleted).Select(r => r.Values);
-                    ResultExcel.Write(save.FileName, result.Columns, rowsToExport);
-                    SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        "엑셀 파일로 저장했습니다: {0}", System.IO.Path.GetFileName(save.FileName))));
-                }
-                catch (Exception ex)
-                {
-                    SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 저장 실패: " + ex.Message));
-                    throw;
-                }
+                SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 서식 파일이 없습니다: " + format.Name + " — 설정 창 \"엑셀 서식\"에서 다시 추가하세요."));
+                return;
             }
+            var save = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "조회 결과 엑셀 저장 — " + format.Name,
+                Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx",
+                DefaultExt = ".xlsx",
+                FileName = (result.Edit != null ? result.Edit.Name : "Result") + ".xlsx"
+            };
+            if (save.ShowDialog() != true)
+                return;
+            if (templatePath != null && string.Equals(System.IO.Path.GetFullPath(save.FileName), System.IO.Path.GetFullPath(templatePath), StringComparison.OrdinalIgnoreCase))
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("서식 파일 자체에는 저장할 수 없습니다. 다른 이름으로 저장하세요."));
+                return;
+            }
+            try
+            {
+                // 화면에 보이는 대로(정렬·열 필터 반영, 삭제 표시 행 제외) — [복사(TSV)]와 같다
+                var rows = result.Grid.RowsInViewOrder().Where(r => r.State != RowEditState.Deleted).Select(r => r.Values).ToList();
+                var skipped = new List<string>();
+                if (format.BuiltIn)
+                    ResultExcel.Write(save.FileName, result.Columns, rows);
+                else
+                    skipped = ResultExcel.WriteInto(templatePath, save.FileName, result.Columns, rows);
+                SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "엑셀로 {0}행을 저장했습니다{1} — {2}: {3}{4}", rows.Count, result.Grid.IsFiltered ? "(열 필터 적용)" : "", format.BuiltIn ? "기본 서식" : format.Name,
+                    System.IO.Path.GetFileName(save.FileName), skipped.Count == 0 ? "" : " · 서식에 없어 뺀 열: " + string.Join(", ", skipped))));
+            }
+            catch (Exception ex)
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 저장 실패: " + ex.Message));
+                throw;
+            }
+        }
+
+        /// <summary>이 결과의 열로 서식 파일(자료형별 열 서식 + '_규칙' 시트)을 만들어 설정 "엑셀 서식"에 등록한다(대상 = 이 테이블).</summary>
+        private void MakeExcelFormat()
+        {
+            var tab = _active;
+            var result = tab != null ? tab.ActiveResult : null;
+            if (result == null || result.Columns == null)
+                return;
+            if (ExcelFormats.Folder == null)
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("플러그인 데이터 폴더를 알 수 없어 서식을 등록할 수 없습니다."));
+                return;
+            }
+            var target = result.Edit == null ? "" : WorkspaceLogic.QualifiedName(result.Edit.Owner, result.Edit.Name);
+            System.IO.Directory.CreateDirectory(ExcelFormats.Folder);
+            var file = ExcelFormats.UniqueFile((result.Edit != null ? result.Edit.Name : "Result") + " 서식.xlsx");
+            var path = System.IO.Path.Combine(ExcelFormats.Folder, file);
+            ResultExcel.WriteTemplate(path, result.Columns, target);
+            ExcelFormats.Add(new ExcelFormatEntry { Name = System.IO.Path.GetFileNameWithoutExtension(file), File = file, Table = target });
+            SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 서식을 만들어 등록했습니다: " + file + " — 설정 창 \"엑셀 서식\"에서 [엑셀로 열기]로 열 순서·서식을 다듬을 수 있습니다."));
+        }
+
+        /// <summary>엑셀(첫 행 = 컬럼명, 열 순서·서식 무관)의 행을 INSERT 대기 행으로 더한다. [저장]하면 INSERT(커밋 전).</summary>
+        private void ImportExcel()
+        {
+            var tab = _active;
+            var result = tab != null ? tab.ActiveResult : null;
+            if (result == null || tab.Running || result.Columns == null)
+                return;
+            var profile = Profile(result.ResultDbId);
+            if (result.Edit == null || !result.Edit.CanEdit || profile == null || profile.ReadOnly)
+                return;
+
+            var open = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "엑셀 데이터 가져오기",
+                Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx"
+            };
+            if (open.ShowDialog() != true)
+                return;
+
+            List<string[]> values;
+            List<string> missing;
+            try
+            {
+                values = ResultExcel.Read(open.FileName, result.Columns, out missing);
+            }
+            catch (Exception ex)
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 임포트 실패: " + ex.Message));
+                throw;
+            }
+
+            if (values.Count == 0)
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("가져올 데이터 행이 없습니다."));
+                return;
+            }
+
+            var number = result.Rows.Count == 0 ? 1 : result.Rows.Max(r => r.Number) + 1;
+            ResultGridRow firstAdded = null;
+            foreach (var rowValues in values)
+            {
+                var row = ResultGridRow.NewInserted(number++, rowValues);
+                if (firstAdded == null)
+                    firstAdded = row;
+                result.Rows.Add(row);
+            }
+
+            result.Grid.FitRowNumbers(result.Rows.Count);
+            if (firstAdded != null)
+            {
+                result.Grid.View.SelectedItem = firstAdded;
+                result.Grid.ScrollIntoView(firstAdded);
+            }
+            RenderEditBar();
+            SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                "엑셀에서 {0}개 행을 추가했습니다 — [저장]하면 INSERT합니다(커밋 전).{1}", values.Count,
+                missing.Count == 0 ? "" : " 엑셀에 없는 열(" + string.Join(", ", missing) + ")은 비워 두어 DB 기본값이 됩니다.")));
         }
 
         private static Button EditBarButton(string text, string tip)
@@ -267,7 +327,6 @@ namespace MyPlugin
             _deleteRows.IsEnabled = usable;
             _saveEdits.IsEnabled = usable && result.HasPendingEdits;
             if (_excelExport != null) _excelExport.IsEnabled = !tab.Running && result.Columns != null;
-            if (_excelTemplate != null) _excelTemplate.IsEnabled = !tab.Running && result.Columns != null;
             if (_excelImport != null) _excelImport.IsEnabled = usable;
             var target = WorkspaceLogic.QualifiedName(edit.Owner, edit.Name);
             // DB와 다를 수 있는 결과는 경고색으로
