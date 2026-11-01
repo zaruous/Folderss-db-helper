@@ -140,7 +140,21 @@ pwsh scripts/preview.ps1 -Fresh           # 설정·접속·임시 저장을 지
 $env:FMON_UI_ORACLE = "localhost:1521/xe"
 pwsh scripts/ui-test.ps1                 # publish → 빌드 → 숨은 데스크톱에서 시험
 pwsh scripts/ui-test.ps1 -NoPublish -Filter "FullyQualifiedName~CheckHeadlessTests"
+pwsh scripts/ui-test.ps1 -NoPublish -Filter "Requires!=Oracle" -FailOnSkip   # CI의 DB 없는 단계와 같게
 ```
+
+- 끝에 실행·통과·실패·건너뜀 수와 건너뛴 시험·이유를 보이고, trx는 `<Work>\results\`(기본 `%TEMP%\folderss-uitest`)에 남습니다.
+  **실제로 돈 시험이 0개면**(모두 건너뜀·필터 불일치) 종료 코드 3으로 실패합니다. `-FailOnSkip`이면 건너뛴 시험이 하나라도 있을 때 4, 사용자 화면에 시험 창이 뜨면 2.
+- 실제 Oracle이 필요한 시험에는 `[Trait("Requires", "Oracle")]`을 붙입니다(`[UiFact(requiresOracle: true)]`와 함께) — 필터 `Requires=Oracle` / `Requires!=Oracle`로 나눕니다.
+
+#### CI에서의 화면 시험
+
+`.github/workflows/build.yml`의 **`ui-test` 작업**(windows-latest)이 ubuntu `build` 작업과 나란히 돕니다. 러너에서 플러그인을 publish하고 같은 `scripts/ui-test.ps1`로 숨은 데스크톱에서 시험합니다(계약 DLL은 저장소의 `contract/` 프로젝트로 빌드되므로 Folderss 본체는 필요 없음).
+
+1. **UI 시험 (DB 없음)** — 항상. `-Filter "Requires!=Oracle" -FailOnSkip`: 여기서 시험이 하나라도 건너뛰어지면(숨은 데스크톱이 아님·zip 없음 등) 실패합니다.
+2. **UI 시험 (실제 Oracle)** — 저장소 secret `FMON_UI_ORACLE`(러너에서 닿는 host:port/service)이 있을 때만. `FMON_UI_ORACLE_USER`·`FMON_UI_ORACLE_PW` secret도 함께(없으면 시험 기본값). 전체 시험을 실제 접속과 함께 다시 돌리고 하나라도 건너뛰면 실패합니다.
+   secret이 없으면(포크 PR 포함) 이 단계 대신 "실제 Oracle UI 시험을 돌리지 않음" 알림이 실행 요약에 남습니다.
+3. 결과는 실행 요약(단계별 수·건너뛴 시험)과 아티팩트 **`ui-test-results`**(trx·실행 기록·캡처 png·shots, 14일)로 남습니다. 풀어 놓은 플러그인·plugin-data(접속 정보)는 올리지 않습니다.
 
 ---
 

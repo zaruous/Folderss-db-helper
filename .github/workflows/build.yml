@@ -4,6 +4,8 @@
 # - 태그가 아닌 빌드는 버전 뒤에 브랜치·커밋을 붙인다(예: 1.7.0-main.fad0bb6) — 설치한 테스트 빌드를 정식 릴리스와 구분하려고.
 #   CI 작업 공간의 plugin.json만 바꾸고 저장소 파일은 그대로다.
 # 플러그인 폴더 이름을 바꿔도(src/<이름>/) 그대로 동작한다. src 아래 plugin.json은 하나여야 한다.
+# - ui-test 작업(Windows): 헤드리스 화면 시험(tests/MyPlugin.UiTests)을 scripts/ui-test.ps1로 숨은 데스크톱에서 돌린다.
+#   DB 없는 시험은 항상, 실제 Oracle 시험은 저장소 secret FMON_UI_ORACLE이 있을 때만 별도 단계로. trx·캡처는 아티팩트로 남는다.
 name: build
 
 on:
@@ -125,3 +127,67 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" "${{ steps.zip.outputs.path }}" --title "$GITHUB_REF_NAME" --generate-notes
           fi
+
+  # 헤드리스 WPF 화면 시험. 플러그인을 이 러너에서 publish해 그 zip을 Folderss와 같은 로드 컨텍스트로 불러 시험한다
+  # (계약 어셈블리는 저장소의 contract/ 프로젝트 참조로 빌드되므로 Folderss 본체·SDK는 필요 없다).
+  # scripts/ui-test.ps1은 CreateDesktop으로 만든 숨은 데스크톱에서 dotnet test를 돌린다 — 러너에서도 같은 방식이라
+  # 로컬과 CI가 같은 경로를 탄다. 숨은 데스크톱을 못 만들면 스크립트가 실패하고, 시험이 숨은 데스크톱 밖에서 돌면
+  # 모든 시험이 건너뛰어져 "실행 0개"로 실패한다(성공으로 보이지 않음).
+  ui-test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # secret은 단계 if에서 직접 못 쓰므로 있는지만 작업 환경 변수로 넘긴다(값은 실제 DB 단계에만)
+      HAS_ORACLE: ${{ secrets.FMON_UI_ORACLE != '' }}
+      UI_OUT: ${{ github.workspace }}\uitest-out
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Requires=Oracle 특성이 없는 시험 전부. 여기서는 건너뛴 시험이 하나도 없어야 한다(-FailOnSkip) —
+      # 숨은 데스크톱·zip 같은 환경 문제로 빠지는 시험을 성공으로 넘기지 않는다.
+      - name: UI 시험 (DB 없음)
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/ui-test.ps1 -Filter "Requires!=Oracle" -FailOnSkip -Title "UI 시험 (DB 없음)" -Work "$env:UI_OUT\db-less"
+
+      # 실제 Oracle(결과 편집 저장·롤백 등 DB가 필요한 화면 시나리오). secret이 없으면(포크 PR 포함) 이 단계는 돌지 않고 아래 알림만 남는다.
+      # FMON_UI_ORACLE = host:port/service (러너에서 닿는 DB여야 함), FMON_UI_ORACLE_USER·FMON_UI_ORACLE_PW는 없으면 시험 기본값.
+      # 실제 DB가 있을 때는 모든 시험을 그 접속과 함께 다시 돌리고, 하나라도 건너뛰면 실패.
+      - name: UI 시험 (실제 Oracle)
+        if: ${{ !cancelled() && env.HAS_ORACLE == 'true' }}
+        shell: pwsh
+        env:
+          FMON_UI_ORACLE: ${{ secrets.FMON_UI_ORACLE }}
+          FMON_UI_ORACLE_USER: ${{ secrets.FMON_UI_ORACLE_USER }}
+          FMON_UI_ORACLE_PW: ${{ secrets.FMON_UI_ORACLE_PW }}
+        run: |
+          # 빈 값이면 지워서 시험의 기본 계정을 쓰게 한다
+          foreach ($name in 'FMON_UI_ORACLE_USER', 'FMON_UI_ORACLE_PW') {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+          }
+          pwsh -NoProfile -File scripts/ui-test.ps1 -NoPublish -FailOnSkip -Title "UI 시험 (실제 Oracle)" -Work "$env:UI_OUT\oracle"
+
+      - name: 실제 Oracle UI 시험 건너뜀 알림
+        if: ${{ env.HAS_ORACLE != 'true' }}
+        shell: pwsh
+        run: |
+          $msg = '실제 Oracle UI 시험(Requires=Oracle)은 secret FMON_UI_ORACLE이 없어 돌리지 않았습니다 — DB 없는 시험만 검증됨.'
+          Write-Host "::notice title=UI 시험::$msg"
+          "### UI 시험 (실제 Oracle)`n- :warning: $msg`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      # trx·실행 기록·캡처(shots)만 올린다 — 풀어 놓은 플러그인·plugin-data(접속 정보)는 올리지 않는다
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ui-test-results
+          path: |
+            uitest-out/*/results/
+            uitest-out/*/*.log
+            uitest-out/*/*.png
+            uitest-out/*/run-*/shots/
+          if-no-files-found: warn
+          retention-days: 14

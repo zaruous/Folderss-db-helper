@@ -341,6 +341,7 @@ namespace MyPlugin.UiTests
         // ---------- 실제 Oracle: Ctrl+Enter·선택 영역·F5·F4 ----------
 
         [UiFact(requiresOracle: true)]
+        [Trait("Requires", "Oracle")]
         public async Task R7_Run_CaretSelectionScriptDescribe_Oracle()
         {
             var ui = UiThread.Instance;
