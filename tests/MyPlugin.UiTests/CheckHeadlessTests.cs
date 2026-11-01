@@ -89,6 +89,7 @@ namespace MyPlugin.UiTests
         }
 
         [UiFact(requiresOracle: true)]
+        [Trait("Requires", "Oracle")]
         public async Task Checks_Run_Record_CompareWithPrevious_SaveExcel()
         {
             var ui = UiThread.Instance;
@@ -194,6 +195,7 @@ namespace MyPlugin.UiTests
         }
 
         [UiFact(requiresOracle: true)]
+        [Trait("Requires", "Oracle")]
         public async Task Items_DisableOverrideAddUserItem_TestRun_Export_ThenRun()
         {
             var ui = UiThread.Instance;

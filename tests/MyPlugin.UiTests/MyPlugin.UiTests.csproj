@@ -3,7 +3,7 @@
   <!--
     헤드리스 UI 시험: Folderss 없이 플러그인 zip을 Folderss와 같은 방식(PluginLoadContext)으로 불러 WPF 창을 띄우고,
     같은 프로세스 안에서 WPF 트리·자동화 피어로 조작한다. 숨은 데스크톱에서만 돈다(scripts/ui-test.ps1 — 기본 데스크톱이면 모두 건너뜀).
-    CI(ubuntu)는 이 프로젝트를 실행하지 않는다.
+    CI는 ubuntu build 작업이 아닌 Windows ui-test 작업(.github/workflows/build.yml)에서 같은 스크립트로 실행한다.
   -->
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>

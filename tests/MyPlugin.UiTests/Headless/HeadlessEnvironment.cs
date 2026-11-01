@@ -72,7 +72,10 @@ namespace MyPlugin.UiTests.Headless
         public static string OraclePassword { get { return Environment.GetEnvironmentVariable("FMON_UI_ORACLE_PW") ?? "Fmon_2026x"; } }
     }
 
-    /// <summary>숨은 데스크톱이고 플러그인 zip이 있을 때만 도는 시험. requiresOracle이면 FMON_UI_ORACLE도 있어야 한다.</summary>
+    /// <summary>
+    /// 숨은 데스크톱이고 플러그인 zip이 있을 때만 도는 시험. requiresOracle이면 FMON_UI_ORACLE도 있어야 한다.
+    /// requiresOracle 시험에는 <c>[Trait("Requires", "Oracle")]</c>도 붙인다 — CI는 이 특성으로 DB 없는 단계(Requires!=Oracle)와 실제 DB 단계를 나눈다.
+    /// </summary>
     public sealed class UiFactAttribute : FactAttribute
     {
         public UiFactAttribute(bool requiresOracle = false)
