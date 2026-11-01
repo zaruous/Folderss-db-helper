@@ -314,6 +314,66 @@ namespace MyPlugin.Tests
             finally { if (File.Exists(path)) File.Delete(path); }
         }
 
+        /// <summary>
+        /// 로고(그림)·제목·설명 행을 컬럼명 행 위에 둔 서식: 가져오기는 컬럼명 행을 찾아 그 아래만 읽고,
+        /// 등록 서식 채우기는 그림·제목을 그대로 두고 컬럼명 행 아래에 값을 쓴다. 30행 안에 컬럼명 행이 없으면 거부.
+        /// </summary>
+        [Fact]
+        public void LogoAndTitleAboveHeaderRow_AreKept_AndSkipped()
+        {
+            var template = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".xlsx");
+            var output = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".xlsx");
+            var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+            try
+            {
+                using (var book = new XLWorkbook())
+                {
+                    var sheet = book.AddWorksheet("사원");
+                    using (var stream = new MemoryStream(png))
+                        sheet.AddPicture(stream).MoveTo(sheet.Cell(1, 1)).WithSize(60, 30); // 로고
+                    sheet.Cell(1, 2).Value = "사원 명부";                              // 제목
+                    sheet.Range(1, 2, 1, 3).Merge();
+                    sheet.Cell(2, 2).Value = "작성: 인사팀 (2026-11)";                  // 설명
+                    sheet.Cell(4, 1).Value = "CODE"; sheet.Cell(4, 2).Value = "ID";      // 컬럼명 행(4행)
+                    sheet.Cell(5, 1).Value = "X1"; sheet.Cell(5, 2).Value = 7;
+                    book.SaveAs(template);
+                }
+                // 가져오기: 컬럼명 행(4행) 아래만
+                var row = Assert.Single(ResultExcel.Read(template, Typed, out var missing));
+                Assert.Equal(new string[] { "7", "X1", null }, row);
+                Assert.Equal(new[] { "CREATED" }, missing);
+
+                // 등록 서식 채우기: 그림·제목·설명은 그대로, 5행부터 값
+                ResultExcel.WriteInto(template, output, Typed, new[] { new[] { "1", "A", null }, new[] { "2", "B", null } });
+                using (var book = new XLWorkbook(output))
+                {
+                    var sheet = book.Worksheet("사원");
+                    Assert.Single(sheet.Pictures);
+                    Assert.Equal("사원 명부", sheet.Cell(1, 2).GetString());
+                    Assert.Equal("작성: 인사팀 (2026-11)", sheet.Cell(2, 2).GetString());
+                    Assert.Equal("CODE", sheet.Cell(4, 1).GetString());
+                    Assert.Equal("A", sheet.Cell(5, 1).GetString());
+                    Assert.Equal(2, sheet.Cell(6, 2).GetDouble());
+                }
+                Assert.Equal(new[] { new string[] { "1", "A", null }, new string[] { "2", "B", null } }, ResultExcel.Read(output, Typed));
+
+                // 위쪽 30행 안에 컬럼명 행이 없으면 거부
+                using (var book = new XLWorkbook())
+                {
+                    var sheet = book.AddWorksheet("Data");
+                    sheet.Cell(1, 1).Value = "제목만 있음";
+                    sheet.Cell(31, 1).Value = "CODE";
+                    book.SaveAs(output);
+                }
+                Assert.Contains("컬럼명이 있는 행이 없습니다", Assert.Throws<InvalidOperationException>(() => ResultExcel.Read(output, Typed)).Message);
+            }
+            finally
+            {
+                if (File.Exists(template)) File.Delete(template);
+                if (File.Exists(output)) File.Delete(output);
+            }
+        }
+
         [Fact]
         public void FormatsRegistry_MatchesTables_AndSerializes()
         {

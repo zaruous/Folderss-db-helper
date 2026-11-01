@@ -7,11 +7,12 @@ using ClosedXML.Excel;
 namespace MyPlugin
 {
     /// <summary>
-    /// 조회 결과 ↔ 엑셀(.xlsx). 규칙은 하나다 — 데이터 시트(이름이 '_'로 시작하지 않는 첫 시트)의 첫 행이 DB 컬럼명이고, 그 아래가 데이터다.
-    /// 열 순서·서식·너비·색·다른 시트('_규칙' 등)는 자유다. 그래서 등록한 엑셀 서식(설정 창 "엑셀 서식")으로 내보낸 파일을 고쳐 그대로 가져올 수 있다.
-    /// - 내보내기: 기본 서식(새 파일) 또는 등록 서식 파일에 채우기(그 파일의 열 순서·서식은 그대로, 첫 행 컬럼명에 맞춰 값만).
+    /// 조회 결과 ↔ 엑셀(.xlsx). 규칙은 하나다 — 데이터 시트(이름이 '_'로 시작하지 않는 첫 시트)의 컬럼명 행 아래가 데이터다.
+    /// 컬럼명 행은 위쪽 <see cref="HeaderScanRows"/>행 안에서 결과 컬럼명이 처음 나오는 행이다 — 그 위에 로고(그림)·제목·설명 행을 둘 수 있다.
+    /// 열 순서·서식·너비·색·그림·다른 시트('_규칙' 등)는 자유다. 그래서 등록한 엑셀 서식(설정 창 "엑셀 서식")으로 내보낸 파일을 고쳐 그대로 가져올 수 있다.
+    /// - 내보내기: 기본 서식(새 파일) 또는 등록 서식 파일에 채우기(그 파일의 열 순서·서식·그림은 그대로, 컬럼명 행에 맞춰 값만).
     /// - 서식 만들기: 컬럼명 머리 + 자료형별 열 서식(문자 @, 숫자, 날짜 yyyy-mm-dd hh:mm:ss) + '_규칙' 안내 시트.
-    /// - 가져오기: 첫 행 컬럼명으로 맞춘다(대소문자 무시). 서식에서 뺀 열은 비워 둔다(INSERT에서 빠져 DB 기본값).
+    /// - 가져오기: 컬럼명 행으로 맞춘다(대소문자 무시). 서식에서 뺀 열은 비워 둔다(INSERT에서 빠져 DB 기본값).
     ///   결과에 없는 열·중복 열·수식·오류 셀은 거부.
     ///   날짜·숫자 셀은 그리드 표시 형식(PC 지역 설정과 무관)으로 읽는다.
     /// </summary>
@@ -20,6 +21,8 @@ namespace MyPlugin
         private const double MaxColumnWidth = 60.0;
         public const string DateFormat = "yyyy-mm-dd hh:mm:ss";
         public const string RulesSheet = "_규칙";
+        /// <summary>컬럼명 행을 찾는 범위(데이터 시트 위쪽 행 수).</summary>
+        public const int HeaderScanRows = 30;
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
         private static readonly string[] GridDateFormats =
         {
@@ -60,7 +63,7 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 등록 서식 파일에 채워 outPath로 저장한다(서식 파일 자체는 바꾸지 않음). 데이터 시트의 첫 행 컬럼명에 맞춰 값만 쓰고,
+        /// 등록 서식 파일에 채워 outPath로 저장한다(서식 파일 자체는 바꾸지 않음). 데이터 시트의 컬럼명 행에 맞춰 그 아래에 값만 쓰고,
         /// 2행 아래의 이전 값은 지운다(서식은 둠). 3행부터는 2행 셀 서식을 따른다. 서식에 없는 결과 열은 쓰지 않고 이름을 돌려준다.
         /// </summary>
         internal static List<string> WriteInto(string templatePath, string outPath, IList<ResultColumn> columns, IEnumerable<string[]> rows)
@@ -68,7 +71,8 @@ namespace MyPlugin
             using (var book = new XLWorkbook(templatePath))
             {
                 var sheet = DataSheet(book);
-                var headers = Headers(sheet);
+                var headerRow = HeaderRow(sheet, columns);
+                var headers = Headers(sheet, headerRow);
                 var kinds = Kinds(columns);
                 var map = new int[columns.Count];
                 var skipped = new List<string>();
@@ -78,13 +82,11 @@ namespace MyPlugin
                     map[i] = at < 0 ? 0 : at + 1;
                     if (at < 0) skipped.Add(columns[i].Name);
                 }
-                if (map.All(m => m == 0))
-                    throw new InvalidOperationException("서식 파일 첫 행에 이 결과의 컬럼명이 하나도 없습니다(데이터 시트: " + sheet.Name + ").");
-                // 이전 값 지우기(서식은 둠)
+                // 이전 값 지우기(서식·그림은 둠) — 컬럼명 행 아래, 서식의 열 범위만
                 var used = sheet.LastRowUsed();
-                if (used != null && used.RowNumber() >= 2)
-                    sheet.Range(2, 1, used.RowNumber(), Math.Max(headers.Count, 1)).Clear(XLClearOptions.Contents);
-                Fill(sheet, map, kinds, rows, 2);
+                if (used != null && used.RowNumber() > headerRow)
+                    sheet.Range(headerRow + 1, 1, used.RowNumber(), Math.Max(headers.Count, 1)).Clear(XLClearOptions.Contents);
+                Fill(sheet, map, kinds, rows, headerRow + 1);
                 book.SaveAs(outPath);
                 return skipped;
             }
@@ -117,11 +119,11 @@ namespace MyPlugin
 
         /// <summary>
         /// 값 쓰기. 셀(또는 열) 서식이 텍스트(@)면 글자로, 아니면 숫자 열은 엑셀 숫자(15자리를 넘으면 글자 — 엑셀 정밀도), 날짜 열은 엑셀 날짜로.
-        /// styleRow가 있으면 그 행의 셀 서식을 다음 행들에 이어 쓴다(등록 서식의 2행 꾸밈).
+        /// styleRow(=첫 데이터 행)가 있으면 그 행의 셀 서식을 다음 행들에 이어 쓴다(등록 서식의 첫 데이터 행 꾸밈). 없으면 2행부터.
         /// </summary>
         static void Fill(IXLWorksheet sheet, int[] map, ColumnValueKind[] kinds, IEnumerable<string[]> rows, int? styleRow)
         {
-            int r = 2;
+            int r = styleRow ?? 2;
             foreach (var row in rows)
             {
                 for (int c = 0; c < map.Length; c++)
@@ -169,8 +171,8 @@ namespace MyPlugin
                 "엑셀 서식 규칙 (DB Helper 결과 편집 [엑셀 임포트]·[엑셀 내보내기])",
                 "대상: " + (string.IsNullOrWhiteSpace(target) ? "(모든 결과)" : target),
                 "",
-                "1. 데이터는 이름이 '_'로 시작하지 않는 첫 시트에 둡니다. 첫 행은 DB 컬럼명이고 그 아래가 데이터입니다.",
-                "2. 열 순서·너비·색·글꼴은 바꿔도 됩니다. 컬럼명(첫 행)은 바꾸지 마세요(대소문자는 무시).",
+                "1. 데이터는 이름이 '_'로 시작하지 않는 첫 시트에 둡니다. DB 컬럼명 행 아래가 데이터입니다. 컬럼명 행 위(위쪽 30행 안)에는 로고·제목·설명을 둘 수 있습니다.",
+                "2. 열 순서·너비·색·글꼴·그림은 바꿔도 됩니다. 컬럼명은 바꾸지 마세요(대소문자는 무시). 데이터 아래에 메모를 쓰려면 데이터 열이 아닌 열에 쓰세요.",
                 "3. 결과에 없는 컬럼명이 있거나 같은 컬럼명이 두 번 있으면 가져오지 않습니다. 열을 빼면 그 열은 비워 두어 DB 기본값이 됩니다.",
                 "4. 수식·오류 값(#N/A 등)은 가져오지 않습니다. 값을 붙여 넣으세요. 빈 셀은 NULL입니다.",
                 "5. 날짜는 엑셀 날짜 또는 'yyyy-MM-dd HH:mm:ss' 글자, 숫자는 엑셀 숫자 또는 '.' 소수점 글자로 넣습니다.",
@@ -205,7 +207,7 @@ namespace MyPlugin
 
         /// <summary>
         /// 데이터 시트의 행들을 결과 열 순서의 값 배열로(값이 하나도 없는 행은 뺀다). 서식에 없는 결과 열은 null(INSERT에서 빠져 DB 기본값)이고
-        /// 그 이름을 missing으로 돌려준다. 첫 행에 결과 열이 하나도 없으면 거부한다.
+        /// 그 이름을 missing으로 돌려준다. 컬럼명 행을 찾지 못하면 거부한다.
         /// </summary>
         internal static List<string[]> Read(string path, IList<ResultColumn> columns, out List<string> missing)
         {
@@ -215,16 +217,15 @@ namespace MyPlugin
                 var used = sheet.RangeUsed();
                 if (used == null)
                     throw new InvalidOperationException("엑셀 파일에 데이터가 없습니다.");
-                var headers = Headers(sheet);
+                var headerRow = HeaderRow(sheet, columns);
+                var headers = Headers(sheet, headerRow);
 
                 // 알 수 없는 열은 거부한다(오타·다른 테이블 서식을 조용히 무시하지 않게). 머리가 빈 열은 본다고 치지 않는다.
                 var unknown = headers.Where(h => h.Length > 0 && !columns.Any(c => string.Equals(c.Name, h, StringComparison.OrdinalIgnoreCase))).ToList();
                 if (unknown.Count > 0)
-                    throw new InvalidOperationException("엑셀 첫 행에 이 결과에 없는 컬럼이 있습니다: " + string.Join(", ", unknown));
+                    throw new InvalidOperationException("엑셀 컬럼명 행(" + headerRow + "행)에 이 결과에 없는 컬럼이 있습니다: " + string.Join(", ", unknown));
 
                 missing = columns.Where(c => !headers.Any(h => string.Equals(h, c.Name, StringComparison.OrdinalIgnoreCase))).Select(c => c.Name).ToList();
-                if (missing.Count == columns.Count)
-                    throw new InvalidOperationException("엑셀 첫 행에 이 결과의 컬럼명이 하나도 없습니다(데이터 시트: " + sheet.Name + ").");
 
                 var map = new int[columns.Count];
                 for (int i = 0; i < columns.Count; i++)
@@ -232,13 +233,13 @@ namespace MyPlugin
                     var name = columns[i].Name;
                     var at = headers.FindIndex(h => string.Equals(h, name, StringComparison.OrdinalIgnoreCase));
                     if (at >= 0 && headers.FindLastIndex(h => string.Equals(h, name, StringComparison.OrdinalIgnoreCase)) != at)
-                        throw new InvalidOperationException("엑셀 첫 행에 컬럼명이 중복되었습니다: " + name);
+                        throw new InvalidOperationException("엑셀 컬럼명 행(" + headerRow + "행)에 컬럼명이 중복되었습니다: " + name);
                     map[i] = at + 1; // 0 = 서식에 없는 열
                 }
 
                 var rows = new List<string[]>();
                 int lastRow = used.LastRow().RowNumber();
-                for (int r = 2; r <= lastRow; r++)
+                for (int r = headerRow + 1; r <= lastRow; r++)
                 {
                     var row = new string[columns.Count];
                     bool hasValue = false;
@@ -263,16 +264,32 @@ namespace MyPlugin
             }
         }
 
-        /// <summary>등록할 서식 파일인지 확인한다: 데이터 시트와 첫 행 컬럼명이 있어야 한다. 그 컬럼명들을 돌려준다.</summary>
-        internal static List<string> Inspect(string path)
+        /// <summary>
+        /// 등록할 서식 파일인지 확인한다: 데이터 시트 위쪽 <see cref="HeaderScanRows"/>행 안에 글이 있는 행(컬럼명 행 후보)이 있어야 한다.
+        /// 어느 행이 컬럼명 행인지는 결과 열을 알 때(내보내기·가져오기) 정한다.
+        /// </summary>
+        internal static void Inspect(string path)
         {
             using (var book = new XLWorkbook(path))
             {
-                var headers = Headers(DataSheet(book)).Where(h => h.Length > 0).ToList();
-                if (headers.Count == 0)
-                    throw new InvalidOperationException("데이터 시트 첫 행에 컬럼명이 없습니다.");
-                return headers;
+                var sheet = DataSheet(book);
+                for (int r = 1; r <= HeaderScanRows; r++)
+                    if (Headers(sheet, r).Any(h => h.Length > 0))
+                        return;
+                throw new InvalidOperationException("데이터 시트 위쪽 " + HeaderScanRows + "행 안에 컬럼명이 없습니다.");
             }
+        }
+
+        /// <summary>
+        /// 컬럼명 행: 위쪽 <see cref="HeaderScanRows"/>행 안에서 결과 컬럼명(대소문자 무시)이 처음 나오는 행. 그 위의 로고·제목·설명 행은 건너뛴다.
+        /// 없으면 거부한다.
+        /// </summary>
+        static int HeaderRow(IXLWorksheet sheet, IList<ResultColumn> columns)
+        {
+            for (int r = 1; r <= HeaderScanRows; r++)
+                if (Headers(sheet, r).Any(h => h.Length > 0 && columns.Any(c => string.Equals(c.Name, h, StringComparison.OrdinalIgnoreCase))))
+                    return r;
+            throw new InvalidOperationException("데이터 시트(" + sheet.Name + ") 위쪽 " + HeaderScanRows + "행 안에 이 결과의 컬럼명이 있는 행이 없습니다.");
         }
 
         static IXLWorksheet DataSheet(XLWorkbook book)
@@ -283,13 +300,17 @@ namespace MyPlugin
             return sheet;
         }
 
-        static List<string> Headers(IXLWorksheet sheet)
+        /// <summary>한 행의 글(열 1부터 그 행의 마지막 값까지). 오류 셀은 빈 글로 본다(제목 행의 #N/A 등으로 막지 않게).</summary>
+        static List<string> Headers(IXLWorksheet sheet, int row)
         {
-            var last = sheet.Row(1).LastCellUsed();
+            var last = sheet.Row(row).LastCellUsed();
             var count = last == null ? 0 : last.Address.ColumnNumber;
             var headers = new List<string>();
             for (int c = 1; c <= count; c++)
-                headers.Add(CellString(sheet.Cell(1, c))?.Trim() ?? "");
+            {
+                var cell = sheet.Cell(row, c);
+                headers.Add(cell.DataType == XLDataType.Error ? "" : CellString(cell)?.Trim() ?? "");
+            }
             return headers;
         }
 

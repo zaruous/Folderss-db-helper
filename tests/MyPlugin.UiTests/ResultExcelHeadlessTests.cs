@@ -24,6 +24,7 @@ namespace MyPlugin.UiTests
         const string XlTable = "DBH_XL_IT";
 
         [UiFact(requiresOracle: true)]
+        [Trait("Requires", "Oracle")]
         public async Task X_ResultExcel_FormatExportImport_Oracle()
         {
             var ui = UiThread.Instance;

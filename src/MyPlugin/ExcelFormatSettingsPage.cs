@@ -13,7 +13,7 @@ namespace MyPlugin
     /// <summary>
     /// 설정 창 "엑셀 서식": 결과 편집의 [엑셀 내보내기]·[엑셀 임포트]에 쓸 서식(열 순서·셀 서식을 정한 .xlsx)을 등록·관리한다.
     /// 처음 등록 항목은 "기본 서식"(자동 — 결과 열 그대로, 지울 수 없음). [파일 추가…]는 파일을 관리 폴더에 복사해 등록하고,
-    /// 이름·대상 테이블(비우면 모든 결과)을 고친다. [엑셀로 열기]로 서식을 고친다(규칙: 데이터 시트 첫 행 = DB 컬럼명).
+    /// 이름·대상 테이블(비우면 모든 결과)을 고친다. [엑셀로 열기]로 서식을 고친다(규칙: 데이터 시트의 DB 컬럼명 행 아래가 데이터, 그 위엔 로고·제목 가능).
     /// 결과 그리드의 "이 결과로 서식 만들기"도 여기에 등록된다. [저장]하면 목록이 설정 값에 남는다(파일 삭제는 저장할 때).
     /// </summary>
     public sealed class ExcelFormatSettingsPage : IPluginSettingsPage
@@ -45,7 +45,7 @@ namespace MyPlugin
             _removedFiles.Clear();
             var root = new DockPanel { Margin = new Thickness(8) };
 
-            var intro = Theme.Text("결과 편집의 [엑셀 내보내기]·[엑셀 임포트]에 쓸 서식입니다. 서식 파일의 데이터 시트 첫 행은 DB 컬럼명이고, 열 순서·너비·색·셀 서식은 자유롭게 바꿔도 됩니다.", Theme.SecondaryText);
+            var intro = Theme.Text("결과 편집의 [엑셀 내보내기]·[엑셀 임포트]에 쓸 서식입니다. 서식 파일의 데이터 시트에는 DB 컬럼명 행이 있어야 하고(그 위에 로고·제목을 둘 수 있음) 그 아래가 데이터입니다. 열 순서·너비·색·셀 서식은 자유롭게 바꿔도 됩니다.", Theme.SecondaryText);
             intro.TextWrapping = TextWrapping.Wrap;
             intro.Margin = new Thickness(0, 0, 0, 8);
             DockPanel.SetDock(intro, Dock.Top);

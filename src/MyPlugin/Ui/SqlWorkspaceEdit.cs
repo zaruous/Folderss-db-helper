@@ -45,7 +45,7 @@ namespace MyPlugin
             AutomationProperties.SetAutomationId(_excelExport, "excel-export");
             excelButtons.Children.Add(_excelExport);
 
-            _excelImport = EditBarButton("엑셀 임포트", "엑셀(.xlsx)의 데이터를 새 행으로 추가합니다(첫 행 = 컬럼명, 열 순서·서식 무관). [저장]하면 INSERT");
+            _excelImport = EditBarButton("엑셀 임포트", "엑셀(.xlsx)의 데이터를 새 행으로 추가합니다(컬럼명 행 아래가 데이터, 위쪽 로고·제목·열 순서·서식 무관). [저장]하면 INSERT");
             _excelImport.Click += (s, e) => Safe(ImportExcel);
             AutomationProperties.SetAutomationId(_excelImport, "excel-import");
             excelButtons.Children.Add(_excelImport);
@@ -212,7 +212,7 @@ namespace MyPlugin
             SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 서식을 만들어 등록했습니다: " + file + " — 설정 창 \"엑셀 서식\"에서 [엑셀로 열기]로 열 순서·서식을 다듬을 수 있습니다."));
         }
 
-        /// <summary>엑셀(첫 행 = 컬럼명, 열 순서·서식 무관)의 행을 INSERT 대기 행으로 더한다. [저장]하면 INSERT(커밋 전).</summary>
+        /// <summary>엑셀(컬럼명 행 아래가 데이터, 열 순서·서식 무관)의 행을 INSERT 대기 행으로 더한다. [저장]하면 INSERT(커밋 전).</summary>
         private void ImportExcel()
         {
             var tab = _active;
