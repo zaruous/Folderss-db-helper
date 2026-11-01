@@ -509,8 +509,12 @@ namespace MyPlugin
 
         public void DescribeObject(string dbId, string owner, string objectName)
         {
-            if (!SupportsTableInfo(dbId, "테이블 정보"))
+            var provider = DbProviders.For(FindProfile(dbId));
+            if (provider.TableSchema == null)
+            {
+                Dialogs.Show(OwnerWindow(), "테이블 정보", provider.DisplayName + " 접속에서는 테이블 정보를 지원하지 않습니다.", false);
                 return;
+            }
             _workspace.DescribeObject(dbId, owner, objectName);
         }
 
@@ -519,7 +523,7 @@ namespace MyPlugin
             _workspace.ShowSource(dbId, owner, objectType, objectName);
         }
 
-        /// <summary>테이블 정보(F4)·테이블 정의서는 아직 Oracle 데이터 사전(ALL_*)으로만 읽는다. 다른 공급자면 알리고 false.</summary>
+        /// <summary>테이블 정의서는 아직 Oracle 데이터 사전(ALL_*)으로만 읽는다. 다른 공급자면 알리고 false. (테이블 정보 F4는 IDbProvider.TableSchema)</summary>
         private bool SupportsTableInfo(string dbId, string feature)
         {
             var profile = FindProfile(dbId);

@@ -401,8 +401,8 @@ namespace MyPlugin
 
         // ---- 빠른 조회(트리 F1) ----
 
-        /// <summary>트리 F1 빠른 조회로 처음 가져올 행 수.</summary>
-        public const int QuickQueryRows = 100;
+        /// <summary>트리 F1 빠른 조회로 처음 가져올 행 수. 설정 [데이터 조회]의 값(QueryOptions.QuickRows, 기본 100)을 따른다.</summary>
+        public static int QuickQueryRows => QueryOptions.QuickRows;
 
         public static string QuickQueryMessage(string qualifiedName, string tabTitle, string where = null)
         {
@@ -900,7 +900,8 @@ namespace MyPlugin
                 return "같은 DB의 모든 탭에 적용됩니다.";
             // PL/SQL은 블록이 커밋·롤백했거나 아무것도 바꾸지 않았으면 TransactionEnded(남은 트랜잭션 없음)
             var ended = result != null && result.TransactionEnded;
-            if (!ended && (statement.Kind == SqlKind.Dml || statement.Kind == SqlKind.PlSql))
+            // 트랜잭션 DDL(PostgreSQL·SQL Server)도 커밋 대기 — TransactionEnded가 아니다
+            if (!ended && (statement.Kind == SqlKind.Dml || statement.Kind == SqlKind.PlSql || statement.Kind == SqlKind.Ddl))
                 return "커밋 전에는 다른 세션에 보이지 않습니다. 같은 DB의 다른 탭에는 보입니다(세션 공유).";
             return null;
         }

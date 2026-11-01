@@ -63,7 +63,7 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 커밋 대기 변경이 있는데 DDL을 실행할 때. "DDL을 실행하면 커밋하지 않은 변경(pendingText)도 함께 커밋되어 되돌릴 수 없습니다." + 확인 체크.
+        /// 커밋 대기 변경이 있는데 DDL을 실행할 때(DDL이 자동 커밋하는 공급자 — Oracle만, <see cref="IDbProvider.DdlAutoCommits"/>). "DDL을 실행하면 커밋하지 않은 변경(pendingText)도 함께 커밋되어 되돌릴 수 없습니다." + 확인 체크.
         /// 실행이면 true.
         /// </summary>
         public static bool ConfirmDdlWithPending(Window owner, OracleConnectionProfile profile, string pendingText)
@@ -112,7 +112,8 @@ namespace MyPlugin
             box.TextWrapping = TextWrapping.NoWrap;
             box.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             body.Children.Add(box);
-            body.Children.Add(DialogKit.Hint("행마다 문장 하나를 DELETE → UPDATE → INSERT 순으로 실행합니다(DELETE·UPDATE는 기본 키로 행을 찾음). 커밋 전까지 [롤백]으로 되돌릴 수 있고, 오류가 나면 그 행에서 멈춥니다.", 8));
+            body.Children.Add(DialogKit.Hint("행마다 문장 하나를 DELETE → UPDATE → INSERT 순으로 실행합니다(DELETE·UPDATE는 키로 행을 찾고 조회한 원래 값과 비교 — 그 사이 다른 세션이 바꾼 행은 충돌로 멈춤). "
+                + "오류·충돌·취소가 나면 그 행에서 멈추고 이번 저장 전체를 되돌립니다(저장 전 커밋 대기는 유지). 커밋 전까지 [롤백]으로 되돌릴 수 있습니다.", 8));
             CheckBox check = null;
             if (deletes > 0)
             {
@@ -132,6 +133,47 @@ namespace MyPlugin
             };
             body.Children.Add(DialogKit.Buttons(run, cancel));
             DialogKit.FocusOnLoad(window, check != null ? (IInputElement)check : cancel);
+            return window.ShowDialog() == true;
+        }
+
+        /// <summary>
+        /// 테이블 구조 저장 확인. "table에 DDL n문장을 실행할까요?", 실행 순서대로의 문장(고정폭, 스크롤, [SQL 복사]),
+        /// 단계마다 커밋된다는 안내. 컬럼 삭제(데이터 손실)가 있으면 경고 + 확인 체크(체크 전 [실행] 비활성). 실행이면 true.
+        /// </summary>
+        public static bool ConfirmSchemaChanges(Window owner, OracleConnectionProfile profile, string table, System.Collections.Generic.IList<string> statements, int droppedColumns)
+        {
+            var window = DialogKit.Create(owner, DialogKit.TitleFor("구조 변경 저장", profile), 640);
+            var body = DialogKit.Body(window);
+            body.Children.Add(DialogKit.Text((table ?? "") + "에 DDL " + statements.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "문장을 실행할까요?", 0));
+            var sql = string.Join(Environment.NewLine, statements);
+            var box = DialogKit.SqlBox(sql, 10);
+            box.MaxHeight = 300;
+            box.TextWrapping = TextWrapping.NoWrap;
+            box.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+            body.Children.Add(box);
+            body.Children.Add(DialogKit.Hint("위에서부터 차례로 실행합니다(제약·인덱스 삭제 → 컬럼 → 인덱스 생성 → 제약 추가). 오류가 나면 그 문장에서 멈추고, 앞 문장은 이미 반영된 상태로 남습니다. 문장마다 성공하면 바로 커밋되어(Oracle은 DDL 자동 커밋, PostgreSQL·SQL Server는 문장마다 커밋) [롤백]으로 되돌릴 수 없습니다.", 8));
+            CheckBox check = null;
+            if (droppedColumns > 0)
+            {
+                body.Children.Add(DialogKit.Warning("⚠ 컬럼 " + droppedColumns.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개를 삭제합니다. 그 컬럼의 데이터는 되돌릴 수 없습니다.", 8));
+                check = DialogKit.Check("삭제할 컬럼과 대상 DB를 확인했고 실행합니다");
+                body.Children.Add(check);
+            }
+            var run = DialogKit.PrimaryButton("실행");
+            var copy = DialogKit.PlainButton("SQL 복사");
+            copy.Margin = new Thickness(0, 0, 6, 0);
+            run.Margin = new Thickness(0, 0, 6, 0);
+            var cancel = DialogKit.CancelButton("취소", true);
+            if (check != null)
+                DialogKit.EnableWhenChecked(run, check);
+            copy.Click += (s, e) => DialogKit.TryCopy(sql);
+            run.Click += (s, e) =>
+            {
+                if (check == null || check.IsChecked == true)
+                    window.DialogResult = true;
+            };
+            body.Children.Add(DialogKit.Buttons(copy, run, cancel));
+            DialogKit.FocusOnLoad(window, check != null ? (IInputElement)check : run);
             return window.ShowDialog() == true;
         }
 

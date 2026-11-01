@@ -287,6 +287,15 @@ namespace MyPlugin
         /// <summary>빠른 조회(F1) 결과의 편집 대상. 편집할 수 없는 결과(일반 실행)는 null.</summary>
         public EditableTable Edit { get; set; }
 
+        /// <summary>[저장]으로 DB에 보냈지만 아직 커밋되지 않은 편집이 있는 세션. 없으면 null(커밋됐거나 저장한 적 없음).</summary>
+        public DbSession SavedSession { get; set; }
+
+        /// <summary>
+        /// 저장한 편집이 커밋되기 전에 트랜잭션이 롤백 등으로 끝나(또는 저장을 되돌리지 못해) 화면이 DB와 다를 수 있음 — 편집 막대에 보일 이유.
+        /// 아니면 null. 다시 조회하면 새 결과라 사라진다.
+        /// </summary>
+        public string StaleReason { get; set; }
+
         public int ModifiedCount
         {
             get { return Rows.Count(r => r.State == RowEditState.Modified); }

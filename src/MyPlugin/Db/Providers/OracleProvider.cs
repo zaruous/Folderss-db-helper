@@ -26,6 +26,7 @@ namespace MyPlugin
         public SqlLexRules Lex { get { return SqlLexRules.Oracle; } }
         public IMetadataProvider Metadata { get { return _metadata; } }
         public IMonitorProvider Monitor { get { return _monitor; } }
+        public ITableSchemaProvider TableSchema { get { return OracleTableSchema.Instance; } }
 
         public List<string> Validate(OracleConnectionProfile profile, string label)
         {
@@ -67,6 +68,11 @@ namespace MyPlugin
         }
 
         public bool SupportsMultipleOpenReaders { get { return true; } }
+
+        /// <summary>Oracle DDL은 실행 전후로 묵시적 커밋한다.</summary>
+        public bool DdlAutoCommits { get { return true; } }
+
+        public bool RequiresNoTransaction(SqlStatement statement) { return false; }
 
         public bool IsCancellation(Exception ex)
         {
@@ -156,6 +162,7 @@ namespace MyPlugin
         public SqlLexRules Lex { get { return SqlLexRules.Oracle; } }
         public IMetadataProvider Metadata { get { throw new NotSupportedException("이 연결에는 데이터 사전 조회가 없습니다."); } }
         public IMonitorProvider Monitor { get { return NoMonitor.Instance; } }
+        public ITableSchemaProvider TableSchema { get { return null; } }
         public List<string> Validate(OracleConnectionProfile profile, string label) { return new List<string>(); }
         public string BuildConnectionString(OracleConnectionProfile profile, string password, int timeoutSeconds) { throw new NotSupportedException(); }
         public DbConnection CreateConnection(string connectionString) { throw new NotSupportedException(); }
@@ -163,6 +170,9 @@ namespace MyPlugin
         public string ServerVersionOf(DbConnection connection) { return connection.ServerVersion; }
         public string Address(OracleConnectionProfile profile) { return ProviderRules.Address(profile); }
         public bool SupportsMultipleOpenReaders { get { return true; } }
+        // 모르는 연결은 Oracle처럼(DDL 앞 커밋) — 롤백할 수 있다고 잘못 알리지 않게
+        public bool DdlAutoCommits { get { return true; } }
+        public bool RequiresNoTransaction(SqlStatement statement) { return false; }
         public bool IsCancellation(Exception ex) { return false; }
         public bool IsBroken(Exception ex) { return false; }
         public bool IsPermissionDenied(Exception ex) { return false; }

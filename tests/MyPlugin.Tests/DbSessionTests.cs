@@ -305,6 +305,127 @@ namespace MyPlugin.Tests
             }
         }
 
+        // ---------- DDL 트랜잭션 정책(#30): PostgreSQL·SQL Server 공급자는 트랜잭션 DDL. SQLite도 DDL을 트랜잭션 안에서 롤백할 수 있어 공급자만 바꿔 시험한다 ----------
+
+        [Fact]
+        public async Task TransactionalDdl_KeepsPriorDmlPending_RollbackUndoesBoth()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1), (2)"), 0);
+
+                var ddl = await session.ExecuteAsync(Ddl("CREATE TABLE u (y INTEGER)"), 0);
+
+                Assert.False(ddl.TransactionEnded);
+                Assert.Equal("실행함 (DDL 커밋 전)", ddl.Summary);
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal("커밋 대기 2행 · DDL", session.PendingText);
+                await session.RollbackAsync();
+                Assert.Equal(0, await CountAsync(session, "t"));
+                // CREATE TABLE도 롤백되었다
+                await Assert.ThrowsAsync<SqliteException>(() => CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task TransactionalDdl_WithoutPending_IsPendingUntilCommit()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.SqlServer))
+            {
+                var ddl = await session.ExecuteAsync(Ddl("CREATE TABLE u (y INTEGER)"), 0);
+
+                Assert.False(ddl.TransactionEnded);
+                Assert.Equal("커밋 대기(DDL)", session.PendingText);
+                await session.CommitAsync();
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, await CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task TransactionalDdl_FailureWithPending_RollsBackOnlyTheDdl()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+                await session.ExecuteAsync(Ddl("CREATE TABLE u (y INTEGER)"), 0);
+
+                // 이미 있는 테이블 — 실패한 DDL만 세이브포인트로 되돌리고 앞선 INSERT·DDL은 대기로 남는다
+                await Assert.ThrowsAsync<SqliteException>(() => session.ExecuteAsync(Ddl("CREATE TABLE t (x INTEGER)"), 0));
+
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal("커밋 대기 1행 · DDL", session.PendingText);
+                await session.CommitAsync();
+                Assert.Equal(1, await CountAsync(session, "t"));
+                Assert.Equal(0, await CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task TransactionalDdl_FailureWithoutPending_LeavesNoTransaction()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+
+                await Assert.ThrowsAsync<SqliteException>(() => session.ExecuteAsync(Ddl("CREATE TABLE t (x INTEGER)"), 0));
+
+                Assert.False(session.HasPendingChanges);
+                Assert.False(session.IsBroken);
+                // 남은 트랜잭션이 없어 트랜잭션 밖 전용 문장도 바로 된다
+                var vacuum = await session.ExecuteAsync(Other("VACUUM"), 0);
+                Assert.True(vacuum.TransactionEnded);
+            }
+        }
+
+        [Fact]
+        public async Task NoTransactionStatement_WithPending_IsRefusedAndKeepsChanges()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+
+                var error = await Assert.ThrowsAsync<InvalidOperationException>(() => session.ExecuteAsync(Other("VACUUM"), 0));
+
+                Assert.Contains("VACUUM", error.Message);
+                Assert.Contains("트랜잭션 안에서 실행할 수 없어", error.Message);
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal(1, session.PendingRowCount);
+                await session.RollbackAsync();
+                Assert.Equal(0, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
+        public async Task NoTransactionStatement_WithoutPending_RunsOutsideTransaction()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+
+                var vacuum = await session.ExecuteAsync(Other("VACUUM"), 0);
+
+                Assert.True(vacuum.TransactionEnded);
+                Assert.Equal("실행함 (트랜잭션 밖에서 실행 — 바로 반영됨)", vacuum.Summary);
+                Assert.False(session.HasPendingChanges);
+            }
+        }
+
+        [Fact]
+        public async Task AutoCommitDdlProvider_DoesNotUseNoTransactionRule()
+        {
+            // Generic(Oracle 규칙)은 VACUUM도 다른 문장처럼 실행한다 — 트랜잭션이 없으면 SQLite가 받아들인다
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                var vacuum = await session.ExecuteAsync(Other("VACUUM"), 0);
+                Assert.False(vacuum.TransactionEnded);
+                Assert.Equal("실행함", vacuum.Summary);
+            }
+        }
+
         [Fact]
         public async Task PlSql_MarksPendingWithUnknownCount()
         {
@@ -1622,9 +1743,171 @@ namespace MyPlugin.Tests
             }
         }
 
+        private static SqlQuery DeleteNum(int x)
+        {
+            var query = new SqlQuery { Sql = "DELETE FROM nums WHERE x = :k0" };
+            query.Parameters.Add(new KeyValuePair<string, object>("k0", (decimal)x));
+            return query;
+        }
+
+        [Fact]
+        public async Task DmlBatch_AllSucceed_CountsPending()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 5);
+                var batch = await session.ExecuteDmlBatchAsync(new[] { DeleteNum(1), DeleteNum(2) }, 1);
+                Assert.True(batch.Succeeded);
+                Assert.Equal(new[] { 1, 1 }, batch.Affected);
+                Assert.Equal(2, batch.Elapsed.Count);
+                Assert.False(batch.RolledBack);
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal(2, session.PendingRowCount);
+                Assert.Equal(3L, await CountAsync(session, "nums"));
+                // 저장점은 풀었다 — 커밋이 그대로 된다
+                await session.CommitAsync();
+                Assert.Equal(3L, await CountAsync(session, "nums"));
+            }
+        }
+
+        [Fact]
+        public async Task DmlBatch_AffectedMismatch_RollsBackOnlyThisBatch()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 5);
+                // 저장 전에 보낸 커밋 대기 변경
+                Assert.Equal(1, await session.ExecuteDmlAsync(DeleteNum(1)));
+
+                // 두 번째 문장이 0행(충돌) → 첫 번째(x=2)도 되돌린다
+                var batch = await session.ExecuteDmlBatchAsync(new[] { DeleteNum(2), DeleteNum(99), DeleteNum(3) }, 1);
+
+                Assert.False(batch.Succeeded);
+                Assert.Equal(1, batch.FailedIndex);
+                Assert.Equal(new[] { 1, 0 }, batch.Affected);
+                Assert.Null(batch.Error);
+                Assert.True(batch.RolledBack);
+                Assert.Null(batch.RollbackError);
+                Assert.Equal(4L, await CountAsync(session, "nums"));
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal(1, session.PendingRowCount);
+                Assert.False(session.PendingCountUnknown);
+
+                // 저장 전 변경은 커밋까지 간다
+                await session.CommitAsync();
+                Assert.Equal(4L, await CountAsync(session, "nums"));
+            }
+        }
+
+        [Fact]
+        public async Task DmlBatch_Error_RollsBack_AndWithoutEarlierWorkClearsPending()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 3);
+                var bad = new SqlQuery { Sql = "DELETE FROM no_such_table WHERE x = 1" };
+
+                var batch = await session.ExecuteDmlBatchAsync(new[] { DeleteNum(2), bad }, 1);
+
+                Assert.Equal(1, batch.FailedIndex);
+                Assert.IsType<SqliteException>(batch.Error);
+                Assert.False(batch.Canceled);
+                Assert.True(batch.RolledBack);
+                Assert.Equal(3L, await CountAsync(session, "nums"));
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, session.PendingRowCount);
+            }
+        }
+
+        [Fact]
+        public async Task DmlBatch_CanceledBetweenStatements_RollsBack()
+        {
+            var connection = new SqliteConnection(Memory);
+            using (var session = await OpenAsync(connection))
+            using (var cancel = new CancellationTokenSource())
+            {
+                await CreateNumbersAsync(session, 3);
+                // 첫 문장을 실행하는 동안 취소 요청이 들어온다
+                connection.CreateFunction("cancel_now", () => { cancel.Cancel(); return 1; });
+                var first = new SqlQuery { Sql = "DELETE FROM nums WHERE x = :k0 AND cancel_now() = 1" };
+                first.Parameters.Add(new KeyValuePair<string, object>("k0", 1m));
+
+                var batch = await Within(session.ExecuteDmlBatchAsync(new[] { first, DeleteNum(2) }, 1, cancel.Token));
+
+                Assert.True(batch.Canceled);
+                Assert.Equal(1, batch.FailedIndex);
+                Assert.True(batch.RolledBack);
+                Assert.Equal(3L, await CountAsync(session, "nums"));
+                Assert.False(session.HasPendingChanges);
+            }
+        }
+
+        [Fact]
+        public async Task DmlBatch_WhileBusy_ThrowsSessionBusy_AndDoesNothing()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                await CreateNumbersAsync(session, 3);
+                var gate = new SemaphoreSlim(0, 1);
+                var running = session.RunAsync((connection, transaction) =>
+                {
+                    gate.Wait(Timeout);
+                    return true;
+                });
+                try
+                {
+                    await Assert.ThrowsAsync<SessionBusyException>(() => session.ExecuteDmlBatchAsync(new[] { DeleteNum(1) }, 1));
+                }
+                finally
+                {
+                    gate.Release();
+                    await Within(running);
+                }
+                Assert.Equal(3L, await CountAsync(session, "nums"));
+                Assert.False(session.HasPendingChanges);
+            }
+        }
+
+        [Fact]
+        public async Task TransactionFinished_ReportsCommitRollbackAndDispose()
+        {
+            var outcomes = new List<TransactionOutcome>();
+            var session = await OpenAsync(new SqliteConnection(Memory));
+            session.TransactionFinished += (s, outcome) => { lock (outcomes) outcomes.Add(outcome); };
+            await CreateNumbersAsync(session, 3);
+            await session.ExecuteDmlAsync(DeleteNum(1));
+            await session.CommitAsync();
+            await session.ExecuteDmlAsync(DeleteNum(2));
+            await session.RollbackAsync();
+            // 저장 묶음의 저장점 되돌리기는 트랜잭션 끝이 아니다
+            await session.ExecuteDmlBatchAsync(new[] { DeleteNum(99) }, 1);
+            await session.ExecuteAsync(Transaction("COMMIT", SqlTransactionAction.Commit), 0);
+            session.Dispose();
+            Assert.Equal(new[] { TransactionOutcome.Committed, TransactionOutcome.RolledBack, TransactionOutcome.Committed, TransactionOutcome.RolledBack }, outcomes);
+        }
+
+        [Fact]
+        public void SavepointSql_PerProvider()
+        {
+            Assert.Equal("SAVEPOINT DBH_EDIT_SAVE", DbSession.SavepointSql("oracle", DbSession.EditSavepoint));
+            Assert.Equal("ROLLBACK TO SAVEPOINT DBH_EDIT_SAVE", DbSession.RollbackToSavepointSql("postgres", DbSession.EditSavepoint));
+            Assert.Equal("SAVE TRANSACTION DBH_EDIT_SAVE", DbSession.SavepointSql("mssql", DbSession.EditSavepoint));
+            Assert.Equal("ROLLBACK TRANSACTION DBH_EDIT_SAVE", DbSession.RollbackToSavepointSql("mssql", DbSession.EditSavepoint));
+            Assert.Equal("RELEASE SAVEPOINT DBH_EDIT_SAVE", DbSession.ReleaseSavepointSql("postgres", DbSession.EditSavepoint));
+            Assert.Null(DbSession.ReleaseSavepointSql("oracle", DbSession.EditSavepoint));
+            Assert.Null(DbSession.ReleaseSavepointSql("mssql", DbSession.EditSavepoint));
+        }
+
         private static async Task<DbSession> OpenAsync(DbConnection connection)
         {
             var session = new DbSession(connection);
+            await session.OpenAsync();
+            return session;
+        }
+
+        private static async Task<DbSession> OpenAsync(DbConnection connection, IDbProvider provider)
+        {
+            var session = new DbSession(connection, provider);
             await session.OpenAsync();
             return session;
         }

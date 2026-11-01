@@ -219,6 +219,11 @@ namespace MyPlugin
             private Run _passwordState;
             private Hyperlink _clearPassword;
             private CheckBox _readOnly;
+            private ComboBox _sqlEncrypt;
+            private CheckBox _sqlTrust;
+            private TextBox _sqlHostName;
+            private TextBlock _sqlNote;
+            private readonly List<FrameworkElement> _sqlOnly = new List<FrameworkElement>();
             private ComboBox _color;
             private TextBlock _liveNote;
             private Button _test;
@@ -433,6 +438,7 @@ namespace MyPlugin
                         return;
                     var previous = DbProviders.For(Selected == null ? null : Selected.Draft.Profile);
                     Edit(p => p.Provider = chosen.Kind, true);
+                    RefreshSqlSecurity(Selected);
                     if (previous != chosen && ConnectionManagerLogic.ParsePort(_port.Text) == previous.DefaultPort)
                         SetText(_port, chosen.DefaultPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 };
@@ -464,6 +470,8 @@ namespace MyPlugin
 
                 row = NewRow(grid);
                 Place(grid, BuildPasswordNote(), row, 1, 3, NoteGap);
+
+                BuildSqlSecurity(grid);
 
                 _readOnly = DialogKit.Check("읽기 전용 (SELECT·WITH만 실행)");
                 _readOnly.Checked += (s, e) => Edit(p => p.ReadOnly = true, false);
@@ -498,6 +506,69 @@ namespace MyPlugin
                 row = NewRow(grid);
                 Place(grid, BuildTestRow(), row, 1, 3, Gap);
                 return grid;
+            }
+
+            // SQL Server만: 암호화 모드, 서버 인증서 신뢰(자체 서명 예외), 인증서 호스트 이름, 안내
+            private void BuildSqlSecurity(Grid grid)
+            {
+                _sqlEncrypt = new ComboBox
+                {
+                    ItemsSource = SqlServerSecurity.Modes.Select(m => new ComboBoxItem { Content = SqlServerSecurity.Title(m), Tag = m }).ToList()
+                };
+                AutomationProperties.SetName(_sqlEncrypt, "암호화");
+                _sqlEncrypt.SelectionChanged += (s, e) =>
+                {
+                    var choice = _sqlEncrypt.SelectedItem as ComboBoxItem;
+                    if (choice != null)
+                        Edit(p => p.SqlEncrypt = (string)choice.Tag, true);
+                    RefreshSqlSecurity(Selected);
+                };
+                var label = Label("암호화");
+                var row = NewRow(grid);
+                Place(grid, label, row, 0, 1, Gap);
+                Place(grid, _sqlEncrypt, row, 1, 3, Gap);
+                _sqlOnly.Add(label);
+                _sqlOnly.Add(_sqlEncrypt);
+
+                _sqlTrust = DialogKit.Check("서버 인증서 신뢰 (검증 안 함 — 자체 서명 인증서 예외)");
+                ToolTipService.SetShowOnDisabled(_sqlTrust, true);
+                _sqlTrust.Checked += (s, e) => { Edit(p => p.SqlTrustServerCertificate = true, true); RefreshSqlSecurity(Selected); };
+                _sqlTrust.Unchecked += (s, e) => { Edit(p => p.SqlTrustServerCertificate = false, true); RefreshSqlSecurity(Selected); };
+                row = NewRow(grid);
+                Place(grid, _sqlTrust, row, 1, 3, Gap);
+                _sqlOnly.Add(_sqlTrust);
+
+                _sqlHostName = Field("인증서 이름");
+                _sqlHostName.ToolTip = "인증서의 이름이 접속 호스트와 다를 때만 입력(비우면 호스트로 검증)";
+                _sqlHostName.TextChanged += (s, e) => Edit(p => p.SqlHostNameInCertificate = _sqlHostName.Text.Trim(), true);
+                label = Label("인증서 이름");
+                row = NewRow(grid);
+                Place(grid, label, row, 0, 1, Gap);
+                Place(grid, _sqlHostName, row, 1, 3, Gap);
+                _sqlOnly.Add(label);
+                _sqlOnly.Add(_sqlHostName);
+
+                _sqlNote = Note("");
+                row = NewRow(grid);
+                Place(grid, _sqlNote, row, 1, 3, NoteGap);
+                _sqlOnly.Add(_sqlNote);
+            }
+
+            private void RefreshSqlSecurity(Item item)
+            {
+                if (_sqlNote == null || item == null)
+                    return;
+                var p = item.Draft.Profile;
+                var strict = SqlServerSecurity.EncryptOf(p) == SqlServerSecurity.Strict;
+                _sqlTrust.IsEnabled = !strict;
+                _sqlTrust.ToolTip = strict ? "엄격(Strict)은 서버 인증서를 항상 검증합니다" : null;
+                _sqlHostName.IsEnabled = !SqlServerSecurity.TrustOf(p);
+                bool warning;
+                _sqlNote.Text = ConnectionManagerLogic.SqlSecurityNote(p, out warning);
+                if (warning)
+                    _sqlNote.Foreground = Theme.Warning;
+                else
+                    _sqlNote.SetResourceReference(TextBlock.ForegroundProperty, Theme.SecondaryText);
             }
 
             private FrameworkElement BuildPasswordInput()
@@ -757,6 +828,12 @@ namespace MyPlugin
                     SetText(_user, p.UserId);
                     _password.Password = item.Draft.NewPassword;
                     _readOnly.IsChecked = p.ReadOnly;
+                    // SQL Server 암호화: 값이 없으면 새 접속 기본값(필수 + 검증)을 보인다
+                    var encrypt = SqlServerSecurity.EncryptOf(p);
+                    _sqlEncrypt.SelectedItem = _sqlEncrypt.Items.Cast<ComboBoxItem>().First(c => (string)c.Tag == encrypt);
+                    _sqlTrust.IsChecked = p.SqlTrustServerCertificate == true;
+                    SetText(_sqlHostName, SqlServerSecurity.HostNameOf(p));
+                    RefreshSqlSecurity(item);
                     _color.SelectedItem = _color.Items.Cast<ColorChoice>().FirstOrDefault(c => c.Value == (p.Color ?? "")) ?? _color.Items[0];
                 }
                 finally
@@ -1020,7 +1097,7 @@ namespace MyPlugin
                         return;
                     if (_testing == item)
                         _testing = null;
-                    item.SetTest(TestState.Failed, "접속 실패: " + DbSession.DescribeError(ex));
+                    item.SetTest(TestState.Failed, "접속 실패: " + ConnectionManagerLogic.DescribeConnectError(ex));
                     if (Selected == item)
                         RefreshTest(item);
                 }
@@ -1032,6 +1109,9 @@ namespace MyPlugin
                     _serviceLabel.Text = provider.ServiceLabel;
                 if (_service != null)
                     AutomationProperties.SetName(_service, provider.ServiceLabel);
+                var sql = provider.Kind == SqlServerProvider.KindName;
+                foreach (var element in _sqlOnly)
+                    element.Visibility = sql ? Visibility.Visible : Visibility.Collapsed;
             }
 
             /// <summary>
@@ -1057,7 +1137,7 @@ namespace MyPlugin
                 }
                 catch (Exception ex)
                 {
-                    return Tuple.Create(false, "접속 실패: " + ConnectionManagerLogic.DescribeConnectError(ex));
+                    return Tuple.Create(false, "접속 실패: " + ConnectionManagerLogic.DescribeConnectError(ex, password));
                 }
             }
 

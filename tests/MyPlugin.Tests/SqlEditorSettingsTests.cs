@@ -57,6 +57,20 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void DraftExcludedConnections_RoundTrip_AndBadItemsDropped()
+        {
+            var settings = new SqlEditorSettings();
+            settings.DraftExcludedConnections.AddRange(new[] { "id-1", "id-2" });
+            var back = SqlEditorSettings.Parse(settings.Serialize());
+            Assert.Equal(new[] { "id-1", "id-2" }, back.DraftExcludedConnections);
+            Assert.False(back.IsDefault);
+            Assert.Equal(new[] { "id-1", "id-2" }, back.Clone().DraftExcludedConnections);
+            // 이전 저장값(항목 없음)·잘못된 값은 빈 목록, 겹친 것은 하나로
+            Assert.Empty(SqlEditorSettings.Parse("{\"lineHeight\":0}").DraftExcludedConnections);
+            Assert.Equal(new[] { "a" }, SqlEditorSettings.Parse("{\"draftExcludedConnections\":[\"a\",\"\",1,null,\"a\"]}").DraftExcludedConnections);
+        }
+
+        [Fact]
         public void Parse_OutOfRangeOrBadItems_FallBackPerItem()
         {
             var settings = SqlEditorSettings.Parse("{\"lineHeight\":200,\"maxColoredLine\":5,"

@@ -35,7 +35,7 @@ namespace MyPlugin
     {
         public ColumnInfo Column { get; set; }
         public string Comment { get; set; }
-        /// <summary>기본값(ALL_TAB_COLUMNS.DATA_DEFAULT, 앞뒤 공백 뺌). 정의서만 읽는다(F4는 null).</summary>
+        /// <summary>기본값(ALL_TAB_COLUMNS.DATA_DEFAULT, 앞뒤 공백 뺌).</summary>
         public string Default { get; set; }
     }
 
@@ -49,6 +49,16 @@ namespace MyPlugin
         public string Columns { get; set; }
         /// <summary>열 하나씩(순서대로). 정의서만 채운다.</summary>
         public List<string> ColumnNames { get; } = new List<string>();
+        /// <summary>
+        /// 컬럼·고유만 바꿔 DROP 후 CREATE로 다시 만들어도 되는 보통 인덱스인지. 특수 속성(BITMAP·함수 기반·부분·INCLUDE·클러스터드 등)이
+        /// 있거나 제약이 만든 인덱스면 false — 편집 창이 컬럼·고유 변경을 막는다.
+        /// </summary>
+        public bool Recreatable { get; set; } = true;
+        /// <summary>
+        /// 이 인덱스로 기본 키·고유를 지키는 제약 이름(없으면 null). 그 제약이 있는 동안은 인덱스를 지울 수 없다 —
+        /// Oracle은 제약을 추가할 때 앞 컬럼이 같은 기존 인덱스를 다른 이름이어도 가져다 쓴다.
+        /// </summary>
+        public string OwnerConstraint { get; set; }
     }
 
     internal sealed class ConstraintDescription
@@ -92,7 +102,7 @@ namespace MyPlugin
 
     /// <summary>
     /// F4 테이블 정보: 대상 찾기(이름·스키마·동의어)와 정보 조회 SQL·읽기(순수 로직, 테스트 대상)와 조회 순서(DescribeAsync).
-    /// ALL_* 뷰만 쓴다(권한 있는 객체만 보인다). LONG 열(DATA_DEFAULT·SEARCH_CONDITION)은 읽지 않는다.
+    /// ALL_* 뷰만 쓴다(권한 있는 객체만 보인다). 컬럼 기본값(DATA_DEFAULT)은 구조 편집에 사용한다.
     /// </summary>
     internal static class TableInfo
     {
@@ -185,7 +195,7 @@ namespace MyPlugin
         public static SqlQuery Columns(string owner, string name)
         {
             var columns = OracleMetadata.Columns(owner, name);
-            var sql = columns.Sql.Replace(" FROM ALL_TAB_COLUMNS c", ", cc.COMMENTS FROM ALL_TAB_COLUMNS c"
+            var sql = columns.Sql.Replace(" FROM ALL_TAB_COLUMNS c", ", c.DATA_DEFAULT, cc.COMMENTS FROM ALL_TAB_COLUMNS c"
                 + " LEFT JOIN ALL_COL_COMMENTS cc ON cc.OWNER = c.OWNER AND cc.TABLE_NAME = c.TABLE_NAME AND cc.COLUMN_NAME = c.COLUMN_NAME");
             var query = new SqlQuery { Sql = sql };
             query.Parameters.AddRange(columns.Parameters);
@@ -194,7 +204,10 @@ namespace MyPlugin
 
         public static DescribedColumn ReadColumn(IDataRecord record)
         {
-            return new DescribedColumn { Column = OracleMetadata.ReadColumn(record), Comment = Text(record, "COMMENTS") };
+            var column = new DescribedColumn { Column = OracleMetadata.ReadColumn(record), Comment = Text(record, "COMMENTS") };
+            for (int i = 0; i < record.FieldCount; i++)
+                if (record.GetName(i) == "DATA_DEFAULT") column.Default = Text(record, "DATA_DEFAULT")?.Trim();
+            return column;
         }
 
         /// <summary>인덱스: INDEX_NAME, UNIQUENESS, INDEX_TYPE, STATUS, COLS(열 순서대로 "A, B DESC"). 이름 순.</summary>
@@ -203,10 +216,11 @@ namespace MyPlugin
             var query = new SqlQuery
             {
                 Sql = "SELECT i.INDEX_NAME, i.UNIQUENESS, i.INDEX_TYPE, i.STATUS,"
-                    + " LISTAGG(ic.COLUMN_NAME || CASE WHEN ic.DESCEND = 'DESC' THEN ' DESC' END, ', ') WITHIN GROUP (ORDER BY ic.COLUMN_POSITION) AS COLS"
+                    + " LISTAGG(ic.COLUMN_NAME || CASE WHEN ic.DESCEND = 'DESC' THEN ' DESC' END, ', ') WITHIN GROUP (ORDER BY ic.COLUMN_POSITION) AS COLS,"
+                    + " (SELECT MAX(k.CONSTRAINT_NAME) FROM ALL_CONSTRAINTS k WHERE k.INDEX_OWNER = i.OWNER AND k.INDEX_NAME = i.INDEX_NAME AND k.CONSTRAINT_TYPE IN ('P','U')) AS OWNER_CONSTRAINT"
                     + " FROM ALL_INDEXES i JOIN ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME"
                     + " WHERE i.TABLE_OWNER = :owner AND i.TABLE_NAME = :name"
-                    + " GROUP BY i.INDEX_NAME, i.UNIQUENESS, i.INDEX_TYPE, i.STATUS ORDER BY i.INDEX_NAME"
+                    + " GROUP BY i.OWNER, i.INDEX_NAME, i.UNIQUENESS, i.INDEX_TYPE, i.STATUS ORDER BY i.INDEX_NAME"
             };
             Bind(query, owner, name);
             return query;
@@ -214,14 +228,19 @@ namespace MyPlugin
 
         public static IndexDescription ReadIndex(IDataRecord record)
         {
-            return new IndexDescription
+            var index = new IndexDescription
             {
                 Name = Text(record, "INDEX_NAME"),
                 Unique = string.Equals(Text(record, "UNIQUENESS"), "UNIQUE", StringComparison.OrdinalIgnoreCase),
                 Type = Text(record, "INDEX_TYPE"),
                 Status = Text(record, "STATUS"),
-                Columns = Text(record, "COLS")
+                Columns = Text(record, "COLS"),
+                Recreatable = string.IsNullOrEmpty(Text(record, "INDEX_TYPE")) || Text(record, "INDEX_TYPE") == "NORMAL"
             };
+            for (int i = 0; i < record.FieldCount; i++)
+                if (record.GetName(i) == "OWNER_CONSTRAINT") index.OwnerConstraint = Text(record, "OWNER_CONSTRAINT");
+            if (index.OwnerConstraint != null) index.Recreatable = false;
+            return index;
         }
 
         /// <summary>
@@ -235,7 +254,9 @@ namespace MyPlugin
                 Sql = "SELECT c.CONSTRAINT_NAME, c.CONSTRAINT_TYPE, c.STATUS,"
                     + " (SELECT LISTAGG(cc.COLUMN_NAME, ', ') WITHIN GROUP (ORDER BY cc.POSITION) FROM ALL_CONS_COLUMNS cc"
                     + " WHERE cc.OWNER = c.OWNER AND cc.CONSTRAINT_NAME = c.CONSTRAINT_NAME AND cc.TABLE_NAME = c.TABLE_NAME) AS COLS,"
-                    + " r.OWNER AS R_OWNER, r.TABLE_NAME AS R_TABLE"
+                    + " r.OWNER AS R_OWNER, r.TABLE_NAME AS R_TABLE, c.SEARCH_CONDITION AS CHECK_CONDITION,"
+                    + " (SELECT LISTAGG(rc.COLUMN_NAME, CHR(31)) WITHIN GROUP (ORDER BY rc.POSITION) FROM ALL_CONS_COLUMNS rc"
+                    + " WHERE rc.OWNER = c.R_OWNER AND rc.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME) AS INFO_R_COLS"
                     + " FROM ALL_CONSTRAINTS c"
                     + " LEFT JOIN ALL_CONSTRAINTS r ON r.OWNER = c.R_OWNER AND r.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME"
                     + " WHERE c.OWNER = :owner AND c.TABLE_NAME = :name AND c.CONSTRAINT_TYPE IN ('P','U','R','C')"
@@ -250,7 +271,7 @@ namespace MyPlugin
         {
             var refOwner = Text(record, "R_OWNER");
             var refTable = Text(record, "R_TABLE");
-            return new ConstraintDescription
+            var result = new ConstraintDescription
             {
                 Name = Text(record, "CONSTRAINT_NAME"),
                 Type = Text(record, "CONSTRAINT_TYPE"),
@@ -258,6 +279,12 @@ namespace MyPlugin
                 Columns = Text(record, "COLS"),
                 Reference = refTable == null ? null : (refOwner == null ? refTable : refOwner + "." + refTable)
             };
+            for (int i = 0; i < record.FieldCount; i++)
+            {
+                if (record.GetName(i) == "CHECK_CONDITION") result.Condition = Text(record, "CHECK_CONDITION");
+                if (record.GetName(i) == "INFO_R_COLS") result.ReferenceColumns.AddRange((Text(record, "INFO_R_COLS") ?? "").Split(new[] { "\u001f" }, StringSplitOptions.RemoveEmptyEntries));
+            }
+            return result;
         }
 
         /// <summary>제약 조건 종류 이름: 기본 키·고유·외래 키·검사.</summary>

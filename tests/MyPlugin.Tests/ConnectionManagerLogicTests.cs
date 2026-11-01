@@ -455,6 +455,65 @@ namespace MyPlugin.Tests
                 ConnectionManagerLogic.DescribeConnectError(error));
         }
 
+        [Fact]
+        public void DescribeConnectError_CertificateFailure_SuggestsTrustOption()
+        {
+            var untrusted = new Exception("A connection was successfully established with the server, but then an error occurred during the login process."
+                + " (provider: SSL Provider, error: 0 - The certificate chain was issued by an authority that is not trusted.)");
+            Assert.Equal("서버 인증서를 신뢰할 수 없습니다 — 자체 서명이면 [서버 인증서 신뢰]를 켜세요.", ConnectionManagerLogic.DescribeConnectError(untrusted));
+            var mismatch = new Exception("(provider: SSL Provider, error: 0 - The target principal name is incorrect.)");
+            Assert.Contains("[인증서 이름]", ConnectionManagerLogic.DescribeConnectError(mismatch));
+        }
+
+        [Fact]
+        public void DescribeConnectError_RedactsPasswords()
+        {
+            var leak = new Exception("bad connection string: Data Source=h;Password=Top$ecret;User ID=sa");
+            var described = ConnectionManagerLogic.DescribeConnectError(leak, "Top$ecret");
+            Assert.DoesNotContain("Top$ecret", described);
+            Assert.Contains("Password=***", described);
+            Assert.DoesNotContain("hunter22", ConnectionManagerLogic.DescribeConnectError(new Exception("login hunter22 failed"), "hunter22"));
+        }
+
+        [Fact]
+        public void SqlSecurityNote_WarnsForMigratedProfile_ExplainsForNew()
+        {
+            bool warning;
+            var fresh = Valid();
+            fresh.Provider = "mssql";
+            Assert.Contains("[서버 인증서 신뢰]", ConnectionManagerLogic.SqlSecurityNote(fresh, out warning));
+            Assert.False(warning);
+
+            var migrated = Assert.Single(ConnectionManagerLogic.ParseStored("[{\"name\":\"MS\",\"provider\":\"mssql\",\"host\":\"h\",\"port\":1433,\"serviceName\":\"db\",\"userId\":\"sa\"}]"));
+            Assert.Contains("필수가 아닙니다", ConnectionManagerLogic.SqlSecurityNote(migrated, out warning));
+            Assert.True(warning);
+
+            fresh.SqlEncrypt = "strict";
+            Assert.Contains("TDS 8.0", ConnectionManagerLogic.SqlSecurityNote(fresh, out warning));
+            Assert.False(warning);
+        }
+
+        [Fact]
+        public void SqlServerSecurityEdit_MarksDraftChanged_AndIsSaved()
+        {
+            var original = Valid();
+            original.Provider = "mssql";
+            original.Port = 1433;
+            original.SqlEncrypt = "optional";
+            original.SqlTrustServerCertificate = true;
+            var originals = new List<OracleConnectionProfile> { original };
+            var drafts = Drafts(originals);
+            Assert.False(ConnectionManagerLogic.IsDirty(originals, drafts));
+
+            drafts[0].Profile.SqlEncrypt = "mandatory";
+            drafts[0].Profile.SqlTrustServerCertificate = false;
+            Assert.True(ConnectionManagerLogic.IsChanged(drafts[0], originals));
+            Assert.True(ConnectionManagerLogic.IsDirty(originals, drafts));
+            var saved = Assert.Single(ConnectionManagerLogic.BuildProfilesToSave(drafts, s => s));
+            Assert.Equal("mandatory", saved.SqlEncrypt);
+            Assert.False(saved.SqlTrustServerCertificate);
+        }
+
         /// <summary>ODP.NET의 OracleException은 공개 생성자가 없어 내부 생성자로 만든다(DbSessionTests와 같음).</summary>
         private static Oracle.ManagedDataAccess.Client.OracleException NewOracleException(int number, string message)
         {

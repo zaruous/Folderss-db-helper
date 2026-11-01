@@ -195,7 +195,9 @@ namespace MyPlugin.Tests
             Assert.Equal("Pw;x=1'y", parsed.Password);
             Assert.Equal(9, parsed.ConnectTimeout);
             Assert.False(parsed.Pooling);
-            Assert.True(parsed.TrustServerCertificate);
+            // 새 접속 기본값: 암호화 필수 + 인증서 검증
+            Assert.Equal(Microsoft.Data.SqlClient.SqlConnectionEncryptOption.Mandatory, parsed.Encrypt);
+            Assert.False(parsed.TrustServerCertificate);
             Assert.Equal(0, parsed.CommandTimeout);
             Assert.IsType<Microsoft.Data.SqlClient.SqlConnection>(p.CreateConnection(cs));
 
@@ -243,6 +245,68 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void DdlAutoCommits_PerProvider()
+        {
+            Assert.True(DbProviders.Oracle.DdlAutoCommits);
+            Assert.False(DbProviders.Postgres.DdlAutoCommits);
+            Assert.False(DbProviders.SqlServer.DdlAutoCommits);
+            Assert.True(DbProviders.Generic.DdlAutoCommits);
+        }
+
+        [Theory]
+        [InlineData("CREATE DATABASE dbh_x", true)]
+        [InlineData("drop database if exists dbh_x", true)]
+        [InlineData("CREATE TABLESPACE ts LOCATION '/x'", true)]
+        [InlineData("ALTER SYSTEM SET work_mem = '8MB'", true)]
+        [InlineData("ALTER DATABASE d SET TABLESPACE ts", true)]
+        [InlineData("ALTER DATABASE d SET work_mem = '8MB'", false)]
+        [InlineData("VACUUM ANALYZE t", true)]
+        [InlineData("CREATE INDEX CONCURRENTLY ix ON t (a)", true)]
+        [InlineData("CREATE UNIQUE INDEX CONCURRENTLY ix ON t (a)", true)]
+        [InlineData("DROP INDEX CONCURRENTLY ix", true)]
+        [InlineData("REINDEX TABLE CONCURRENTLY t", true)]
+        [InlineData("REINDEX DATABASE d", true)]
+        [InlineData("REINDEX TABLE t", false)]
+        [InlineData("CLUSTER", true)]
+        [InlineData("CLUSTER t USING ix", false)]
+        [InlineData("DISCARD ALL", true)]
+        [InlineData("/* 주석 */ -- 줄\nCREATE DATABASE dbh_x", true)]
+        [InlineData("CREATE INDEX ix ON t (a)", false)]
+        [InlineData("CREATE TABLE t (a int)", false)]
+        [InlineData("ALTER TABLE t ADD b int", false)]
+        [InlineData("DROP TABLE t", false)]
+        public void Postgres_RequiresNoTransaction(string sql, bool expected)
+        {
+            Assert.Equal(expected, DbProviders.Postgres.RequiresNoTransaction(new SqlStatement { Text = sql }));
+        }
+
+        [Theory]
+        [InlineData("CREATE DATABASE dbh_x", true)]
+        [InlineData("ALTER DATABASE dbh_x SET RECOVERY SIMPLE", true)]
+        [InlineData("DROP DATABASE dbh_x", true)]
+        [InlineData("BACKUP DATABASE d TO DISK = 'x.bak'", true)]
+        [InlineData("RESTORE DATABASE d FROM DISK = 'x.bak'", true)]
+        [InlineData("CREATE FULLTEXT CATALOG ftc", true)]
+        [InlineData("ALTER FULLTEXT INDEX ON t ENABLE", true)]
+        [InlineData("RECONFIGURE", true)]
+        [InlineData("KILL 53", true)]
+        [InlineData("CREATE TABLE t (a int)", false)]
+        [InlineData("ALTER TABLE t ADD b int", false)]
+        [InlineData("CREATE INDEX ix ON t (a)", false)]
+        [InlineData("DROP TABLE t", false)]
+        public void SqlServer_RequiresNoTransaction(string sql, bool expected)
+        {
+            Assert.Equal(expected, DbProviders.SqlServer.RequiresNoTransaction(new SqlStatement { Text = sql }));
+        }
+
+        [Fact]
+        public void OracleAndGeneric_NeverRequireNoTransaction()
+        {
+            Assert.False(DbProviders.Oracle.RequiresNoTransaction(new SqlStatement { Text = "CREATE DATABASE x" }));
+            Assert.False(DbProviders.Generic.RequiresNoTransaction(new SqlStatement { Text = "VACUUM" }));
+        }
+
+        [Fact]
         public void SupportsMultipleOpenReaders_PerProvider()
         {
             Assert.True(DbProviders.Oracle.SupportsMultipleOpenReaders);
@@ -259,6 +323,101 @@ namespace MyPlugin.Tests
             // SqlException은 직접 만들 수 없어 공급자 판정은 다른 예외 형식으로만 확인한다
             Assert.False(DbProviders.SqlServer.IsCancellation(new InvalidOperationException("x")));
             Assert.False(DbProviders.SqlServer.IsBroken(new InvalidOperationException("x")));
+        }
+
+        // ---------- SQL Server 암호화·인증서 검증 ----------
+
+        private static Microsoft.Data.SqlClient.SqlConnectionStringBuilder SqlBuilt(string encrypt, bool? trust, string hostName = null)
+        {
+            var p = Profile("mssql");
+            p.SqlEncrypt = encrypt;
+            p.SqlTrustServerCertificate = trust;
+            p.SqlHostNameInCertificate = hostName;
+            return new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(OracleConnectionStore.BuildConnectionString(p, "pw", 5));
+        }
+
+        [Theory]
+        [InlineData(null, null, "Mandatory", false)]        // 새 접속 기본값
+        [InlineData("mandatory", false, "Mandatory", false)]
+        [InlineData("mandatory", true, "Mandatory", true)]  // 자체 서명 예외(명시 선택)
+        [InlineData("optional", true, "Optional", true)]    // 이전 버전 동작
+        [InlineData("optional", false, "Optional", false)]
+        [InlineData("strict", false, "Strict", false)]
+        [InlineData("strict", true, "Strict", false)]       // 엄격은 신뢰를 무시하고 항상 검증
+        [InlineData("STRICT ", null, "Strict", false)]
+        [InlineData("bogus", true, "Mandatory", true)]      // 모르는 값은 필수
+        public void SqlServer_ConnectionString_PerSecuritySetting(string encrypt, bool? trust, string expectedEncrypt, bool expectedTrust)
+        {
+            var b = SqlBuilt(encrypt, trust);
+            Assert.Equal(Microsoft.Data.SqlClient.SqlConnectionEncryptOption.Parse(expectedEncrypt), b.Encrypt);
+            Assert.Equal(expectedTrust, b.TrustServerCertificate);
+            Assert.True(string.IsNullOrEmpty(b.HostNameInCertificate));
+        }
+
+        [Fact]
+        public void SqlServer_HostNameInCertificate_TrimmedAndValidated()
+        {
+            Assert.Equal("sql.corp.local", SqlBuilt("mandatory", false, "  sql.corp.local ").HostNameInCertificate);
+            Assert.True(string.IsNullOrEmpty(SqlBuilt("mandatory", false, "   ").HostNameInCertificate));
+
+            var p = Profile("mssql");
+            p.SqlHostNameInCertificate = "a b;c";
+            Assert.Contains(DbProviders.SqlServer.Validate(p, "'운영'"), e => e.Contains("[인증서 이름]"));
+            p.SqlHostNameInCertificate = "sql.corp.local";
+            Assert.Empty(DbProviders.SqlServer.Validate(p, "'운영'"));
+        }
+
+        [Fact]
+        public void SqlServer_CertificateProblem_ClassifiesMessages()
+        {
+            Assert.Equal(SqlServerSecurity.UntrustedCertificate, SqlServerSecurity.CertificateProblem(new InvalidOperationException("login failed",
+                new System.Security.Authentication.AuthenticationException("The remote certificate was rejected by the provided RemoteCertificateValidationCallback."))));
+            Assert.Equal(SqlServerSecurity.UntrustedCertificate, SqlServerSecurity.CertificateProblem(new Exception(
+                "A connection was successfully established with the server, but then an error occurred during the login process. (provider: SSL Provider, error: 0 - The certificate chain was issued by an authority that is not trusted.)")));
+            Assert.Equal(SqlServerSecurity.CertificateNameMismatch, SqlServerSecurity.CertificateProblem(new Exception(
+                "(provider: SSL Provider, error: 0 - The target principal name is incorrect.)")));
+            var hresult = new Exception("x") { HResult = unchecked((int)0x80090325) };
+            Assert.Equal(SqlServerSecurity.UntrustedCertificate, SqlServerSecurity.CertificateProblem(hresult));
+            Assert.Null(SqlServerSecurity.CertificateProblem(new Exception("Login failed for user 'sa'.")));
+            Assert.Null(SqlServerSecurity.CertificateProblem(new Exception("Login failed. The login is from an untrusted domain.")));
+            Assert.Null(SqlServerSecurity.CertificateProblem(null));
+        }
+
+        [Fact]
+        public void SqlServer_Hint_OnlyForWeakSqlServerSettings()
+        {
+            var p = Profile("mssql");
+            Assert.Null(SqlServerSecurity.Hint(p));
+            p.SqlTrustServerCertificate = true;
+            Assert.Contains("검증하지 않습니다", SqlServerSecurity.Hint(p));
+            p.SqlEncrypt = "optional";
+            Assert.Contains("필수가 아닙니다", SqlServerSecurity.Hint(p));
+            p.SqlEncrypt = "strict";
+            Assert.Null(SqlServerSecurity.Hint(p));
+            var oracle = Profile();
+            oracle.SqlEncrypt = "optional";
+            Assert.Null(SqlServerSecurity.Hint(oracle));
+        }
+
+        [Theory]
+        [InlineData("Data Source=h;Password=Secret!;User ID=sa", "Data Source=h;Password=***;User ID=sa")]
+        [InlineData("server=h;pwd='a;b''c';uid=u", "server=h;pwd=***;uid=u")]
+        [InlineData("PASSWORD = \"x\"\"y\"", "PASSWORD=***")]
+        [InlineData("no secret here", "no secret here")]
+        public void Redact_HidesPasswordPairs(string text, string expected)
+        {
+            Assert.Equal(expected, SqlServerSecurity.Redact(text));
+        }
+
+        [Fact]
+        public void Redact_HidesLiteralPassword_AndRealBuilderOutput()
+        {
+            var cs = OracleConnectionStore.BuildConnectionString(Profile("mssql"), "Pw;x=1'y", 5);
+            Assert.Contains("Pw;x=1'y", new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(cs).Password);
+            var redacted = SqlServerSecurity.Redact("failed: " + cs, "Pw;x=1'y");
+            Assert.DoesNotContain("Pw;x", redacted);
+            Assert.Contains("Password=***", redacted);
+            Assert.Equal("login for *** failed", SqlServerSecurity.Redact("login for s3cret failed", "s3cret"));
         }
 
         [Fact]

@@ -6,6 +6,7 @@ source:
   - src/MyPlugin/Ui/ConnectionManagerDialog.cs
   - src/MyPlugin/Ui/ConnectionManagerLogic.cs
   - src/MyPlugin/Ui/ConnectionRepository.cs
+  - src/MyPlugin/Db/Providers/SqlServerSecurity.cs
 used_by: [shell-menu, connection-settings-page]
 summary: >-
   접속을 추가·복제·삭제·편집하고 접속 테스트를 하는 모달 창.
@@ -17,8 +18,15 @@ features:
     description: >-
       이름, DBMS(Oracle·PostgreSQL·SQL Server — 서비스명 칸 이름과 기본 포트가 바뀜), 호스트, 포트, 서비스명(또는 데이터베이스),
       사용자, 비밀번호(DPAPI로 암호화해 저장, 저장 안 하고 연결 때마다 입력도 가능), 읽기 전용(SELECT·WITH만 실행), 색 표시(초록·노랑·빨강).
+  - name: SQL Server 암호화·인증서
+    description: >-
+      DBMS가 SQL Server일 때만 보인다. 암호화(필수·엄격(TDS 8.0)·선택), 서버 인증서 신뢰(검증 안 함 — 자체 서명 예외, 엄격이면 꺼짐),
+      인증서 이름(HostNameInCertificate, 신뢰를 켜면 꺼짐)과 안내 한 줄. 새 접속은 필수 + 검증이 기본이고,
+      이 설정이 없던 이전 버전의 SQL Server 접속은 Optional + 신뢰로 읽어 강화를 권하는 안내를 경고색으로 보인다.
   - name: 접속 테스트
-    description: 입력값으로 연결해 서버 버전을 보이고 결과를 항목별로 남긴다.
+    description: >-
+      입력값으로 연결해 서버 버전을 보이고 결과를 항목별로 남긴다. SQL Server 인증서 검증 실패는
+      "서버 인증서를 신뢰할 수 없습니다 — 자체 서명이면 [서버 인증서 신뢰]를 켜세요"처럼 설정 안내로 보이고, 오류 문장의 비밀번호는 가린다.
   - name: 저장·닫기
     description: >-
       [저장]해야 반영된다. 저장하지 않은 변경이 있으면 닫을 때 [계속 편집]·[버리고 닫기]를 묻는다.
@@ -29,6 +37,8 @@ keyboard:
 theme:
   - part: 창·목록·입력 칸
     keys: [WindowBackground, PanelBackground, PrimaryText, SecondaryText, BorderBrush]
+  - part: SQL Server 강화 권고 안내
+    keys: [Theme.Warning]
   - part: 색 표시
     keys: [Theme.ConnectionColor (초록·노랑·빨강 고정)]
 limits:
@@ -37,4 +47,6 @@ limits:
 tests:
   - tests/MyPlugin.Tests/ConnectionManagerLogicTests.cs
   - tests/MyPlugin.Tests/OracleConnectionStoreTests.cs
+  - tests/MyPlugin.Tests/DbProvidersTests.cs
+  - tests/MyPlugin.Tests/SqlServerEncryptionIT.cs
 related: [connection-settings-page, shell-menu]

@@ -95,7 +95,7 @@ namespace MyPlugin.Tests
             var constraints = TableInfo.Constraints("A", "B").Sql;
             Assert.Contains("CONSTRAINT_TYPE IN ('P','U','R','C')", constraints);
             Assert.Contains("NOT (c.CONSTRAINT_TYPE = 'C' AND c.GENERATED = 'GENERATED NAME')", constraints);
-            Assert.DoesNotContain("SEARCH_CONDITION", constraints); // LONG 열은 읽지 않는다
+            Assert.Contains("c.SEARCH_CONDITION AS CHECK_CONDITION", constraints); // 편집할 CHECK 정의를 읽는다
         }
 
         [Theory]

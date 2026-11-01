@@ -300,6 +300,93 @@ namespace MyPlugin.UiTests
             Assert.Empty(ui.TakeErrors());
         }
 
+        /// <summary>
+        /// 임시 저장 보호(#35): 이전 버전 평문 파일은 넘겨받아 잠가 다시 저장하고 평문을 지움, 풀지 못한 파일은 보관 폴더로 옮기고 메시지 칸에 알림,
+        /// 설정 [임시 저장 지우기]는 보관 파일까지 지움, "임시 저장 안 함"으로 고른 접속의 탭은 저장되지 않음.
+        /// </summary>
+        [UiFact]
+        public async Task R5b_Drafts_ProtectedMigrated_BrokenKept_Excluded_Cleared()
+        {
+            var ui = UiThread.Instance;
+            var plugin = PluginUnderTest.Load(ui);
+            var page = plugin.Manager.SettingsPages.Single(p => p.Title == "SQL 편집기");
+            var folder = Path.Combine(plugin.Manager.DataDirectory, "sql-drafts");
+            var seed = new SeedConnection { Name = "제외 시험", Port = 15999, Service = "XE", User = "u" };
+            await Idle(ui);
+            ClearDrafts(plugin);
+            Directory.CreateDirectory(folder);
+            const string legacyText = "SELECT 'legacy-plain' FROM dual";
+            File.WriteAllText(Path.Combine(folder, "oldwindow.json"), "{\"version\":1,\"savedAtUtc\":\"2026-09-01T00:00:00Z\",\"active\":0,\"tabs\":[{\"text\":\"" + legacyText + "\",\"caret\":3}]}", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(folder, "foreign.dat"), "다른 사용자가 잠근 것처럼 풀 수 없는 내용");
+
+            var (main, editor) = await OpenSqlTab(ui, plugin, true, seed);
+            Window host = null;
+            try
+            {
+                // 평문 이전: 되살리고, 평문 파일은 지우고, 잠근 파일에는 SQL이 평문으로 없다
+                Assert.Equal(legacyText, ui.Run(() => EditorText(editor)));
+                Assert.False(File.Exists(Path.Combine(folder, "oldwindow.json")));
+                var saved = Directory.GetFiles(folder, "*.dat").Single();
+                Assert.DoesNotContain("legacy-plain", Encoding.UTF8.GetString(File.ReadAllBytes(saved)));
+                // 풀지 못한 파일: 보관 폴더로 옮기고 메시지 칸(먼저 보임)에 알림
+                var kept = Directory.GetFiles(Path.Combine(folder, "broken")).Single();
+                Assert.StartsWith("foreign-", Path.GetFileName(kept));
+                var notice = ui.Run(() => Ui.Texts(main).FirstOrDefault(t => t.Contains("되살리지 못했습니다")));
+                Assert.NotNull(notice);
+                Assert.Contains(kept, notice);
+
+                host = ui.Run(() =>
+                {
+                    var window = new Window { Title = "설정", Content = page.CreateView(), Width = 820, Height = 1300, ShowActivated = false, ShowInTaskbar = false };
+                    window.SetResourceReference(Window.BackgroundProperty, "WindowBackground");
+                    window.Show();
+                    return window;
+                });
+                await Idle(ui);
+                // [임시 저장 지우기]: 위험 확인 → 지운 수 안내, 보관 폴더까지 지움
+                ui.Post(() => Ui.Click(Ui.ById<Button>(host, "sqleditor-draft-clear")));
+                var confirm = await ui.WaitFor(() => Ui.Windows().FirstOrDefault(w => w.Title == "SQL 편집기" && w.IsVisible), Wait, "지우기 확인");
+                ui.Run(() =>
+                {
+                    Ui.Toggle(Ui.Find<CheckBox>(confirm), true);
+                    Ui.Click(Ui.Button(confirm, "지우기"));
+                });
+                var done = await ui.WaitFor(() => Ui.Windows().FirstOrDefault(w => w.Title == "SQL 편집기" && w.IsVisible && Ui.Texts(w).Any(t => t.StartsWith("임시 저장 파일 ", StringComparison.Ordinal))), Wait, "지운 수 안내");
+                ui.Run(() => Ui.Click(Ui.Button(done, "확인")));
+                Assert.False(Directory.Exists(Path.Combine(folder, "broken")));
+                Assert.Empty(Directory.GetFiles(folder));
+
+                // 접속 제외: 체크하고 [저장] → 그 접속 대상 탭은 창을 닫아도 저장되지 않는다
+                ui.Run(() =>
+                {
+                    Ui.Toggle(Ui.ById<CheckBox>(host, "sqleditor-draft-exclude-" + seed.Id), true);
+                    page.Save();
+                    ChooseTarget(main, seed.Name);
+                    SetEditorText(editor, "SELECT 'excluded-secret' FROM dual");
+                });
+                await Idle(ui);
+                Assert.Contains(seed.Id, plugin.Manager.GetSetting("sqlEditor.settings"));
+                ui.Run(() => main.Close());
+                await Idle(ui);
+                Assert.Empty(Directory.GetFiles(folder, "*.dat"));
+                Report(plugin, "R 임시 저장 보호", "평문 파일 잠가 다시 저장·평문 삭제, 풀지 못한 파일 보관·알림, [임시 저장 지우기], 제외 접속 탭 저장 안 함", "✓");
+            }
+            finally
+            {
+                ui.Run(() =>
+                {
+                    if (host != null)
+                        host.Close();
+                    if (main.IsVisible)
+                        main.Close();
+                    plugin.Manager.SetSetting("sqlEditor.settings", null);
+                });
+                await Idle(ui);
+                ClearDrafts(plugin);
+            }
+            Assert.Empty(ui.TakeErrors());
+        }
+
         // ---------- 편집 메뉴 대상·위치 표시 ----------
 
         [UiFact]
@@ -341,6 +428,7 @@ namespace MyPlugin.UiTests
         // ---------- 실제 Oracle: Ctrl+Enter·선택 영역·F5·F4 ----------
 
         [UiFact(requiresOracle: true)]
+        [Trait("Requires", "Oracle")]
         public async Task R7_Run_CaretSelectionScriptDescribe_Oracle()
         {
             var ui = UiThread.Instance;

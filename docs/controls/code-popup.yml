@@ -1,0 +1,68 @@
+id: code-popup
+name: CodePopup
+title: 코드 보기 팝업
+kind: control
+source:
+  - src/MyPlugin/Ui/CodePopup.cs
+base: System.Windows.Controls.ContentControl
+used_by: [table-info-window]
+summary: >-
+  드롭다운 목록을 대신하는 공통 선택 컨트롤. 칸에는 값과 [▾]만 보이고, 누르면 검색 상자와 코드·설명 목록 팝업이 열린다.
+  단일 선택(바로 반영)과 다중 선택(체크 순서 = 값 순서, ASC/DESC)을 지원한다. 표(DataGrid) 칸 안에서 쓰도록 만들었다.
+features:
+  - name: 칸
+    description: >-
+      값(단일 선택은 코드의 설명, 예: P → "기본 키 (PK)")과 [▾]. 칸 어디를 눌러도 열린다.
+      AllowFreeText면 칸이 입력 상자라 직접 쓸 수 있고 [▾]·F4·Alt+↓로 목록을 연다.
+  - name: 검색
+    description: 열리면 검색 상자에 포커스. 코드·설명에 글자가 들어 있는 항목만 보인다(대소문자 무시).
+  - name: 단일 선택
+    description: >-
+      행을 누르거나 ↑↓ + Enter로 고르면 값이 바뀌고 닫힌다. 지금 값에는 ✓.
+      AllowFreeText면 목록에 없는 검색어를 "✎ 입력한 그대로 쓰기" 행으로 고를 수 있다(자료형 VARCHAR2(30 CHAR) 등).
+  - name: 다중 선택
+    description: >-
+      행 어디를 눌러도(또는 Space) 체크가 바뀐다 — 체크 표시는 그림일 뿐이라 체크박스와 행이 토글을 다투지 않는다.
+      체크한 순서가 값의 순서이고(☑ 1, ☑ 2…), 고른 행의 [ASC/DESC]·[↑][↓]로 바꾼다. 아래에 만들어질 값을 미리 보인다.
+      [확인]·Enter·바깥 클릭으로 반영, [취소]·Esc는 버림, [모두 해제].
+  - name: 값 문법 분리
+    description: >-
+      다중 선택 값의 해석(Parse)·조립(Format)은 호출자가 준다(테이블 편집은 IndexColumnsLogic.Parse·TableSchemaLogic.IndexColumns — 따옴표·DESC).
+      고른 것이 열 때와 같으면 원래 글자를 그대로 둔다(따옴표 차이로 수정 표시되지 않게). 지금 값을 풀 수 없으면 팝업 위에 경고를 보이고 새로 고르게 한다.
+  - name: 표와 분리된 팝업
+    description: >-
+      팝업을 컨트롤의 논리 트리에 붙이지 않아 팝업 안의 클릭·키(Space·Enter·Delete 등)가 표로 새어 행 선택·편집·삭제를 일으키지 않는다.
+      닫히면 포커스를 칸(입력 상자 또는 표 칸)으로 돌려준다.
+keyboard:
+  - keys: F4 / Alt+↓ (표에서는 F2도)
+    action: 팝업 열기.
+  - keys: ↑ ↓ / PageUp PageDown
+    action: 강조 행 이동.
+  - keys: Enter
+    action: 단일 선택은 강조 행 고르기, 다중 선택은 [확인].
+  - keys: Space
+    action: 다중 선택에서 강조 행 체크/해제.
+  - keys: Esc
+    action: 버리고 닫기.
+  - keys: Tab
+    action: 닫기(다중 선택은 반영).
+theme:
+  - part: 팝업
+    keys: [PanelBackground, AccentBrush, PrimaryText, AppFontFamily]
+  - part: 검색 상자·목록
+    keys: [SurfaceBackground, BorderBrush, SecondaryText]
+  - part: 강조 행·체크 표시
+    keys: [SelectionBrush, AccentBrush]
+  - part: [▾]
+    keys: [ControlBackground, SecondaryText]
+  - part: 해석 불가 경고
+    keys: [Theme.Warning]
+states:
+  - 값이 비어 있으면 칸에 흐린 "선택…"/"고르기…".
+  - 목록이 비었거나 검색과 맞는 항목이 없으면 안내 글.
+limits:
+  - 값 검증은 하지 않는다(테이블 편집은 [저장] 때 검사).
+  - 목록은 열 때마다 ItemsSource를 다시 부른다(가상화 없음 — 수백 개 규모용).
+tests:
+  - tests/MyPlugin.UiTests/SchemaGridHeadlessTests.cs
+related: [table-info-window, theme]

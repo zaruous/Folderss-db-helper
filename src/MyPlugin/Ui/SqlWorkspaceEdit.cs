@@ -25,12 +25,31 @@ namespace MyPlugin
         private TextBlock _editInfo;
         private TextBox _editWhere;
         private Button _requery;
+        private Button _excelExport;
+        private Button _excelTemplate;
+        private Button _excelImport;
         // WHERE 칸을 마지막으로 채운 결과: 같은 결과를 다시 그릴 때 입력 중인 조건을 덮어쓰지 않게
         private ResultSetState _editWhereResult;
+        // 저장한 편집이 커밋 대기인 결과가 있어 트랜잭션 끝(TransactionFinished)을 듣는 세션
+        private readonly HashSet<DbSession> _savedSessions = new HashSet<DbSession>();
 
         private FrameworkElement BuildEditBar()
         {
             var bar = new DockPanel { Margin = new Thickness(4, 2, 4, 2) };
+            var excelButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 0, 0) };
+            DockPanel.SetDock(excelButtons, Dock.Right);
+            bar.Children.Add(excelButtons);
+            _excelExport = EditBarButton("엑셀 내보내기", "조회된 행을 엑셀(.xlsx) 파일로 내보냅니다.");
+            _excelExport.Click += (s, e) => Safe(() => TransferExcel("엑셀 내보내기"));
+            excelButtons.Children.Add(_excelExport);
+
+            _excelTemplate = EditBarButton("엑셀 템플릿", "컬럼 헤더만 있는 빈 엑셀(.xlsx) 서식 파일을 만듭니다.");
+            _excelTemplate.Click += (s, e) => Safe(() => TransferExcel("엑셀 템플릿"));
+            excelButtons.Children.Add(_excelTemplate);
+
+            _excelImport = EditBarButton("엑셀 임포트", "엑셀(.xlsx) 파일의 데이터를 새 행으로 추가합니다. [저장]하면 INSERT");
+            _excelImport.Click += (s, e) => Safe(() => TransferExcel("엑셀 임포트"));
+            excelButtons.Children.Add(_excelImport);
             // 순서: 행을 바꾸는 버튼(추가 → 복제 → 편집 → 삭제) │ DB에 보내는 [저장] │ 다시 조회
             _addRow = EditBarButton("행 추가", "빈 새 행을 편집 창에서 채워 추가합니다. [저장]하면 INSERT");
             _duplicateRow = EditBarButton("복제", "고른 행의 값으로 새 행을 만듭니다(편집 창에서 기본 키를 바꾸세요). [저장]하면 INSERT");
@@ -85,7 +104,7 @@ namespace MyPlugin
                 }
             };
             bar.Children.Add(_editWhere);
-            _requery = EditBarButton("다시 조회", "WHERE 조건으로 이 테이블을 다시 조회합니다(앞 " + WorkspaceLogic.QuickQueryRows.ToString(System.Globalization.CultureInfo.InvariantCulture) + "행)");
+            _requery = EditBarButton("다시 조회", "WHERE 조건으로 이 테이블을 다시 조회합니다(앞 " + QueryOptions.QuickRows.ToString(System.Globalization.CultureInfo.InvariantCulture) + "행)");
             _requery.Click += (s, e) => Safe(RequeryWithWhere);
             bar.Children.Add(_requery);
             _editInfo = Theme.Text("", Theme.SecondaryText);
@@ -101,6 +120,96 @@ namespace MyPlugin
             AutomationProperties.SetName(_editBar, "결과 편집");
             DockPanel.SetDock(_editBar, Dock.Top);
             return _editBar;
+        }
+
+        private void TransferExcel(string action)
+        {
+            var tab = _active;
+            var result = tab != null ? tab.ActiveResult : null;
+            if (result == null || tab.Running || result.Columns == null)
+                return;
+
+            if (action == "엑셀 임포트")
+            {
+                var profile = Profile(result.ResultDbId);
+                if (result.Edit == null || !result.Edit.CanEdit || profile == null || profile.ReadOnly)
+                    return;
+
+                var open = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "엑셀 데이터 가져오기",
+                    Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx"
+                };
+                if (open.ShowDialog() != true)
+                    return;
+
+                List<string[]> values;
+                try
+                {
+                    values = ResultExcel.Read(open.FileName, result.Columns);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 임포트 실패: " + ex.Message));
+                    throw;
+                }
+
+                if (values.Count == 0)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("가져올 데이터 행이 없습니다."));
+                    return;
+                }
+
+                var number = result.Rows.Count == 0 ? 1 : result.Rows.Max(r => r.Number) + 1;
+                ResultGridRow firstAdded = null;
+                foreach (var rowValues in values)
+                {
+                    var row = ResultGridRow.NewInserted(number++, rowValues);
+                    if (firstAdded == null)
+                        firstAdded = row;
+                    result.Rows.Add(row);
+                }
+
+                result.Grid.FitRowNumbers(result.Rows.Count);
+                if (firstAdded != null)
+                {
+                    result.Grid.View.SelectedItem = firstAdded;
+                    result.Grid.ScrollIntoView(firstAdded);
+                }
+                RenderEditBar();
+                SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "엑셀에서 {0}개 행을 추가했습니다 — [저장]하면 INSERT합니다(커밋 전).", values.Count)));
+            }
+            else
+            {
+                var isTemplate = action == "엑셀 템플릿";
+                var save = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = isTemplate ? "엑셀 서식 템플릿 저장" : "조회 결과 엑셀 저장",
+                    Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx",
+                    DefaultExt = ".xlsx",
+                    FileName = (result.Edit != null ? result.Edit.Name : "Result") + (isTemplate ? "_Template" : "") + ".xlsx"
+                };
+                if (save.ShowDialog() != true)
+                    return;
+
+                try
+                {
+                    var rowsToExport = isTemplate
+                        ? Enumerable.Empty<string[]>()
+                        : result.Rows.Where(r => r.State != RowEditState.Deleted).Select(r => r.Values);
+                    ResultExcel.Write(save.FileName, result.Columns, rowsToExport);
+                    SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        "엑셀 파일로 저장했습니다: {0}", System.IO.Path.GetFileName(save.FileName))));
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 저장 실패: " + ex.Message));
+                    throw;
+                }
+            }
         }
 
         private static Button EditBarButton(string text, string tip)
@@ -141,7 +250,9 @@ namespace MyPlugin
             _requery.IsEnabled = !tab.Running && profile != null;
             var session = _host.GetSession(result.ResultDbId);
             string blocked = null;
-            if (!edit.CanEdit)
+            if (result.StaleReason != null)
+                blocked = result.StaleReason;
+            else if (!edit.CanEdit)
                 blocked = edit.DisabledReason;
             else if (profile == null)
                 blocked = "접속이 삭제되어 편집할 수 없습니다.";
@@ -155,7 +266,15 @@ namespace MyPlugin
             _editRow.IsEnabled = usable;
             _deleteRows.IsEnabled = usable;
             _saveEdits.IsEnabled = usable && result.HasPendingEdits;
+            if (_excelExport != null) _excelExport.IsEnabled = !tab.Running && result.Columns != null;
+            if (_excelTemplate != null) _excelTemplate.IsEnabled = !tab.Running && result.Columns != null;
+            if (_excelImport != null) _excelImport.IsEnabled = usable;
             var target = WorkspaceLogic.QualifiedName(edit.Owner, edit.Name);
+            // DB와 다를 수 있는 결과는 경고색으로
+            if (result.StaleReason != null)
+                _editInfo.Foreground = Theme.Warning;
+            else
+                _editInfo.SetResourceReference(TextBlock.ForegroundProperty, Theme.SecondaryText);
             if (blocked != null)
             {
                 _editInfo.Text = target + " — " + blocked;
@@ -165,9 +284,60 @@ namespace MyPlugin
             // 기본 키가 아닌 키(고유 키·ROWID)로 행을 찾으면 대상 뒤에 밝힌다
             if (edit.KeyNote != null)
                 target += " (" + edit.KeyNote + "로 행을 찾음)";
+            var saved = result.SavedSession != null ? " · 저장한 변경은 커밋 대기([롤백]하면 다시 조회 필요)" : "";
             _editInfo.Text = pending.Length == 0
-                ? target + " — 바꾼 행은 [저장]으로 DB에 보냅니다(커밋 전)"
-                : target + " — " + pending + " (저장하지 않음)";
+                ? target + (saved.Length > 0 ? " — 저장함" + saved : " — 바꾼 행은 [저장]으로 DB에 보냅니다(커밋 전)")
+                : target + " — " + pending + " (저장하지 않음)" + saved;
+        }
+
+        /// <summary>저장한 편집이 남은 세션의 트랜잭션 끝을 듣는다(세션마다 한 번).</summary>
+        private void WatchSavedSession(DbSession session)
+        {
+            if (session == null || !_savedSessions.Add(session))
+                return;
+            session.TransactionFinished += Session_TransactionFinished;
+        }
+
+        // 세션 작업 스레드에서 온다 — UI 스레드로 넘긴다
+        private void Session_TransactionFinished(DbSession session, TransactionOutcome outcome)
+        {
+            Dispatcher.BeginInvoke(new Action(() => Safe(() => OnSavedTransactionFinished(session, outcome))));
+        }
+
+        /// <summary>
+        /// 저장한 편집이 커밋 대기이던 결과(같은 세션을 쓰는 모든 탭): 커밋이면 대기 표시만 지우고, 롤백·모름이면 DB와 다를 수 있다고 표시한다
+        /// (편집 막대에 이유, 편집 버튼은 끄고 [다시 조회]만 남김). 스냅숏으로 되돌리지 않는다 — 저장 뒤 더 고친 행·여러 번 저장·부분 롤백을 맞출 수 없어서.
+        /// </summary>
+        private void OnSavedTransactionFinished(DbSession session, TransactionOutcome outcome)
+        {
+            var reason = RowEditLogic.StaleReason(outcome);
+            var touched = new List<KeyValuePair<SqlTabState, ResultSetState>>();
+            foreach (var tab in _tabs)
+            {
+                foreach (var result in tab.Results)
+                {
+                    if (!ReferenceEquals(result.SavedSession, session))
+                        continue;
+                    result.SavedSession = null;
+                    if (reason != null)
+                    {
+                        result.StaleReason = reason;
+                        touched.Add(new KeyValuePair<SqlTabState, ResultSetState>(tab, result));
+                    }
+                }
+            }
+            if (touched.Count > 0)
+            {
+                var first = touched[0].Value;
+                AddMessage(first.ResultDbId, reason + " (" + string.Join(", ", touched.Select(p => p.Key.Title + (p.Value.Edit != null ? " " + WorkspaceLogic.QualifiedName(p.Value.Edit.Owner, p.Value.Edit.Name) : ""))) + ")",
+                    outcome == TransactionOutcome.RolledBack ? MessageKind.Info : MessageKind.Error);
+            }
+            if (!_tabs.Any(t => t.Results.Any(r => ReferenceEquals(r.SavedSession, session))))
+            {
+                session.TransactionFinished -= Session_TransactionFinished;
+                _savedSessions.Remove(session);
+            }
+            RenderEditBar();
         }
 
         /// <summary>
@@ -345,8 +515,10 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// [저장]: 고친 행마다 UPDATE(바뀐 열만), 삭제 표시한 행마다 DELETE를 키(기본 키·고유 키·ROWID)로 실행한다. 확인 창에 문장을 보인 뒤 차례로 실행하고,
-        /// 오류나 영향 행 수가 1이 아니면 그 행에서 멈춘다(이미 실행한 문장은 커밋 대기 — [롤백]으로 되돌릴 수 있다).
+        /// [저장]: 고친 행마다 UPDATE(바뀐 열만), 삭제 표시한 행마다 DELETE를 키(기본 키·고유 키·ROWID)와 원래 값 비교(동시성)로 실행한다.
+        /// 확인 창에 문장을 보인 뒤 한 묶음으로 저장점 안에서 차례로 실행하고(<see cref="DbSession.ExecuteDmlBatchAsync"/>),
+        /// 오류·취소·영향 행 수가 1이 아니면(0행 = 충돌) 그 행에서 멈춰 이번 저장 전체를 저장점까지 되돌린다(행 표시는 그대로, 전의 커밋 대기는 유지).
+        /// 성공하면 결과를 "저장함(커밋 대기)"으로 두고 트랜잭션 끝을 듣는다 — 롤백되면 결과를 DB와 다를 수 있다고 표시한다.
         /// </summary>
         private async Task SaveEditsAsync()
         {
@@ -408,67 +580,58 @@ namespace MyPlugin
                 return;
 
             BeginRun(tab, session, dbId, false, 0);
-            var watch = tab.RunWatch;
             var token = tab.RunCancel.Token;
-            var updated = 0;
-            var deleted = 0;
-            var inserted = 0;
-            var stopped = false;
             try
             {
-                foreach (var change in changes)
+                DmlBatchResult batch;
+                try
                 {
-                    if (token.IsCancellationRequested)
-                    {
-                        AddMessage(dbId, "결과 편집 저장을 취소했습니다. 이미 보낸 변경은 커밋 대기입니다.", MessageKind.Error);
-                        stopped = true;
-                        break;
-                    }
-                    var row = change.Key;
-                    var query = change.Value;
-                    var started = watch.Elapsed;
-                    int affected;
-                    try
-                    {
-                        affected = await session.ExecuteDmlAsync(query, token);
-                    }
-                    catch (Exception ex) when (!(ex is SessionBusyException))
-                    {
-                        AddMessage(dbId, (DbSession.IsCancellation(ex) ? "취소됨: " : WorkspaceLogic.ErrorMessage(DbSession.DescribeError(ex), null)) + Environment.NewLine + RowEditLogic.Describe(query), MessageKind.Error);
-                        stopped = true;
-                        break;
-                    }
-                    var elapsed = watch.Elapsed - started;
-                    AddHistory(dbId, RowEditLogic.Describe(query), elapsed);
-                    if (affected != 1)
-                    {
-                        AddMessage(dbId, RowEditLogic.AffectedMismatch(affected) + Environment.NewLine + RowEditLogic.Describe(query), MessageKind.Error);
-                        stopped = true;
-                        break;
-                    }
-                    AddMessage(dbId, WorkspaceLogic.ExecutedMessage("1행 변경됨 (커밋 전)", elapsed, RowEditLogic.Describe(query)), MessageKind.Success);
+                    // 잠금을 한 번 쥐고 저장점 안에서 실행 — 다른 탭의 작업이 끼어들지 않고, 멈추면 이번 저장만 되돌린다
+                    batch = await session.ExecuteDmlBatchAsync(changes.Select(c => c.Value).ToList(), 1, token);
+                }
+                catch (Exception ex) when (!(ex is SessionBusyException))
+                {
+                    // 저장점을 만들지 못함 — 아무것도 보내지 않았다
+                    AddMessage(dbId, "결과 편집을 저장하지 않았습니다(저장점을 만들지 못함): " + DbSession.DescribeError(ex), MessageKind.Error);
+                    SetStatus(tab, session.IsBroken ? WorkspaceLogic.BrokenStatus(profile.Name) : WorkspaceLogic.TextStatus("오류 — 메시지 탭을 보세요."));
+                    ShowPane(tab, WorkspacePane.Messages);
+                    return;
+                }
+                for (var i = 0; i < batch.Affected.Count; i++)
+                {
+                    var text = RowEditLogic.Describe(changes[i].Value);
+                    AddHistory(dbId, text, batch.Elapsed[i]);
+                    if (batch.Succeeded)
+                        AddMessage(dbId, WorkspaceLogic.ExecutedMessage("1행 변경됨 (커밋 전)", batch.Elapsed[i], text), MessageKind.Success);
+                }
+                if (!batch.Succeeded)
+                {
+                    ReportStoppedSave(tab, profile, session, result, changes, batch);
+                    return;
+                }
+                int updated = 0, deleted = 0, inserted = 0;
+                foreach (var row in changes.Select(c => c.Key))
+                {
                     if (row.State == RowEditState.Deleted)
                     {
                         result.Rows.Remove(row);
                         deleted++;
+                        continue;
                     }
+                    if (row.State == RowEditState.Inserted)
+                        inserted++;
                     else
-                    {
-                        if (row.State == RowEditState.Inserted)
-                            inserted++;
-                        else
-                            updated++;
-                        row.Saved();
-                    }
+                        updated++;
+                    row.Saved();
                 }
+                // 커밋 전: 롤백되면 이 결과는 DB와 달라진다(OnSavedTransactionFinished)
+                result.SavedSession = session;
+                WatchSavedSession(session);
                 var summary = RowEditLogic.SavedMessage(updated, deleted, inserted);
                 if (inserted > 0)
                     summary += " — 새 행에서 비운 열(기본값·자동 번호)은 다시 조회해야 보입니다";
-                AddMessage(dbId, summary + (stopped ? " — 오류가 난 행부터는 보내지 않았습니다(표시는 그대로)." : ""), stopped ? MessageKind.Error : MessageKind.Info);
-                SetStatus(tab, session.IsBroken ? WorkspaceLogic.BrokenStatus(profile.Name) : WorkspaceLogic.TextStatus(stopped ? "오류 — 메시지 탭을 보세요. " + summary : summary));
-                if (stopped)
-                    ShowPane(tab, WorkspacePane.Messages);
-                RefreshCursorStates(dbId);
+                AddMessage(dbId, summary, MessageKind.Info);
+                SetStatus(tab, WorkspaceLogic.TextStatus(summary));
             }
             catch (SessionBusyException)
             {
@@ -476,9 +639,47 @@ namespace MyPlugin
             }
             finally
             {
+                RefreshCursorStates(dbId);
                 EndRun(tab);
                 RenderEditBar();
             }
+        }
+
+        /// <summary>
+        /// 저장 묶음이 멈춤(오류·취소·영향 행 수 불일치 — 0행이면 충돌): 멈춘 문장과 이유, 그리고 저장점까지 되돌렸는지(행 표시는 그대로) 또는
+        /// 되돌리지 못했는지(결과를 DB와 다를 수 있다고 표시)를 알린다.
+        /// </summary>
+        private void ReportStoppedSave(SqlTabState tab, OracleConnectionProfile profile, DbSession session, ResultSetState result,
+            List<KeyValuePair<ResultGridRow, SqlQuery>> changes, DmlBatchResult batch)
+        {
+            var dbId = result.ResultDbId;
+            var failed = changes[batch.FailedIndex];
+            var statement = RowEditLogic.Describe(failed.Value);
+            var rowText = failed.Key.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) + "행: ";
+            string reason;
+            if (batch.Canceled)
+                reason = "취소됨";
+            else if (batch.Error != null)
+                reason = WorkspaceLogic.ErrorMessage(DbSession.DescribeError(batch.Error), null);
+            else
+                reason = RowEditLogic.AffectedMismatch(batch.Affected[batch.FailedIndex]);
+            AddMessage(dbId, rowText + reason + Environment.NewLine + statement, MessageKind.Error);
+            var sent = batch.Affected.Count;
+            string tail;
+            if (batch.RolledBack)
+                tail = RowEditLogic.SaveRolledBackNote(sent);
+            else
+            {
+                tail = RowEditLogic.SaveRollbackFailed(batch.RollbackError != null ? DbSession.DescribeError(batch.RollbackError) : null);
+                // 어느 변경이 남았는지 모른다 — 다시 조회하기 전에는 고치지 않게
+                result.StaleReason = RowEditLogic.SaveRollbackFailedStale;
+            }
+            AddMessage(dbId, "결과 편집 저장을 멈췄습니다. " + tail, MessageKind.Error);
+            var conflict = !batch.Canceled && batch.Error == null && batch.Affected[batch.FailedIndex] == 0;
+            SetStatus(tab, session.IsBroken ? WorkspaceLogic.BrokenStatus(profile.Name)
+                : WorkspaceLogic.TextStatus((batch.Canceled ? "저장 취소" : conflict ? "충돌 — 다른 세션이 바꿨거나 지운 행" : "오류")
+                    + (batch.RolledBack ? " — 이번 저장을 되돌렸습니다. 메시지 탭을 보세요." : " — 되돌리지 못했습니다. 메시지 탭을 보세요.")));
+            ShowPane(tab, WorkspacePane.Messages);
         }
 
         /// <summary>
@@ -533,6 +734,7 @@ namespace MyPlugin
                 }
                 result.Edit = RowEditLogic.Describe(owner, objectName, result.Columns, metadata, RowEditLogic.ParameterPrefix(provider.Kind), key);
             }
+            result.Edit.ProviderKind = provider.Kind;
             result.Edit.Where = where ?? "";
             if (result.Edit.CanEdit && result.Grid != null)
                 result.Grid.EnableEditMarkers(result.Rows.Count);

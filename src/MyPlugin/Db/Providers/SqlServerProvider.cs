@@ -8,8 +8,8 @@ namespace MyPlugin
 {
     /// <summary>
     /// SQL Server 공급자(Microsoft.Data.SqlClient). 접속 프로필의 ServiceName은 데이터베이스 이름, 주소는 host,port.
-    /// 암호화는 Optional + TrustServerCertificate(사내 서버의 자체 서명 인증서에서도 붙게). 지원 범위는 PostgreSQL 공급자와 같다
-    /// (접속·트리·검색·SQL 실행·GCM 정의서, 테이블 정보·테이블 정의서는 아직 아님).
+    /// 암호화·서버 인증서 검증은 접속별(<see cref="SqlServerSecurity"/>, 새 접속은 필수 + 검증). 지원 범위는 PostgreSQL 공급자와 같다
+    /// (접속·트리·검색·SQL 실행·GCM 정의서, 테이블 정보(F4)·구조 편집은 <see cref="SqlServerTableSchema"/>. 테이블 정의서는 아직 아님).
     /// </summary>
     internal sealed class SqlServerProvider : IDbProvider
     {
@@ -26,10 +26,13 @@ namespace MyPlugin
         public SqlLexRules Lex { get { return SqlLexRules.SqlServer; } }
         public IMetadataProvider Metadata { get { return _metadata; } }
         public IMonitorProvider Monitor { get { return _monitor; } }
+        public ITableSchemaProvider TableSchema { get { return SqlServerTableSchema.Instance; } }
 
         public List<string> Validate(OracleConnectionProfile profile, string label)
         {
-            return ProviderRules.ValidateHostPortServiceUser(profile, label, ServiceLabel);
+            var errors = ProviderRules.ValidateHostPortServiceUser(profile, label, ServiceLabel);
+            errors.AddRange(SqlServerSecurity.Validate(profile, label));
+            return errors;
         }
 
         public string BuildConnectionString(OracleConnectionProfile profile, string password, int timeoutSeconds)
@@ -42,14 +45,14 @@ namespace MyPlugin
                 Password = password,
                 ConnectTimeout = timeoutSeconds,
                 Pooling = false,
-                Encrypt = SqlConnectionEncryptOption.Optional,
-                TrustServerCertificate = true,
                 // 결과 커서를 열어 둔 채 다른 문장·메타데이터 조회를 하려면 MARS가 필요하다
                 MultipleActiveResultSets = true,
                 // 시간 제한 없음(사용자가 취소한다)
                 CommandTimeout = 0,
                 ApplicationName = "Folderss DB Helper"
             };
+            // 암호화·인증서 검증은 접속별 설정(새 접속은 필수 + 검증)
+            SqlServerSecurity.Apply(builder, profile);
             return builder.ConnectionString;
         }
 
@@ -74,6 +77,11 @@ namespace MyPlugin
 
         /// <summary>연결 문자열에 MARS를 켜므로 리더 여러 개가 된다.</summary>
         public bool SupportsMultipleOpenReaders { get { return true; } }
+
+        /// <summary>SQL Server DDL(CREATE·ALTER·DROP TABLE·INDEX 등)은 명시적 트랜잭션 안에서 실행되고 롤백된다.</summary>
+        public bool DdlAutoCommits { get { return false; } }
+
+        public bool RequiresNoTransaction(SqlStatement statement) { return DdlTransactionRules.SqlServerNoTransaction(statement); }
 
         /// <summary>SqlCommand.Cancel 뒤의 예외: 번호 0, "Operation cancelled by user".</summary>
         public bool IsCancellation(Exception ex)
@@ -424,7 +432,7 @@ namespace MyPlugin
         }
 
         // "nvarchar(50)"·"nvarchar(max)"·"decimal(10,2)"·"datetime2(7)"·"int". 문자 길이는 n 형식이면 바이트/2
-        private static string TypeLabel(string c, string t)
+        internal static string TypeLabel(string c, string t)
         {
             return "CASE"
                 + " WHEN " + t + ".name IN ('varchar', 'char', 'varbinary', 'binary') THEN " + t + ".name + '(' + CASE WHEN " + c + ".max_length = -1 THEN 'max' ELSE CAST(" + c + ".max_length AS VARCHAR(10)) END + ')'"

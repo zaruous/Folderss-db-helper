@@ -29,7 +29,7 @@
 | 여러 문장 | 문장이 여럿인 선택 영역(`Ctrl+Enter`)이나 스크립트 실행(`F5`, 편집기 전체)은 차례로 실행하고 조회마다 **결과 하위 탭**(결과 1 · 테이블 이름 (행 수))을 만듦. 문장이 하나면 지금처럼 결과 하나. 오류가 나면 그 문장에서 멈춤. 위험한 문장은 시작 전에 확인 |
 | 임시 저장 | 쓰던 SQL 탭(대상 DB·커서 위치·파일 포함)을 입력이 멈추고 1.5초 뒤, 탭을 닫거나 창을 닫을 때 자동 저장하고 다음에 창을 열면 되살림(창을 닫을 때는 묻지 않음). 저장하지 않은 변경이 있던 파일 탭은 그 내용으로, 변경이 없던 파일 탭은 파일을 다시 읽어 되살림. 빈 탭·처음 안내문 그대로인 탭은 저장하지 않음 |
 | 트랜잭션 | 자동 커밋 끔. DML은 커밋 전까지 "커밋 대기"로 표시하고 [커밋]·[롤백]으로 끝냄. 연결을 끊거나 창을 닫을 때 커밋 대기가 있으면 물어봄 |
-| 안전장치 | WHERE 없는 UPDATE·DELETE, DROP·TRUNCATE·ALTER 등은 확인 체크 후 실행. 커밋 대기 중 DDL 실행(자동 커밋됨) 경고. 컴파일 오류가 있는 PL/SQL은 메시지 탭에 오류 목록 표시 |
+| 안전장치 | WHERE 없는 UPDATE·DELETE, DROP·TRUNCATE·ALTER 등은 확인 체크 후 실행. 커밋 대기 중 DDL 실행(Oracle — 자동 커밋됨) 경고. 컴파일 오류가 있는 PL/SQL은 메시지 탭에 오류 목록 표시 |
 | 결과 | NULL·숫자 구분, 열 머리에 Oracle 형식, 열 머리를 눌러 정렬(오름차순 → 내림차순 → 해제, 숫자 열은 수로, NULL은 Oracle 기본처럼 오름차순 맨 뒤), TSV 복사(`Ctrl+C`·[복사], 화면 순서), 오른쪽 메뉴 [셀 복사](누른 칸 값 하나)·[INSERT 문 만들기](빠른 조회 결과에서 고른 행의 INSERT 문을 클립보드에, Oracle `TO_DATE`·SQL Server `N''`/`DATETIME2` 등 DB에 맞춘 값), `Ctrl+F` 찾기 팝업(가져온 행의 값에서 찾아 그 행을 고르고 칸이 보이게 세로·가로 스크롤 후 강조), 메시지·실행 기록 |
 | 테이블 정의서 (PoC) | 트리에서 테이블을 `Ctrl`·`Shift`+클릭으로 여러 개 고르거나 스키마·DB를 고른 뒤 오른쪽 메뉴(또는 `도구 > 테이블 정의서 만들기…`). 대상 선택 창에서 스키마별로 **정규식**(대소문자 무시·주석도 찾기)이나 여러 줄 선택 + `Space`로 체크하고, 문서 정보(제목·프로젝트·작성자·버전·작성일)를 넣으면 **엑셀 템플릿**에 Velocity 변수를 채운 .xlsx를 만듦. 고친 양식은 **사용자 양식 폴더**(팝업의 [양식 폴더])에 넣으면 목록에 "내 양식"으로 보이고, [복사해서 고치기]로 기본 양식을 꺼내 엑셀에서 고칠 수 있음. LLM으로 양식을 만들 때는 [LLM 지침 복사] — 지침: https://zaruous.github.io/Folderss-oracle-db-helper/table-spec-templates/ . [만들기…] 때 입력한 문서 정보(제목·프로젝트·시스템/모듈·작성자·버전·작성일·설명)와 고른 양식·저장 폴더는 플러그인 설정에 저장해 다음에 창을 열 때 불러옴. 기본 양식은 2종: **기본**(표지 · 목록(시트 링크) · 테이블마다 열·인덱스·제약 조건)과 **명세서형**(워크스코브 테이블 명세서 양식 구성 — 논리명·키 PK/FK/UK/IX·외래키 삭제 규칙·인덱스 유형·공통 코드·개정 이력). |
 | GCM 정의서 | `도구 > GCM 정의서 만들기…`(트리에서 대상 DB를 고른 뒤). **공통 코드 테이블을 읽는 SELECT 문을 직접 쓰고**, 결과 열에 `AS` 별칭만 맞추면 됩니다 — 필수 `TABLE_NAME`·`CODE`·`CODE_NAME`, 선택 `GROUP_NAME`·`GROUP_DESC`·`CODE_DESC`·`SORT_NO`·`USE_YN`, 그 밖의 열은 추가 속성(`$code.attrs.열이름`). 플러그인은 SQL을 해석하지 않으므로 환경마다 테이블·열 이름이 달라도 SQL만 바꿉니다. [열 확인]은 SQL을 `ROWNUM <= 1`로 감싸 실행해 별칭을 검사하고, [저장…]으로 SQL을 **SQL 폴더**(`plugin-data\…\code-sql\*.sql`)에 저장하면 목록에 보이며 접속마다 마지막에 쓴 파일을 기억합니다. 그룹 정규식으로 `TABLE_NAME`를 걸러 일부만 넣을 수 있고, 출력은 **엑셀 양식**(기본 2종: 그룹별 시트 · 단일 시트, 내 양식은 `templates\gcm\`) · **JSON**(doc·db·source·groups[].codes[]) · **CSV**(UTF-8 BOM) 중 고릅니다. "코드 테이블마다 열 이름이 다른" 범용 코드 테이블(정의 테이블이 열 이름, 데이터 테이블이 값)은 **이름 열과 값 열을 짝으로 나열**하면 됩니다 — 추가 열 `X`와 `X_NAME`이 함께 있으면 `X_NAME` 값이 속성 이름, `X` 값이 속성 값(`KEY_1_NAME`/`KEY_1`, `DATA_1_NAME`/`DATA_1` …). 평범한 열 나열이라 어떤 DBMS에서나 같은 SQL이고, 그룹마다 실제 열 이름이 속성이 되어 양식의 `$group.attrNames`·`$code.groupAttrValues`로 씁니다. JSON 객체 열(`jsonb_build_object`)도 같은 식으로 펼치지만 DBMS 고유 함수라 선택 사항입니다. 창 머리의 [대상 DB] 콤보로 다른 접속으로 바꿀 수 있고, 트리의 DB 행 오른쪽 메뉴에도 항목이 있습니다. [LLM에게 SQL 요청]은 별칭 계약이 든 요청 글을 복사하고, [본보기 SQL]은 플러그인 본보기(범용 코드 테이블 꼴)를 편집기에 넣습니다. 본보기 전문은 사내 테이블 구조라 코드·DLL·문서에 평문으로 두지 않고 플러그인 안에 잠가 둡니다(`SqlCipherLogic`, 고정 키). 조회가 0행이거나 정규식에 맞는 그룹이 없으면 빈 문서를 만들지 않고 상태 줄에 이유를 보입니다. 양식 지침: https://zaruous.github.io/Folderss-oracle-db-helper/code-spec-templates/ |
@@ -39,14 +39,14 @@
 
 ## 알아 둘 점
 
-- **PostgreSQL·SQL Server 접속**(Npgsql·Microsoft.Data.SqlClient): 접속 관리의 [DBMS]에서 고르면 서비스명 칸이 데이터베이스가 되고 기본 포트는 5432·1433입니다. 지원 범위는 접속·트리(스키마·테이블·뷰·시퀀스·함수/프로시저·열)·검색·SQL 실행·빠른 조회·GCM 정의서입니다. 테이블 정보(F4)·테이블 정의서는 아직 Oracle 데이터 사전 기반이라 안내만 띄웁니다. 결과 열 형식은 그 DBMS 이름 그대로(`character varying(20)`, `nvarchar(50)`), DDL은 Oracle처럼 실행 전에 자동 커밋합니다. SQL Server는 암호화 Optional·TrustServerCertificate·MARS로 붙습니다(사내 자체 서명 인증서). PostgreSQL은 연결당 결과 커서가 하나라, 조회 결과를 열어 둔 채 다른 문장·조회(GCM 정의서 포함)를 실행하면 이전 결과의 [다음 행 가져오기]가 꺼집니다(가져온 행은 그대로). 이전 버전의 접속 설정은 그대로 Oracle로 읽힙니다.
+- **PostgreSQL·SQL Server 접속**(Npgsql·Microsoft.Data.SqlClient): 접속 관리의 [DBMS]에서 고르면 서비스명 칸이 데이터베이스가 되고 기본 포트는 5432·1433입니다. 지원 범위는 접속·트리(스키마·테이블·뷰·시퀀스·함수/프로시저·열)·검색·SQL 실행·빠른 조회·GCM 정의서·테이블 정보(F4)와 구조 편집입니다. 테이블 정의서는 아직 Oracle 데이터 사전 기반이라 안내만 띄웁니다. 결과 열 형식은 그 DBMS 이름 그대로(`character varying(20)`, `nvarchar(50)`), DDL은 DBMS별로 다릅니다 — Oracle은 실행 전후 자동 커밋(커밋 대기가 있으면 확인), PostgreSQL·SQL Server는 트랜잭션 안에서 실행해 "커밋 대기"가 되고 [롤백]으로 앞선 DML과 함께 되돌릴 수 있습니다(실패한 DDL만 세이브포인트로 되돌려 앞선 변경은 그대로). 트랜잭션 안에서 못 하는 문장(PostgreSQL CREATE/DROP DATABASE·VACUUM·CREATE INDEX CONCURRENTLY·ALTER SYSTEM 등, SQL Server CREATE/ALTER/DROP DATABASE·BACKUP·RESTORE·FULLTEXT 등)은 커밋 대기가 있으면 실행하지 않고 먼저 커밋·롤백하라고 알리며, 없으면 트랜잭션 밖에서 바로 반영합니다. 테이블 구조 편집 저장은 세 DBMS 모두 문장마다 커밋됩니다. SQL Server는 MARS로 붙고, 암호화·서버 인증서 검증은 접속별로 정합니다([암호화] 필수·엄격(TDS 8.0)·선택, [서버 인증서 신뢰], [인증서 이름]). 새 접속은 암호화 필수 + 인증서 검증이 기본이고, 사내 자체 서명 인증서는 [서버 인증서 신뢰]를 직접 켜야 붙습니다. 이 설정이 생기기 전에 저장한 SQL Server 접속은 이전 동작(Optional + TrustServerCertificate)으로 읽고 접속 관리에서 강화를 권하는 안내를 보입니다. PostgreSQL은 연결당 결과 커서가 하나라, 조회 결과를 열어 둔 채 다른 문장·조회(GCM 정의서 포함)를 실행하면 이전 결과의 [다음 행 가져오기]가 꺼집니다(가져온 행은 그대로). 이전 버전의 접속 설정은 그대로 Oracle로 읽힙니다.
 - **SQL 파일 드래그 드롭**: 탐색기에서 SQL 편집기로 파일을 끌어다 놓으면 그 파일 탭으로 열립니다(이미 연 파일은 그 탭으로). 이후 편집·`Ctrl+S` 저장은 그 파일에 됩니다. GCM 정의서 창의 SQL 편집기에 놓으면 그 .sql을 불러오고 [저장…]이 그 파일을 먼저 보입니다. 창을 닫았다 열면 쓰던 탭(파일 탭 포함)은 임시 저장으로 되살아납니다.
 - **DB마다 세션 1개**: 같은 DB를 대상으로 하는 탭들은 트랜잭션을 함께 씁니다(한 탭의 커밋이 다른 탭의 변경도 커밋). 같은 DB에서는 한 번에 한 문장만 실행합니다.
 - **읽기 전용은 플러그인 쪽 차단**입니다. 운영 DB는 DB 계정 권한도 읽기 전용으로 두세요.
 - **비밀번호**는 이 PC의 이 Windows 사용자만 풀 수 있게 저장합니다. 다른 PC로 옮기면 다시 입력해야 합니다.
 - **SQL 파일**은 5MB까지 엽니다. BOM이 없고 UTF-8로 읽히지 않는 파일은 CP949로 읽고, 그대로 CP949로 저장합니다(CP949로 나타낼 수 없는 글자가 생기면 UTF-8로 저장하고 알림). 새 파일은 BOM 없는 UTF-8입니다.
 - **정렬은 가져온 행 안에서만** 합니다. 더 가져온 행도 정렬 위치에 들어가지만, 전체 결과의 순서는 `ORDER BY`로 정하세요.
-- **임시 저장 위치**: `%LOCALAPPDATA%\Folderss\plugin-data\<플러그인 id>\sql-drafts\`(창마다 파일 하나, 평문). GCM 창의 마지막 SQL과 본보기 SQL은 플러그인 고정 키(AES-GCM)로 잠가 둡니다(비밀 보호가 아니라 노출 방지용). 창을 여러 개 열어도 서로 덮어쓰지 않고, 닫힌 창의 것은 다음에 여는 창이 넘겨받습니다.
+- **임시 저장 위치**: `%LOCALAPPDATA%\Folderss\plugin-data\<플러그인 id>\sql-drafts\`(창마다 `*.dat` 파일 하나). SQL 내용과 파일 경로는 Windows 사용자 범위 DPAPI(접속 비밀번호와 같은 방식)로 잠가 저장하므로 저장한 Windows 사용자만 되살릴 수 있습니다. 이전 버전이 남긴 평문 `*.json`은 처음 열 때 잠가 다시 저장한 뒤 지웁니다. 풀지 못한 파일(다른 Windows 사용자·PC에서 저장했거나 손상)은 지우지 않고 `sql-drafts\broken\`에 보관하며 메시지 칸에 알립니다. **설정 › SQL 편집기 › 임시 저장**에서 접속마다 "임시 저장 안 함"을 고를 수 있고(그 접속 대상 탭은 저장하지 않으므로 창을 닫으면 남지 않음), [임시 저장 지우기]로 저장 파일(보관한 것 포함)을 모두 지웁니다. GCM 창의 마지막 SQL과 본보기 SQL은 플러그인 고정 키(AES-GCM)로 잠가 둡니다(비밀 보호가 아니라 노출 방지용). 창을 여러 개 열어도 서로 덮어쓰지 않고, 닫힌 창의 것은 다음에 여는 창이 넘겨받습니다.
 - **여러 문장 실행**에서는 문장 안에 빈 줄이 있어도 됩니다: 빈 줄 다음이 `FROM`·`WHERE`·`SET`·`AND`처럼 문장을 잇는 말이면 같은 문장으로 봅니다(`;`·`/` 줄은 언제나 문장 끝). 한 번에 결과는 20개까지 남깁니다.
 - **SQL 편집기 설정**(설정 창 "SQL 편집기" 탭): 줄 간격, 구문 강조 대상(키워드·자료형·문자열·주석)마다 칠함·색·굵게·기울임, 더 칠할·칠하지 않을 낱말, 칠하지 않을 긴 줄 기준(기본 20,000자). 저장하면 열린 SQL 탭이 바로 따릅니다.
 - **문장 구분**: `;`, 빈 줄, 그리고 DBMS별 구분 줄. SQL 탭은 그 탭 대상 DB의 문법으로 나눕니다(규칙 `SqlLexRules`, 구문 강조도 같은 규칙).
@@ -140,7 +140,21 @@ pwsh scripts/preview.ps1 -Fresh           # 설정·접속·임시 저장을 지
 $env:FMON_UI_ORACLE = "localhost:1521/xe"
 pwsh scripts/ui-test.ps1                 # publish → 빌드 → 숨은 데스크톱에서 시험
 pwsh scripts/ui-test.ps1 -NoPublish -Filter "FullyQualifiedName~CheckHeadlessTests"
+pwsh scripts/ui-test.ps1 -NoPublish -Filter "Requires!=Oracle" -FailOnSkip   # CI의 DB 없는 단계와 같게
 ```
+
+- 끝에 실행·통과·실패·건너뜀 수와 건너뛴 시험·이유를 보이고, trx는 `<Work>\results\`(기본 `%TEMP%\folderss-uitest`)에 남습니다.
+  **실제로 돈 시험이 0개면**(모두 건너뜀·필터 불일치) 종료 코드 3으로 실패합니다. `-FailOnSkip`이면 건너뛴 시험이 하나라도 있을 때 4, 사용자 화면에 시험 창이 뜨면 2.
+- 실제 Oracle이 필요한 시험에는 `[Trait("Requires", "Oracle")]`을 붙입니다(`[UiFact(requiresOracle: true)]`와 함께) — 필터 `Requires=Oracle` / `Requires!=Oracle`로 나눕니다.
+
+#### CI에서의 화면 시험
+
+`.github/workflows/build.yml`의 **`ui-test` 작업**(windows-latest)이 ubuntu `build` 작업과 나란히 돕니다. 러너에서 플러그인을 publish하고 같은 `scripts/ui-test.ps1`로 숨은 데스크톱에서 시험합니다(계약 DLL은 저장소의 `contract/` 프로젝트로 빌드되므로 Folderss 본체는 필요 없음).
+
+1. **UI 시험 (DB 없음)** — 항상. `-Filter "Requires!=Oracle" -FailOnSkip`: 여기서 시험이 하나라도 건너뛰어지면(숨은 데스크톱이 아님·zip 없음 등) 실패합니다.
+2. **UI 시험 (실제 Oracle)** — 저장소 secret `FMON_UI_ORACLE`(러너에서 닿는 host:port/service)이 있을 때만. `FMON_UI_ORACLE_USER`·`FMON_UI_ORACLE_PW` secret도 함께(없으면 시험 기본값). 전체 시험을 실제 접속과 함께 다시 돌리고 하나라도 건너뛰면 실패합니다.
+   secret이 없으면(포크 PR 포함) 이 단계 대신 "실제 Oracle UI 시험을 돌리지 않음" 알림이 실행 요약에 남습니다.
+3. 결과는 실행 요약(단계별 수·건너뛴 시험)과 아티팩트 **`ui-test-results`**(trx·실행 기록·캡처 png·shots, 14일)로 남습니다. 풀어 놓은 플러그인·plugin-data(접속 정보)는 올리지 않습니다.
 
 ---
 

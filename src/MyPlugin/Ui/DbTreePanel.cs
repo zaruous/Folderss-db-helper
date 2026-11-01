@@ -2105,6 +2105,12 @@ namespace MyPlugin
             return Theme.Foreground(check, Theme.SecondaryText);
         }
 
+        public static CheckBox ThemedCheckBox(object content, string foregroundKey = null)
+        {
+            var check = new CheckBox { Content = content, Template = CheckTemplate(), VerticalAlignment = VerticalAlignment.Center };
+            return Theme.Foreground(check, foregroundKey ?? Theme.PrimaryText);
+        }
+
         /// <summary>검색 막대의 ▲▼ 같은 작은 버튼(Folderss 버튼 모양).</summary>
         public static Button SmallButton(string text, string tooltip)
         {
@@ -2184,7 +2190,7 @@ namespace MyPlugin
             Theme.Foreground(label, button.IsEnabled ? Theme.PanelBackground : Theme.DisabledText);
         }
 
-        private static ControlTemplate CheckTemplate()
+        public static ControlTemplate CheckTemplate()
         {
             // 봉인한 템플릿은 여러 체크 상자가 함께 쓴다
             if (_checkTemplate != null)

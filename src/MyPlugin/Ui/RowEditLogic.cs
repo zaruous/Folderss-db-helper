@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data.SqlTypes;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -67,6 +68,10 @@ namespace MyPlugin
         public string Where { get; set; } = "";
         /// <summary>바인드 변수 접두: Oracle·PostgreSQL ':', SQL Server '@'.</summary>
         public string ParameterPrefix { get; set; } = ":";
+        /// <summary>공급자 종류("oracle"·"postgres"·"mssql"). 동시성 비교에서 뺄 형식이 DBMS마다 다르다(<see cref="RowEditLogic.CompareSkipReason"/>). 모르면 null.</summary>
+        public string ProviderKind { get; set; }
+        /// <summary>UPDATE·DELETE의 WHERE에 원래 값 비교(낙관적 동시성)를 붙인다. 기본 true.</summary>
+        public bool CheckConcurrency { get; set; } = true;
         public IReadOnlyList<ResultColumn> Columns { get; set; }
         /// <summary>키(기본 키·고유 키) 열의 결과 열 위치. ROWID로 찾으면 비어 있다.</summary>
         public int[] KeyIndexes { get; set; } = Array.Empty<int>();
@@ -113,8 +118,9 @@ namespace MyPlugin
     /// <summary>
     /// 결과 행 편집(빠른 조회 F1)의 순수 로직: 열 형식 → 값 종류, 입력 검사·변환, UPDATE·DELETE 문(바인드 변수) 만들기.
     /// 값은 그리드의 표시 문자열(ValueFormatter.Format)이다 — 숫자는 InvariantCulture, 날짜는 "yyyy-MM-dd HH:mm:ss[.fffffff]".
-    /// WHERE는 행 하나만 가리키는 키로만 쓴다: 기본 키 → NOT NULL 고유 키 → Oracle ROWID(<see cref="ChooseKey"/>).
+    /// WHERE는 행 하나만 가리키는 키로 찾는다: 기본 키 → NOT NULL 고유 키 → Oracle ROWID(<see cref="ChooseKey"/>).
     /// 키가 없으면 편집하지 않는다 — 같은 값의 행을 함께 바꾸지 않게.
+    /// 여기에 원래 값 비교(낙관적 동시성, <see cref="ConcurrencyCondition"/>)를 붙여 조회 뒤 다른 세션이 바꾼 행은 0행(충돌)이 된다.
     /// </summary>
     internal static class RowEditLogic
     {
@@ -346,6 +352,23 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>
+        /// 이 표의 열 index에 바인드할 값(<see cref="ToDbValue"/>). SQL Server datetime·smalldatetime 열은 SqlDateTime으로 보낸다 —
+        /// 세션은 DateTime을 datetime2로 보내는데(초 미만 보존), datetime(1/300초) 열과 datetime2 바인드를 비교하면 읽은 값(.003)과 저장 값(.00333…)이 달라 행을 찾지 못한다.
+        /// </summary>
+        public static object BindValue(EditableTable table, int index, string text)
+        {
+            var value = ToDbValue(table.KindAt(index), text);
+            if (!(value is DateTime) || !string.Equals(table.ProviderKind, "mssql", StringComparison.OrdinalIgnoreCase))
+                return value;
+            var label = (table.Columns[index].TypeLabel ?? "").Trim();
+            if (!string.Equals(label, "datetime", StringComparison.OrdinalIgnoreCase) && !string.Equals(label, "smalldatetime", StringComparison.OrdinalIgnoreCase))
+                return value;
+            var date = (DateTime)value;
+            // SqlDateTime 범위(1753년~) 밖이면 DB가 오류를 내게 그대로
+            return date >= SqlDateTime.MinValue.Value ? (object)new SqlDateTime(date) : value;
+        }
+
         private static bool IsNumber(string text)
         {
             double d;
@@ -470,7 +493,9 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 바뀐 열만 SET에 넣는 UPDATE 문(바인드 s0, s1 … / 키 k0, k1 …, ROWID 키면 rid). WHERE는 키의 원래 값(ROWID 키면 rowId).
+        /// 바뀐 열만 SET에 넣는 UPDATE 문(바인드 s0, s1 … / 키 k0, k1 …, ROWID 키면 rid / 원래 값 o0, o1 …).
+        /// WHERE는 키의 원래 값(ROWID 키면 rowId) + 고친 열의 원래 값 비교(낙관적 동시성, <see cref="ConcurrencyCondition"/>) —
+        /// 조회한 뒤 다른 세션이 그 열을 바꿨으면 0행이 되어 덮어쓰지 않는다. 다른 열만 바뀐 것은 충돌로 보지 않는다.
         /// 바뀐 열이 없거나 ROWID 키인데 rowId가 없으면 null.
         /// 고칠 수 없는 칸(UpdateBlockReason)의 값이 바뀌었으면 InvalidOperationException(이유).
         /// </summary>
@@ -490,11 +515,15 @@ namespace MyPlugin
                     continue;
                 var name = "s" + sets.Count.ToString(Inv);
                 sets.Add(WorkspaceLogic.QuoteIdentifier(table.Columns[i].Name) + " = " + table.ParameterPrefix + name);
-                query.Parameters.Add(new KeyValuePair<string, object>(name, ToDbValue(table.KindAt(i), current[i])));
+                query.Parameters.Add(new KeyValuePair<string, object>(name, BindValue(table, i, current[i])));
             }
             if (sets.Count == 0)
                 return null;
-            query.Sql = "UPDATE " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " SET " + string.Join(", ", sets) + " WHERE " + KeyCondition(table, original, rowId, query);
+            var where = KeyCondition(table, original, rowId, query);
+            var changed = Enumerable.Range(0, Math.Min(table.Columns.Count, current.Length))
+                .Where(i => !string.Equals(i < original.Length ? original[i] : null, current[i], StringComparison.Ordinal));
+            where += ConcurrencyCondition(table, original, changed, query);
+            query.Sql = "UPDATE " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " SET " + string.Join(", ", sets) + " WHERE " + where;
             return query;
         }
 
@@ -520,7 +549,7 @@ namespace MyPlugin
                 var name = "i" + binds.Count.ToString(Inv);
                 names.Add(WorkspaceLogic.QuoteIdentifier(table.Columns[i].Name));
                 binds.Add(table.ParameterPrefix + name);
-                query.Parameters.Add(new KeyValuePair<string, object>(name, ToDbValue(table.KindAt(i), values[i])));
+                query.Parameters.Add(new KeyValuePair<string, object>(name, BindValue(table, i, values[i])));
             }
             if (names.Count == 0)
                 return null;
@@ -606,13 +635,18 @@ namespace MyPlugin
             return mssql ? "N" + quoted : quoted;
         }
 
-        /// <summary>키의 원래 값(ROWID 키면 rowId)으로 행 하나를 지우는 DELETE 문. ROWID 키인데 rowId가 없으면 null.</summary>
+        /// <summary>
+        /// 키의 원래 값(ROWID 키면 rowId)으로 행 하나를 지우는 DELETE 문. ROWID 키인데 rowId가 없으면 null.
+        /// WHERE에 키가 아닌 모든 비교할 수 있는 열의 원래 값 비교를 붙인다(<see cref="ConcurrencyCondition"/>) — 조회한 뒤 바뀐 행은 지우지 않고 0행.
+        /// </summary>
         public static SqlQuery DeleteStatement(EditableTable table, string[] original, string rowId = null)
         {
             if (table == null || !table.CanEdit || original == null || (table.UsesRowId && rowId == null))
                 return null;
             var query = new SqlQuery();
-            query.Sql = "DELETE FROM " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " WHERE " + KeyCondition(table, original, rowId, query);
+            var where = KeyCondition(table, original, rowId, query);
+            where += ConcurrencyCondition(table, original, Enumerable.Range(0, table.Columns.Count), query);
+            query.Sql = "DELETE FROM " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " WHERE " + where;
             return query;
         }
 
@@ -647,9 +681,83 @@ namespace MyPlugin
                 }
                 var name = "k" + k.ToString(Inv);
                 parts.Add(column + " = " + table.ParameterPrefix + name);
-                query.Parameters.Add(new KeyValuePair<string, object>(name, ToDbValue(table.KindAt(index), value)));
+                query.Parameters.Add(new KeyValuePair<string, object>(name, BindValue(table, index, value)));
             }
             return string.Join(" AND ", parts);
+        }
+
+        // 근사값 숫자: 표시 글(10진)을 다시 바인드하면 2진 값과 같지 않을 수 있다
+        private static readonly HashSet<string> ApproximateNumberNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "FLOAT", "REAL", "DOUBLE PRECISION", "BINARY_FLOAT", "BINARY_DOUBLE", "BINARYFLOAT", "BINARYDOUBLE",
+            "SINGLE", "DOUBLE", "FLOAT4", "FLOAT8"
+        };
+
+        private static readonly HashSet<string> FixedCharNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "CHAR", "NCHAR", "CHARACTER", "BPCHAR"
+        };
+
+        /// <summary>
+        /// 동시성 비교(원래 값 = 지금 DB 값)에서 이 열을 뺄 이유. 비교할 수 있으면 null. 빼는 열(정책):
+        /// - 편집할 수 없는 형식(LOB·RAW·XML·JSON·INTERVAL·시간대 TIMESTAMP 등) — 표시 글로 값을 되살릴 수 없다.
+        /// - 근사값 숫자(FLOAT·REAL·DOUBLE PRECISION·BINARY_FLOAT·BINARY_DOUBLE) — 표시 글이 2진 값과 같지 않을 수 있다(거짓 충돌).
+        /// - 초 미만 8자리 이상 TIMESTAMP(8·9) — 표시는 7자리까지.
+        /// - SQL Server TEXT·NTEXT — '='로 비교할 수 없다.
+        /// - PostgreSQL 고정 길이 CHAR(bpchar) — 글 바인드와 비교하면 끝 공백 처리가 달라 거짓 충돌.
+        /// 값이 잘려 보이는 칸("…(전체 n자)")도 원래 값을 몰라 뺀다(<see cref="ConcurrencyCondition"/>).
+        /// </summary>
+        public static string CompareSkipReason(string typeLabel, string providerKind)
+        {
+            var kind = KindOf(typeLabel);
+            if (kind == ColumnValueKind.Unsupported)
+                return "편집할 수 없는 형식";
+            var name = Regex.Replace(Regex.Replace(typeLabel, @"\s*\([^)]*\)", "").Trim(), @"\s+", " ");
+            if (kind == ColumnValueKind.Number && ApproximateNumberNames.Contains(name))
+                return "근사값 숫자";
+            if (kind == ColumnValueKind.DateTime && name.StartsWith("TIMESTAMP", StringComparison.OrdinalIgnoreCase))
+            {
+                var precision = Regex.Match(typeLabel, @"\(\s*(\d+)\s*\)");
+                if (precision.Success && int.Parse(precision.Groups[1].Value, Inv) > 7)
+                    return "초 미만 7자리 초과";
+            }
+            if (string.Equals(providerKind, "mssql", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(name, "TEXT", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "NTEXT", StringComparison.OrdinalIgnoreCase)))
+                return "TEXT·NTEXT는 비교할 수 없음";
+            if (string.Equals(providerKind, "postgres", StringComparison.OrdinalIgnoreCase) && FixedCharNames.Contains(name))
+                return "고정 길이 CHAR";
+            return null;
+        }
+
+        /// <summary>
+        /// 낙관적 동시성: columns 가운데 키가 아니고(키는 이미 WHERE에 있음) 비교할 수 있는(<see cref="CompareSkipReason"/>, 잘려 보이지 않는) 열마다
+        /// " AND 열 = :o0"(원래 값이 NULL이면 " AND 열 IS NULL"). 지금 DB 값이 NULL이면 '='가 참이 아니므로 그것도 충돌로 잡힌다(NULL 안전).
+        /// 붙일 것이 없거나 table.CheckConcurrency가 false면 "".
+        /// </summary>
+        public static string ConcurrencyCondition(EditableTable table, string[] original, IEnumerable<int> columns, SqlQuery query)
+        {
+            if (table == null || !table.CheckConcurrency || original == null || columns == null)
+                return "";
+            var text = new StringBuilder();
+            var next = 0;
+            foreach (var index in columns.Distinct().OrderBy(i => i))
+            {
+                if (index < 0 || index >= table.Columns.Count || table.IsKey(index))
+                    continue;
+                var value = index < original.Length ? original[index] : null;
+                if (IsTruncated(value) || CompareSkipReason(table.Columns[index].TypeLabel, table.ProviderKind) != null)
+                    continue;
+                var column = WorkspaceLogic.QuoteIdentifier(table.Columns[index].Name);
+                if (value == null)
+                {
+                    text.Append(" AND ").Append(column).Append(" IS NULL");
+                    continue;
+                }
+                var name = "o" + (next++).ToString(Inv);
+                text.Append(" AND ").Append(column).Append(" = ").Append(table.ParameterPrefix).Append(name);
+                query.Parameters.Add(new KeyValuePair<string, object>(name, BindValue(table, index, value)));
+            }
+            return text.ToString();
         }
 
         /// <summary>메시지 탭에 남길 글: 문장 + 바인드 값("s0=…, k0=…").</summary>
@@ -670,6 +778,8 @@ namespace MyPlugin
         {
             if (value == null || value is DBNull)
                 return "NULL";
+            if (value is SqlDateTime)
+                value = ((SqlDateTime)value).Value;
             if (value is DateTime)
                 return "'" + ((DateTime)value).ToString("yyyy-MM-dd HH:mm:ss.FFFFFFF", Inv).TrimEnd('.') + "'";
             if (value is string)
@@ -703,12 +813,45 @@ namespace MyPlugin
             return "저장: " + (parts.Count == 0 ? "변경 없음" : string.Join(" · ", parts) + " (커밋 전 — [커밋]으로 확정, [롤백]으로 취소)");
         }
 
-        /// <summary>영향 행 수가 1이 아닐 때의 오류 글. 0행이면 다른 세션에서 바뀌었을 수 있다.</summary>
+        /// <summary>
+        /// 영향 행 수가 1이 아닐 때의 오류 글. 0행이면 충돌: 키와 원래 값으로 행을 찾지 못함 — 조회한 뒤 다른 세션이 바꿨거나 지운 행(덮어쓰지 않음).
+        /// </summary>
         public static string AffectedMismatch(int affected)
         {
             if (affected == 0)
-                return "영향 행이 0행입니다 — 다른 세션에서 바뀌었거나 이미 지워진 행입니다. 다시 조회(F1)한 뒤 고치세요.";
-            return "영향 행이 " + affected.ToString(Inv) + "행입니다(1행이어야 함) — 키가 고유하지 않을 수 있습니다. [롤백]으로 되돌리고 확인하세요.";
+                return "충돌: 영향 행이 0행입니다 — 조회한 뒤 다른 세션이 바꿨거나 지운 행입니다(키·원래 값이 DB와 다름). 덮어쓰지 않았습니다. [다시 조회]로 최신 값을 읽어 비교한 뒤 다시 고치세요.";
+            return "영향 행이 " + affected.ToString(Inv) + "행입니다(1행이어야 함) — 키가 고유하지 않을 수 있습니다. 확인하세요.";
         }
+
+        /// <summary>저장 묶음이 멈춘 뒤 저장점까지 되돌렸을 때 덧붙이는 글.</summary>
+        public static string SaveRolledBackNote(int sent)
+        {
+            return "이번 저장에서 보낸 " + sent.ToString(Inv) + "개 문장을 모두 되돌렸습니다(저장점) — 행 표시는 그대로이고, 이번 저장 전의 커밋 대기 변경은 남아 있습니다.";
+        }
+
+        /// <summary>저장점까지 되돌리지 못했을 때의 글(이번 저장의 일부가 커밋 대기로 남았을 수 있음).</summary>
+        public static string SaveRollbackFailed(string error)
+        {
+            return "이번 저장을 되돌리지 못했습니다: " + (error ?? "") + " — 보낸 변경 일부가 커밋 대기로 남았을 수 있습니다. [롤백]으로 트랜잭션 전체를 되돌린 뒤 [다시 조회]하세요.";
+        }
+
+        /// <summary>
+        /// [저장]한 변경이 커밋되기 전에 트랜잭션이 끝났을 때 편집 막대에 보일 이유(결과가 DB와 다를 수 있음). 커밋됐으면 null.
+        /// </summary>
+        public static string StaleReason(TransactionOutcome outcome)
+        {
+            switch (outcome)
+            {
+                case TransactionOutcome.Committed:
+                    return null;
+                case TransactionOutcome.RolledBack:
+                    return "⚠ 롤백되어 [저장]한 변경이 취소됐습니다 — 화면이 DB와 다릅니다. [다시 조회]하세요.";
+                default:
+                    return "⚠ 트랜잭션이 끝났지만 [저장]한 변경이 커밋됐는지 알 수 없습니다 — [다시 조회]로 확인하세요.";
+            }
+        }
+
+        /// <summary>저장점까지 되돌리지 못해 결과가 DB와 다를 수 있을 때 편집 막대에 보일 이유.</summary>
+        public const string SaveRollbackFailedStale = "⚠ 저장을 되돌리지 못해 화면이 DB와 다를 수 있습니다 — [롤백]한 뒤 [다시 조회]하세요.";
     }
 }
