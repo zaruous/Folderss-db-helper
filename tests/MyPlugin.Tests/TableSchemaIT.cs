@@ -22,7 +22,7 @@ namespace MyPlugin.Tests
         private readonly ITestOutputHelper _output;
         public TableSchemaIT(ITestOutputHelper output) { _output = output; }
 
-        sealed class DbFact : FactAttribute
+        internal sealed class DbFact : FactAttribute
         {
             public DbFact(string prefix)
             {
@@ -31,7 +31,7 @@ namespace MyPlugin.Tests
             }
         }
 
-        static async Task<DbSession> OpenAsync(string prefix, string kind, string defaultUser)
+        internal static async Task<DbSession> OpenAsync(string prefix, string kind, string defaultUser)
         {
             var dsn = Environment.GetEnvironmentVariable(prefix).Trim();
             var hostPort = dsn.Split('/')[0];
@@ -50,8 +50,16 @@ namespace MyPlugin.Tests
 
         async Task Exec(DbSession session, string sql, bool ignoreError = false)
         {
-            try { await session.ExecuteAsync(SchemaRead.DdlStatement(sql), 0); }
+            try { await ExecCommit(session, sql); }
             catch (Exception ex) when (ignoreError) { _output.WriteLine("(무시) " + ex.Message); }
+        }
+
+        /// <summary>DDL 하나를 실행하고 커밋 대기가 남으면(트랜잭션 DDL — PostgreSQL·SQL Server) 커밋한다 — 편집 창 [저장] 경로와 같다.</summary>
+        static async Task ExecCommit(DbSession session, string sql)
+        {
+            await session.ExecuteAsync(SchemaRead.DdlStatement(sql), 0);
+            if (session.HasPendingChanges)
+                await session.CommitAsync();
         }
 
         async Task<TableDescription> Describe(DbSession session, string name)
@@ -70,7 +78,7 @@ namespace MyPlugin.Tests
             foreach (var step in SchemaPlan.Build(context, row => { }))
             {
                 _output.WriteLine(step.Sql.TrimEnd().TrimEnd(';') + ";");
-                await session.ExecuteAsync(SchemaRead.DdlStatement(step.Sql), 0);
+                await ExecCommit(session, step.Sql);
                 step.Applied();
             }
             Assert.DoesNotContain(context.All, r => r.Dirty && !r.Deleted);

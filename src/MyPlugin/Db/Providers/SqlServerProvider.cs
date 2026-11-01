@@ -76,6 +76,11 @@ namespace MyPlugin
         /// <summary>연결 문자열에 MARS를 켜므로 리더 여러 개가 된다.</summary>
         public bool SupportsMultipleOpenReaders { get { return true; } }
 
+        /// <summary>SQL Server DDL(CREATE·ALTER·DROP TABLE·INDEX 등)은 명시적 트랜잭션 안에서 실행되고 롤백된다.</summary>
+        public bool DdlAutoCommits { get { return false; } }
+
+        public bool RequiresNoTransaction(SqlStatement statement) { return DdlTransactionRules.SqlServerNoTransaction(statement); }
+
         /// <summary>SqlCommand.Cancel 뒤의 예외: 번호 0, "Operation cancelled by user".</summary>
         public bool IsCancellation(Exception ex)
         {

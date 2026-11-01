@@ -1365,12 +1365,15 @@ namespace MyPlugin
                         var live = _host.GetSession(dbId);
                         if (live == null || live.IsBroken) throw new InvalidOperationException("DB에 다시 연결한 후 저장하세요.");
                         if (IsRunning(dbId) || live.IsBusy) throw new InvalidOperationException("DB에서 다른 작업이 실행 중입니다.");
-                        if (live.HasPendingChanges) throw new InvalidOperationException("자동 커밋을 방지하기 위해 기존 변경을 먼저 커밋하거나 롤백한 후 저장하세요.");
-                        // 구조 편집이 만든 문장(SQL Server는 기본값 제약 정리 등을 한 배치로 묶는다)을 DDL로 실행한다:
-                        // 세션이 열린 트랜잭션을 먼저 끝내고 트랜잭션 밖(자동 커밋)에서 실행한다 — 모든 DBMS에서 Oracle DDL과 같은 결과.
+                        if (live.HasPendingChanges) throw new InvalidOperationException("기존 변경이 구조 변경과 함께 커밋되지 않도록 먼저 커밋하거나 롤백한 후 저장하세요.");
+                        // 구조 편집이 만든 문장(SQL Server는 기본값 제약 정리 등을 한 배치로 묶는다)을 DDL로 실행한다. 단계마다 성공하면 반영된 것으로 본다
+                        // (편집기의 부분 실패 재시도가 그 전제): Oracle은 DDL 자동 커밋, PostgreSQL·SQL Server는 트랜잭션 DDL이라 여기서 바로 커밋한다.
+                        // 실패하면 세션이 그 DDL만 롤백한다(앞선 대기는 위에서 막았다).
                         var statement = SchemaRead.DdlStatement(sql);
                         try {
                             await live.ExecuteAsync(statement, 0);
+                            if (live.HasPendingChanges)
+                                await live.CommitAsync();
                             AddMessage(dbId, "구조 변경 완료: " + sql, MessageKind.Success);
                         } finally { _host.StateChanged(dbId); }
                     },
@@ -1943,7 +1946,8 @@ namespace MyPlugin
                 AddMessage(dbId, "위험한 문장 실행을 취소했습니다.", MessageKind.Info);
                 return;
             }
-            if (statement.Kind == SqlKind.Ddl && session.HasPendingChanges && !Dialogs.ConfirmDdlWithPending(owner, profile, session.PendingText))
+            // DDL이 대기 변경을 함께 커밋하는 공급자(Oracle)만 묻는다. PostgreSQL·SQL Server는 DDL도 커밋 대기가 된다
+            if (statement.Kind == SqlKind.Ddl && session.Provider.DdlAutoCommits && session.HasPendingChanges && !Dialogs.ConfirmDdlWithPending(owner, profile, session.PendingText))
             {
                 AddMessage(dbId, "DDL 실행을 취소했습니다.", MessageKind.Info);
                 return;
@@ -2050,7 +2054,7 @@ namespace MyPlugin
                     return;
                 }
             }
-            if (statements.Any(s => s.Kind == SqlKind.Ddl) && session.HasPendingChanges && !Dialogs.ConfirmDdlWithPending(owner, profile, session.PendingText))
+            if (session.Provider.DdlAutoCommits && statements.Any(s => s.Kind == SqlKind.Ddl) && session.HasPendingChanges && !Dialogs.ConfirmDdlWithPending(owner, profile, session.PendingText))
             {
                 AddMessage(dbId, "DDL이 있는 스크립트 실행을 취소했습니다.", MessageKind.Info);
                 return;

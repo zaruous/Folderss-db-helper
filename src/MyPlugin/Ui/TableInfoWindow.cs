@@ -12,7 +12,7 @@ namespace MyPlugin
     /// F4 테이블 정보 창(모달 아님 — 열어 둔 채 SQL을 쓸 수 있다, Esc로 닫음).
     /// 위: 이름·종류·통계·주석. 가운데: TableSchemaEditor(왼쪽 탭 [컬럼]·[인덱스]·[제약 조건] 표).
     /// Oracle 테이블이고 읽기 전용 접속이 아니며 editSchema가 있으면 표 안에서 구조를 고치고 [저장](Ctrl+S)으로 DDL을 실행한다
-    /// (저장 때 검증 → 실행할 SQL 확인 → 차례로 실행, DDL은 자동 커밋). 아래: [SELECT 문 넣기]·[빠른 조회]·[저장]·[닫기].
+    /// (저장 때 검증 → 실행할 SQL 확인 → 차례로 실행, 문장마다 성공하면 커밋 — Oracle은 DDL 자동 커밋, PostgreSQL·SQL Server는 저장 경로가 커밋). 아래: [SELECT 문 넣기]·[빠른 조회]·[저장]·[닫기].
     /// </summary>
     internal static class TableInfoWindow
     {

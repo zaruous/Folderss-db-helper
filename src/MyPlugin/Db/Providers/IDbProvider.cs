@@ -63,6 +63,19 @@ namespace MyPlugin
         /// </summary>
         bool SupportsMultipleOpenReaders { get; }
 
+        /// <summary>
+        /// DDL이 열린 트랜잭션을 묵시적으로 커밋하는지. Oracle(과 모르는 연결 Generic)은 true — 세션이 DDL 앞에서 커밋하고 트랜잭션 밖에서 실행하며,
+        /// 커밋 대기 변경이 있으면 화면이 "함께 커밋됨" 확인을 받는다. PostgreSQL·SQL Server는 false — DDL도 트랜잭션 안에서 실행해 커밋 대기가 되고
+        /// [롤백]으로 앞선 DML과 함께 되돌릴 수 있다(트랜잭션 안에서 못 하는 문장은 <see cref="RequiresNoTransaction"/>).
+        /// </summary>
+        bool DdlAutoCommits { get; }
+
+        /// <summary>
+        /// 트랜잭션 블록 안에서 실행할 수 없는 문장인지(PostgreSQL CREATE DATABASE·VACUUM·CREATE INDEX CONCURRENTLY, SQL Server BACKUP·ALTER DATABASE 등, <see cref="DdlTransactionRules"/>).
+        /// true면 세션이 커밋 대기 변경이 있을 때 실행을 거부하고(앞선 변경을 몰래 커밋하지 않는다), 없으면 트랜잭션 밖에서 실행한다(바로 반영). Oracle·Generic은 언제나 false.
+        /// </summary>
+        bool RequiresNoTransaction(SqlStatement statement);
+
         /// <summary>취소로 끝난 실행의 예외인지(공급자 고유 오류 번호). 모르면 false.</summary>
         bool IsCancellation(Exception ex);
 

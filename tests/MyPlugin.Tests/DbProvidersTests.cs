@@ -243,6 +243,68 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void DdlAutoCommits_PerProvider()
+        {
+            Assert.True(DbProviders.Oracle.DdlAutoCommits);
+            Assert.False(DbProviders.Postgres.DdlAutoCommits);
+            Assert.False(DbProviders.SqlServer.DdlAutoCommits);
+            Assert.True(DbProviders.Generic.DdlAutoCommits);
+        }
+
+        [Theory]
+        [InlineData("CREATE DATABASE dbh_x", true)]
+        [InlineData("drop database if exists dbh_x", true)]
+        [InlineData("CREATE TABLESPACE ts LOCATION '/x'", true)]
+        [InlineData("ALTER SYSTEM SET work_mem = '8MB'", true)]
+        [InlineData("ALTER DATABASE d SET TABLESPACE ts", true)]
+        [InlineData("ALTER DATABASE d SET work_mem = '8MB'", false)]
+        [InlineData("VACUUM ANALYZE t", true)]
+        [InlineData("CREATE INDEX CONCURRENTLY ix ON t (a)", true)]
+        [InlineData("CREATE UNIQUE INDEX CONCURRENTLY ix ON t (a)", true)]
+        [InlineData("DROP INDEX CONCURRENTLY ix", true)]
+        [InlineData("REINDEX TABLE CONCURRENTLY t", true)]
+        [InlineData("REINDEX DATABASE d", true)]
+        [InlineData("REINDEX TABLE t", false)]
+        [InlineData("CLUSTER", true)]
+        [InlineData("CLUSTER t USING ix", false)]
+        [InlineData("DISCARD ALL", true)]
+        [InlineData("/* 주석 */ -- 줄\nCREATE DATABASE dbh_x", true)]
+        [InlineData("CREATE INDEX ix ON t (a)", false)]
+        [InlineData("CREATE TABLE t (a int)", false)]
+        [InlineData("ALTER TABLE t ADD b int", false)]
+        [InlineData("DROP TABLE t", false)]
+        public void Postgres_RequiresNoTransaction(string sql, bool expected)
+        {
+            Assert.Equal(expected, DbProviders.Postgres.RequiresNoTransaction(new SqlStatement { Text = sql }));
+        }
+
+        [Theory]
+        [InlineData("CREATE DATABASE dbh_x", true)]
+        [InlineData("ALTER DATABASE dbh_x SET RECOVERY SIMPLE", true)]
+        [InlineData("DROP DATABASE dbh_x", true)]
+        [InlineData("BACKUP DATABASE d TO DISK = 'x.bak'", true)]
+        [InlineData("RESTORE DATABASE d FROM DISK = 'x.bak'", true)]
+        [InlineData("CREATE FULLTEXT CATALOG ftc", true)]
+        [InlineData("ALTER FULLTEXT INDEX ON t ENABLE", true)]
+        [InlineData("RECONFIGURE", true)]
+        [InlineData("KILL 53", true)]
+        [InlineData("CREATE TABLE t (a int)", false)]
+        [InlineData("ALTER TABLE t ADD b int", false)]
+        [InlineData("CREATE INDEX ix ON t (a)", false)]
+        [InlineData("DROP TABLE t", false)]
+        public void SqlServer_RequiresNoTransaction(string sql, bool expected)
+        {
+            Assert.Equal(expected, DbProviders.SqlServer.RequiresNoTransaction(new SqlStatement { Text = sql }));
+        }
+
+        [Fact]
+        public void OracleAndGeneric_NeverRequireNoTransaction()
+        {
+            Assert.False(DbProviders.Oracle.RequiresNoTransaction(new SqlStatement { Text = "CREATE DATABASE x" }));
+            Assert.False(DbProviders.Generic.RequiresNoTransaction(new SqlStatement { Text = "VACUUM" }));
+        }
+
+        [Fact]
         public void SupportsMultipleOpenReaders_PerProvider()
         {
             Assert.True(DbProviders.Oracle.SupportsMultipleOpenReaders);

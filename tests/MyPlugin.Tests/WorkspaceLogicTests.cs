@@ -334,6 +334,10 @@ namespace MyPlugin.Tests
 
             var ddl = WorkspaceLogic.ExecutedStatus(SqlScript.Parse("CREATE TABLE t (a NUMBER)"), new ExecuteResult { Kind = SqlKind.Ddl, Summary = "실행함 (DDL은 자동 커밋됨)", TransactionEnded = true }, TimeSpan.FromSeconds(1));
             Assert.Equal("실행함 (DDL은 자동 커밋됨)  1.00초", ddl.PlainText);
+
+            // 트랜잭션 DDL(PostgreSQL·SQL Server)은 커밋 대기
+            var pendingDdl = WorkspaceLogic.ExecutedStatus(SqlScript.Parse("CREATE TABLE t (a int)"), new ExecuteResult { Kind = SqlKind.Ddl, Summary = "실행함 (DDL 커밋 전)" }, TimeSpan.Zero);
+            Assert.Equal("실행함 (DDL 커밋 전)  0.00초  커밋 전에는 다른 세션에 보이지 않습니다. 같은 DB의 다른 탭에는 보입니다(세션 공유).", pendingDdl.PlainText);
         }
 
         [Fact]

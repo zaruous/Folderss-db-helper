@@ -72,6 +72,11 @@ namespace MyPlugin
         /// <summary>Npgsql은 연결당 명령 하나 — 열린 커서가 있으면 다른 명령이 "A command is already in progress"로 실패한다.</summary>
         public bool SupportsMultipleOpenReaders { get { return false; } }
 
+        /// <summary>PostgreSQL DDL은 트랜잭션 안에서 실행되고 롤백된다.</summary>
+        public bool DdlAutoCommits { get { return false; } }
+
+        public bool RequiresNoTransaction(SqlStatement statement) { return DdlTransactionRules.PostgresNoTransaction(statement); }
+
         /// <summary>57014 query_canceled.</summary>
         public bool IsCancellation(Exception ex)
         {

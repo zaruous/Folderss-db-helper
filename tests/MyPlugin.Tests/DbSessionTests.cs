@@ -305,6 +305,127 @@ namespace MyPlugin.Tests
             }
         }
 
+        // ---------- DDL 트랜잭션 정책(#30): PostgreSQL·SQL Server 공급자는 트랜잭션 DDL. SQLite도 DDL을 트랜잭션 안에서 롤백할 수 있어 공급자만 바꿔 시험한다 ----------
+
+        [Fact]
+        public async Task TransactionalDdl_KeepsPriorDmlPending_RollbackUndoesBoth()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1), (2)"), 0);
+
+                var ddl = await session.ExecuteAsync(Ddl("CREATE TABLE u (y INTEGER)"), 0);
+
+                Assert.False(ddl.TransactionEnded);
+                Assert.Equal("실행함 (DDL 커밋 전)", ddl.Summary);
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal("커밋 대기 2행 · DDL", session.PendingText);
+                await session.RollbackAsync();
+                Assert.Equal(0, await CountAsync(session, "t"));
+                // CREATE TABLE도 롤백되었다
+                await Assert.ThrowsAsync<SqliteException>(() => CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task TransactionalDdl_WithoutPending_IsPendingUntilCommit()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.SqlServer))
+            {
+                var ddl = await session.ExecuteAsync(Ddl("CREATE TABLE u (y INTEGER)"), 0);
+
+                Assert.False(ddl.TransactionEnded);
+                Assert.Equal("커밋 대기(DDL)", session.PendingText);
+                await session.CommitAsync();
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, await CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task TransactionalDdl_FailureWithPending_RollsBackOnlyTheDdl()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+                await session.ExecuteAsync(Ddl("CREATE TABLE u (y INTEGER)"), 0);
+
+                // 이미 있는 테이블 — 실패한 DDL만 세이브포인트로 되돌리고 앞선 INSERT·DDL은 대기로 남는다
+                await Assert.ThrowsAsync<SqliteException>(() => session.ExecuteAsync(Ddl("CREATE TABLE t (x INTEGER)"), 0));
+
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal("커밋 대기 1행 · DDL", session.PendingText);
+                await session.CommitAsync();
+                Assert.Equal(1, await CountAsync(session, "t"));
+                Assert.Equal(0, await CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task TransactionalDdl_FailureWithoutPending_LeavesNoTransaction()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+
+                await Assert.ThrowsAsync<SqliteException>(() => session.ExecuteAsync(Ddl("CREATE TABLE t (x INTEGER)"), 0));
+
+                Assert.False(session.HasPendingChanges);
+                Assert.False(session.IsBroken);
+                // 남은 트랜잭션이 없어 트랜잭션 밖 전용 문장도 바로 된다
+                var vacuum = await session.ExecuteAsync(Other("VACUUM"), 0);
+                Assert.True(vacuum.TransactionEnded);
+            }
+        }
+
+        [Fact]
+        public async Task NoTransactionStatement_WithPending_IsRefusedAndKeepsChanges()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+                await session.ExecuteAsync(Dml("INSERT INTO t VALUES (1)"), 0);
+
+                var error = await Assert.ThrowsAsync<InvalidOperationException>(() => session.ExecuteAsync(Other("VACUUM"), 0));
+
+                Assert.Contains("VACUUM", error.Message);
+                Assert.Contains("트랜잭션 안에서 실행할 수 없어", error.Message);
+                Assert.True(session.HasPendingChanges);
+                Assert.Equal(1, session.PendingRowCount);
+                await session.RollbackAsync();
+                Assert.Equal(0, await CountAsync(session, "t"));
+            }
+        }
+
+        [Fact]
+        public async Task NoTransactionStatement_WithoutPending_RunsOutsideTransaction()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                await SetupAsync(session, "CREATE TABLE t (x INTEGER)");
+
+                var vacuum = await session.ExecuteAsync(Other("VACUUM"), 0);
+
+                Assert.True(vacuum.TransactionEnded);
+                Assert.Equal("실행함 (트랜잭션 밖에서 실행 — 바로 반영됨)", vacuum.Summary);
+                Assert.False(session.HasPendingChanges);
+            }
+        }
+
+        [Fact]
+        public async Task AutoCommitDdlProvider_DoesNotUseNoTransactionRule()
+        {
+            // Generic(Oracle 규칙)은 VACUUM도 다른 문장처럼 실행한다 — 트랜잭션이 없으면 SQLite가 받아들인다
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                var vacuum = await session.ExecuteAsync(Other("VACUUM"), 0);
+                Assert.False(vacuum.TransactionEnded);
+                Assert.Equal("실행함", vacuum.Summary);
+            }
+        }
+
         [Fact]
         public async Task PlSql_MarksPendingWithUnknownCount()
         {
@@ -1625,6 +1746,13 @@ namespace MyPlugin.Tests
         private static async Task<DbSession> OpenAsync(DbConnection connection)
         {
             var session = new DbSession(connection);
+            await session.OpenAsync();
+            return session;
+        }
+
+        private static async Task<DbSession> OpenAsync(DbConnection connection, IDbProvider provider)
+        {
+            var session = new DbSession(connection, provider);
             await session.OpenAsync();
             return session;
         }
