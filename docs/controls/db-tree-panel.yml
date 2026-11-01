@@ -27,7 +27,7 @@ features:
   - name: 검색
     description: >-
       연결된 DB마다 서버에서 스키마·객체(·열) 이름을 찾는다. 입력이 멈춘 뒤 300ms에 시작하고 이전 검색은 취소한다.
-      일치한 계층만 보이고 검색어 위치를 강조한다. 범위 콤보(스키마·객체 / 스키마·객체·열), [내장] 체크(Oracle 내장 스키마 포함).
+      일치한 계층만 보이고 검색어 위치를 강조한다. 최상위 DB 행은 일치가 없거나 연결하지 않아도 남는다(흐리게·접힘, 펼치면 일반 하위). "일치 없음" 안내는 그 행들 아래에 보인다. 범위 콤보(스키마·객체 / 스키마·객체·열), [내장] 체크(Oracle 내장 스키마 포함).
   - name: 여러 줄 고르기
     description: Ctrl+클릭으로 하나씩, Shift+클릭·Shift+↑↓로 범위를 고른다(테이블 정의서 대상).
   - name: 두 번 누르기
@@ -74,6 +74,7 @@ limits:
   - 열 검색은 ALL_TAB_COLUMNS 등을 조회해 느릴 수 있다.
   - Oracle 11g처럼 ORACLE_MAINTAINED 열이 없으면 알려진 내장 스키마 목록으로 다시 묻는다.
 tests:
+  - tests/MyPlugin.UiTests/TreeSearchHeadlessTests.cs
   - tests/MyPlugin.Tests/TreeModelTests.cs
   - tests/MyPlugin.Tests/TreePanelLogicTests.cs
   - tests/MyPlugin.Tests/TreeLoaderLogicTests.cs

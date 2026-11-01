@@ -360,18 +360,26 @@ namespace MyPlugin
             searchState = searchState ?? new TreeState();
             foreach (var db in dbs)
             {
-                TreeSearchResult result;
-                if (db == null || db.DbId == null || !results.TryGetValue(db.DbId, out result) || result == null)
+                if (db == null || db.DbId == null)
                     continue;
+                var ctx = new BuildContext(db, searchState, showSystem);
+                TreeSearchResult result;
+                if (!results.TryGetValue(db.DbId, out result) || result == null)
+                {
+                    // 검색 결과가 없는 DB(연결 안 됨·검색 중)도 최상위 행은 남긴다 — 흐리게, 접힘(펼치면 일반 모드와 같은 하위).
+                    var dbRow = DbRow(db);
+                    dbRow.IsDim = true;
+                    AddRow(rows, ctx, dbRow);
+                    continue;
+                }
                 var root = CollectHits(db, result);
                 root.Hit = Contains(db.Name, needle);
                 if (!string.IsNullOrEmpty(result.Error))
                     root.HeadNote = ErrorNote(root.Row, result.Error);
                 if (result.Truncated)
                     root.TailNote = Note(root.Row, TreeKeys.MoreSuffix, TruncatedText);
-                // 일치도 안내 Note도 없는 DB는 보이지 않는다(일치 노드와 그 상위 경로만 보임).
-                if (root.Hit || root.HasContent)
-                    EmitSearch(rows, new BuildContext(db, searchState, showSystem), root, needle);
+                // 최상위 DB 행은 일치가 없어도 남긴다(흐리게, 접힘). 그 아래는 일치 노드와 그 상위 경로만 보인다.
+                EmitSearch(rows, ctx, root, needle);
             }
             return rows;
         }

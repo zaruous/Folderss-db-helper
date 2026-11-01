@@ -1078,20 +1078,38 @@ namespace MyPlugin.Tests
             Assert.Equal(TreeLoadKind.Schemas, loading[1].Load.Kind);
         }
 
+        static void OnlyDimDbRow(List<TreeRow> rows)
+        {
+            var row = Assert.Single(rows);
+            Assert.Equal(TreeRowKind.Database, row.Kind);
+            Assert.True(row.IsDim);
+            Assert.False(row.IsHit);
+            Assert.False(row.Expanded);
+        }
+
         [Fact]
-        public void BuildSearch_OnlyDbsWithResultsEntryAndSomethingToShow()
+        public void BuildSearch_TopLevelDbRowsAlwaysStay()
         {
             var d1 = Db("d1", "개발");
-            var d2 = Db("d2", "EMP 운영"); // 이름이 일치해도 results에 없으면(연결 안 됨) 빠진다
-            var d3 = Db("d3", "검증");      // results는 있지만 일치가 없다
+            var d2 = Db("d2", "EMP 운영"); // results에 없으면(연결 안 됨·검색 중) 흐린 DB 행만, 접힘
+            var d3 = Db("d3", "검증");      // results는 있지만 일치가 없다 → 흐린 DB 행만, 접힘
             var r1 = new TreeSearchResult();
             r1.Objects.Add(ObjectHit("SCOTT", "TABLE", "EMP"));
             var results = new Dictionary<string, TreeSearchResult> { { "d1", r1 }, { "d3", new TreeSearchResult() } };
 
             var rows = TreeRowsBuilder.BuildSearch(new[] { d1, d2, d3 }, results, "emp", new TreeState(), false);
 
-            Assert.Equal(4, rows.Count);
-            Assert.All(rows, r => Assert.Equal("d1", r.DbId));
+            Assert.Equal(6, rows.Count);
+            Assert.Equal(4, rows.Count(r => r.DbId == "d1"));
+            var tops = rows.Where(r => r.Kind == TreeRowKind.Database).ToList();
+            Assert.Equal(new[] { "d1", "d2", "d3" }, tops.Select(r => r.DbId));
+            foreach (var other in tops.Skip(1))
+            {
+                Assert.True(other.IsDim);
+                Assert.False(other.IsHit);
+                Assert.False(other.Expanded);
+            }
+            Assert.All(rows.Where(r => r.IsHit), r => Assert.Equal("d1", r.DbId));
         }
 
         [Fact]
@@ -1276,7 +1294,7 @@ namespace MyPlugin.Tests
             result.Objects.Add(ObjectHit("SCOTT", "PACKAGE BODY", "EMP_PKG"));
             result.Columns.Add(ColumnHit("SCOTT", "SEQUENCE", "EMP_SEQ", "EMP", "NUMBER"));
 
-            Assert.Empty(Search(Db(), result, "emp"));
+            OnlyDimDbRow(Search(Db(), result, "emp")); // 일치가 없어도 최상위 DB 행은 남는다
         }
 
         [Fact]
@@ -1305,7 +1323,7 @@ namespace MyPlugin.Tests
             Assert.True(rows[0].IsDim);
             Assert.True(rows[3].IsHit);
             Assert.Empty(rows[3].Highlights);
-            Assert.Empty(Search(Db(), new TreeSearchResult(), null));
+            OnlyDimDbRow(Search(Db(), new TreeSearchResult(), null));
         }
     }
 }
