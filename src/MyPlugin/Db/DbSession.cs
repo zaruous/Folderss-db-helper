@@ -1289,6 +1289,7 @@ namespace MyPlugin
             if (oracle != null)
             {
                 oracle.BindByName = true;
+                oracle.FetchSize = QueryOptions.FetchBytes;
                 oracle.InitialLOBFetchSize = ValueFormatter.MaxTextLength;
                 // LONG 열(ALL_VIEWS.TEXT 등)은 기본값 0이면 select 목록에 ROWID·기본 키가 없을 때 읽을 수 없다
                 oracle.InitialLONGFetchSize = -1;

@@ -172,12 +172,15 @@ namespace MyPlugin
         private bool _editMarkers;
         private ResultGridRow _found;
         private readonly List<MenuAction> _menuActions = new List<MenuAction>();
+        // 열 머리 오른쪽 메뉴 필터: 결과 열 위치 → 포함 문자열. 여러 열이면 모두 맞는 행만 보인다(AND)
+        private readonly Dictionary<int, string> _filters = new Dictionary<int, string>();
 
         private sealed class MenuAction
         {
             public MenuItem Item;
             public Separator Separator;
             public Func<bool> Visible;
+            public bool RequiresSelection;
         }
 
         /// <param name="copy">복사 요청. true = 전체(머리글 포함), false = 선택한 행.</param>
@@ -237,7 +240,7 @@ namespace MyPlugin
                 {
                     var shown = extra.Visible();
                     extra.Separator.Visibility = extra.Item.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-                    extra.Item.IsEnabled = _list.SelectedItems.Count > 0;
+                    extra.Item.IsEnabled = !extra.RequiresSelection || _list.SelectedItems.Count > 0;
                 }
             };
             _list.ContextMenu = menu;
@@ -287,6 +290,7 @@ namespace MyPlugin
         {
             ApplyThemeStyles();
             _editMarkers = false;
+            _filters.Clear();
             _found = null;
             // 열을 끌어 옮기면 복사(TSV)의 열 순서와 화면이 달라진다
             var view = new GridView { AllowsColumnReorder = false };
@@ -315,6 +319,7 @@ namespace MyPlugin
                 var sample = rows.Take(SampleRows).Select(r => index < r.Values.Length ? r.Values[index] : null);
                 TextBlock title;
                 var header = HeaderText(column.Name, column.TypeLabel, out title);
+                header.ContextMenu = FilterMenu(index, title);
                 _titles.Add(title);
                 _names.Add(column.Name ?? "");
                 view.Columns.Add(new GridViewColumn
@@ -329,10 +334,80 @@ namespace MyPlugin
             _rowsView = CollectionViewSource.GetDefaultView(rows) as ListCollectionView;
             if (_rowsView != null)
                 _rowsView.CustomSort = null;
+                _rowsView.Filter = null;
             // 같은 탭에서 다시 조회하면 이전 결과의 스크롤 위치에 머물지 않게 한다
             var scroller = WorkspaceUi.FindDescendant<ScrollViewer>(_list);
             if (scroller != null)
                 scroller.ScrollToHome();
+        }
+
+        /// <summary>
+        /// 열 머리 오른쪽 메뉴: 이 열의 포함 문자열 필터(가져온 행만, 대소문자 무시)와 [필터 해제](이 열만).
+        /// 필터 중인 열은 머리 글자를 강조 색으로 보인다.
+        /// </summary>
+        private ContextMenu FilterMenu(int index, TextBlock title)
+        {
+            var menu = new ContextMenu();
+            var input = new TextBox { Width = 180, ToolTip = "가져온 행에서 이 열에 이 글자가 들어간 행만 보기 (다른 열 필터와 함께 적용)" };
+            AutomationProperties.SetName(input, "열 필터");
+            input.KeyDown += (s, e) =>
+            {
+                if (e.Key == Key.Enter || e.Key == Key.Escape)
+                {
+                    menu.IsOpen = false;
+                    e.Handled = true;
+                }
+            };
+            menu.Items.Add(new MenuItem { Header = input, StaysOpenOnClick = true });
+            var clear = new MenuItem { Header = "이 열 필터 해제" };
+            clear.Click += (s, e) => { input.Clear(); menu.IsOpen = false; };
+            menu.Items.Add(clear);
+            menu.Opened += (s, e) =>
+            {
+                string term;
+                input.Text = _filters.TryGetValue(index, out term) ? term : "";
+                input.Focus();
+                input.SelectAll();
+            };
+            input.TextChanged += (s, e) =>
+            {
+                if (string.IsNullOrEmpty(input.Text))
+                    _filters.Remove(index);
+                else
+                    _filters[index] = input.Text;
+                if (_filters.ContainsKey(index))
+                    title.SetResourceReference(TextBlock.ForegroundProperty, Theme.Accent);
+                else
+                    title.SetResourceReference(TextBlock.ForegroundProperty, Theme.PrimaryText);
+                ApplyFilters();
+            };
+            return menu;
+        }
+
+        private void ApplyFilters()
+        {
+            if (_rowsView == null)
+                return;
+            if (_filters.Count == 0)
+            {
+                _rowsView.Filter = null;
+                return;
+            }
+            var filters = _filters.ToArray();
+            _rowsView.Filter = item =>
+            {
+                var row = (ResultGridRow)item;
+                // 편집으로 추가한 행은 필터와 상관없이 보인다(저장 전 새 행이 사라져 보이지 않게)
+                if (row.State == RowEditState.Inserted)
+                    return true;
+                foreach (var filter in filters)
+                {
+                    var value = filter.Key < row.Values.Length ? row.Values[filter.Key] : null;
+                    if ((value ?? "").IndexOf(filter.Value, StringComparison.OrdinalIgnoreCase) < 0)
+                        return false;
+                }
+                return true;
+            };
         }
 
         /// <summary>행이 늘어 번호 자릿수가 커지면 번호 열을 넓힌다.</summary>
@@ -360,10 +435,10 @@ namespace MyPlugin
         /// <summary>
         /// 오른쪽 메뉴 끝에 선택한 행으로 하는 동작을 붙인다(구분선 뒤). visible이 false면 메뉴를 열 때 숨기고, 고른 행이 없으면 꺼진다.
         /// </summary>
-        public void AddMenuAction(string header, Func<bool> visible, Action run)
+        public void AddMenuAction(string header, Func<bool> visible, Action run, bool requiresSelection = true)
         {
             var menu = _list.ContextMenu;
-            var action = new MenuAction { Item = new MenuItem { Header = header }, Separator = new Separator(), Visible = visible };
+            var action = new MenuAction { Item = new MenuItem { Header = header }, Separator = new Separator(), Visible = visible, RequiresSelection = requiresSelection };
             action.Item.Click += (s, e) => run();
             menu.Items.Add(action.Separator);
             menu.Items.Add(action.Item);
@@ -758,9 +833,9 @@ namespace MyPlugin
                 {
                     switch ((RowEditState)value)
                     {
-                        case RowEditState.Modified: return "고친 행 — [저장]하면 UPDATE";
-                        case RowEditState.Deleted: return "삭제 표시한 행 — [저장]하면 DELETE";
-                        case RowEditState.Inserted: return "추가한 행 — [저장]하면 INSERT";
+                        case RowEditState.Modified: return "수정한 행 — 저장 전";
+                        case RowEditState.Deleted: return "삭제 예정 행 — 저장 전";
+                        case RowEditState.Inserted: return "추가한 행 — 저장 전";
                     }
                 }
                 return null;

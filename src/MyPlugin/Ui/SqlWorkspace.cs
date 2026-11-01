@@ -1266,7 +1266,7 @@ namespace MyPlugin
                     return;
                 var statement = SqlScript.Parse(WorkspaceLogic.QuickQueryStatement(owner, objectName, where, key != null && key.Kind == RowKeyKind.RowId), LexOf(dbId));
                 AddMessage(dbId, WorkspaceLogic.QuickQueryMessage(WorkspaceLogic.QualifiedName(owner, objectName), tab.Title, where), MessageKind.Info);
-                await RunSingleAsync(tab, profile, session, statement, WorkspaceLogic.QuickQueryRows);
+                await RunSingleAsync(tab, profile, session, statement, QueryOptions.QuickRows);
                 AttachEditTarget(tab, profile, owner, objectName, statement.Text, metadata, key, metadataError, where);
             }
             catch (Exception ex)
@@ -1334,7 +1334,9 @@ namespace MyPlugin
                     SetStatus(tab, loading);
                 try
                 {
-                    info = await TableInfo.DescribeAsync(session, owner, objectName, CancellationToken.None, text => problem = text);
+                    var schema = DbProviders.For(profile).TableSchema
+                        ?? throw new InvalidOperationException(DbProviders.For(profile).DisplayName + " 접속은 테이블 정보를 지원하지 않습니다.");
+                    info = await schema.DescribeAsync(session, owner, objectName, CancellationToken.None, text => problem = text);
                 }
                 catch (Exception ex)
                 {
@@ -1356,7 +1358,30 @@ namespace MyPlugin
                 TableInfoWindow.Show(Window.GetWindow(this), info, profile,
                     () => InsertSelect(dbId, target.Owner, target.Name),
                     () => QuickQuery(dbId, target.Owner, target.Name),
-                    text => CopyText(text, "표를 TSV로 복사했습니다."));
+                    text => CopyText(text, "표를 TSV로 복사했습니다."),
+                    async sql => {
+                        var current = Profile(dbId);
+                        if (current == null || current.ReadOnly) throw new InvalidOperationException("읽기 전용이거나 삭제된 접속입니다.");
+                        var live = _host.GetSession(dbId);
+                        if (live == null || live.IsBroken) throw new InvalidOperationException("DB에 다시 연결한 후 저장하세요.");
+                        if (IsRunning(dbId) || live.IsBusy) throw new InvalidOperationException("DB에서 다른 작업이 실행 중입니다.");
+                        if (live.HasPendingChanges) throw new InvalidOperationException("자동 커밋을 방지하기 위해 기존 변경을 먼저 커밋하거나 롤백한 후 저장하세요.");
+                        // 구조 편집이 만든 문장(SQL Server는 기본값 제약 정리 등을 한 배치로 묶는다)을 DDL로 실행한다:
+                        // 세션이 열린 트랜잭션을 먼저 끝내고 트랜잭션 밖(자동 커밋)에서 실행한다 — 모든 DBMS에서 Oracle DDL과 같은 결과.
+                        var statement = SchemaRead.DdlStatement(sql);
+                        try {
+                            await live.ExecuteAsync(statement, 0);
+                            AddMessage(dbId, "구조 변경 완료: " + sql, MessageKind.Success);
+                        } finally { _host.StateChanged(dbId); }
+                    },
+                    async () => {
+                        var live = _host.GetSession(dbId);
+                        if (live == null || live.IsBroken) throw new InvalidOperationException("DB 연결을 확인하세요.");
+                        string failure = null;
+                        var schema = DbProviders.For(Profile(dbId)).TableSchema ?? throw new InvalidOperationException("테이블 정보를 지원하지 않는 접속입니다.");
+                        return await schema.DescribeAsync(live, target.Owner, target.Name, CancellationToken.None, message => failure = message)
+                            ?? throw new InvalidOperationException(failure ?? "테이블 정보를 찾을 수 없습니다.");
+                    });
             }
             catch (Exception ex)
             {

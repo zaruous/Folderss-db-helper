@@ -401,8 +401,8 @@ namespace MyPlugin
 
         // ---- 빠른 조회(트리 F1) ----
 
-        /// <summary>트리 F1 빠른 조회로 처음 가져올 행 수.</summary>
-        public const int QuickQueryRows = 100;
+        /// <summary>트리 F1 빠른 조회로 처음 가져올 행 수. 설정 [데이터 조회]의 값(QueryOptions.QuickRows, 기본 100)을 따른다.</summary>
+        public static int QuickQueryRows => QueryOptions.QuickRows;
 
         public static string QuickQueryMessage(string qualifiedName, string tabTitle, string where = null)
         {

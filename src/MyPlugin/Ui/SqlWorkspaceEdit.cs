@@ -25,12 +25,29 @@ namespace MyPlugin
         private TextBlock _editInfo;
         private TextBox _editWhere;
         private Button _requery;
+        private Button _excelExport;
+        private Button _excelTemplate;
+        private Button _excelImport;
         // WHERE 칸을 마지막으로 채운 결과: 같은 결과를 다시 그릴 때 입력 중인 조건을 덮어쓰지 않게
         private ResultSetState _editWhereResult;
 
         private FrameworkElement BuildEditBar()
         {
             var bar = new DockPanel { Margin = new Thickness(4, 2, 4, 2) };
+            var excelButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 0, 0) };
+            DockPanel.SetDock(excelButtons, Dock.Right);
+            bar.Children.Add(excelButtons);
+            _excelExport = EditBarButton("엑셀 내보내기", "조회된 행을 엑셀(.xlsx) 파일로 내보냅니다.");
+            _excelExport.Click += (s, e) => Safe(() => TransferExcel("엑셀 내보내기"));
+            excelButtons.Children.Add(_excelExport);
+
+            _excelTemplate = EditBarButton("엑셀 템플릿", "컬럼 헤더만 있는 빈 엑셀(.xlsx) 서식 파일을 만듭니다.");
+            _excelTemplate.Click += (s, e) => Safe(() => TransferExcel("엑셀 템플릿"));
+            excelButtons.Children.Add(_excelTemplate);
+
+            _excelImport = EditBarButton("엑셀 임포트", "엑셀(.xlsx) 파일의 데이터를 새 행으로 추가합니다. [저장]하면 INSERT");
+            _excelImport.Click += (s, e) => Safe(() => TransferExcel("엑셀 임포트"));
+            excelButtons.Children.Add(_excelImport);
             // 순서: 행을 바꾸는 버튼(추가 → 복제 → 편집 → 삭제) │ DB에 보내는 [저장] │ 다시 조회
             _addRow = EditBarButton("행 추가", "빈 새 행을 편집 창에서 채워 추가합니다. [저장]하면 INSERT");
             _duplicateRow = EditBarButton("복제", "고른 행의 값으로 새 행을 만듭니다(편집 창에서 기본 키를 바꾸세요). [저장]하면 INSERT");
@@ -85,7 +102,7 @@ namespace MyPlugin
                 }
             };
             bar.Children.Add(_editWhere);
-            _requery = EditBarButton("다시 조회", "WHERE 조건으로 이 테이블을 다시 조회합니다(앞 " + WorkspaceLogic.QuickQueryRows.ToString(System.Globalization.CultureInfo.InvariantCulture) + "행)");
+            _requery = EditBarButton("다시 조회", "WHERE 조건으로 이 테이블을 다시 조회합니다(앞 " + QueryOptions.QuickRows.ToString(System.Globalization.CultureInfo.InvariantCulture) + "행)");
             _requery.Click += (s, e) => Safe(RequeryWithWhere);
             bar.Children.Add(_requery);
             _editInfo = Theme.Text("", Theme.SecondaryText);
@@ -101,6 +118,96 @@ namespace MyPlugin
             AutomationProperties.SetName(_editBar, "결과 편집");
             DockPanel.SetDock(_editBar, Dock.Top);
             return _editBar;
+        }
+
+        private void TransferExcel(string action)
+        {
+            var tab = _active;
+            var result = tab != null ? tab.ActiveResult : null;
+            if (result == null || tab.Running || result.Columns == null)
+                return;
+
+            if (action == "엑셀 임포트")
+            {
+                var profile = Profile(result.ResultDbId);
+                if (result.Edit == null || !result.Edit.CanEdit || profile == null || profile.ReadOnly)
+                    return;
+
+                var open = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "엑셀 데이터 가져오기",
+                    Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx"
+                };
+                if (open.ShowDialog() != true)
+                    return;
+
+                List<string[]> values;
+                try
+                {
+                    values = ResultExcel.Read(open.FileName, result.Columns);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 임포트 실패: " + ex.Message));
+                    throw;
+                }
+
+                if (values.Count == 0)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("가져올 데이터 행이 없습니다."));
+                    return;
+                }
+
+                var number = result.Rows.Count == 0 ? 1 : result.Rows.Max(r => r.Number) + 1;
+                ResultGridRow firstAdded = null;
+                foreach (var rowValues in values)
+                {
+                    var row = ResultGridRow.NewInserted(number++, rowValues);
+                    if (firstAdded == null)
+                        firstAdded = row;
+                    result.Rows.Add(row);
+                }
+
+                result.Grid.FitRowNumbers(result.Rows.Count);
+                if (firstAdded != null)
+                {
+                    result.Grid.View.SelectedItem = firstAdded;
+                    result.Grid.ScrollIntoView(firstAdded);
+                }
+                RenderEditBar();
+                SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "엑셀에서 {0}개 행을 추가했습니다 — [저장]하면 INSERT합니다(커밋 전).", values.Count)));
+            }
+            else
+            {
+                var isTemplate = action == "엑셀 템플릿";
+                var save = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = isTemplate ? "엑셀 서식 템플릿 저장" : "조회 결과 엑셀 저장",
+                    Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx",
+                    DefaultExt = ".xlsx",
+                    FileName = (result.Edit != null ? result.Edit.Name : "Result") + (isTemplate ? "_Template" : "") + ".xlsx"
+                };
+                if (save.ShowDialog() != true)
+                    return;
+
+                try
+                {
+                    var rowsToExport = isTemplate
+                        ? Enumerable.Empty<string[]>()
+                        : result.Rows.Where(r => r.State != RowEditState.Deleted).Select(r => r.Values);
+                    ResultExcel.Write(save.FileName, result.Columns, rowsToExport);
+                    SetStatus(tab, WorkspaceLogic.TextStatus(string.Format(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        "엑셀 파일로 저장했습니다: {0}", System.IO.Path.GetFileName(save.FileName))));
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 저장 실패: " + ex.Message));
+                    throw;
+                }
+            }
         }
 
         private static Button EditBarButton(string text, string tip)
@@ -155,6 +262,9 @@ namespace MyPlugin
             _editRow.IsEnabled = usable;
             _deleteRows.IsEnabled = usable;
             _saveEdits.IsEnabled = usable && result.HasPendingEdits;
+            if (_excelExport != null) _excelExport.IsEnabled = !tab.Running && result.Columns != null;
+            if (_excelTemplate != null) _excelTemplate.IsEnabled = !tab.Running && result.Columns != null;
+            if (_excelImport != null) _excelImport.IsEnabled = usable;
             var target = WorkspaceLogic.QualifiedName(edit.Owner, edit.Name);
             if (blocked != null)
             {

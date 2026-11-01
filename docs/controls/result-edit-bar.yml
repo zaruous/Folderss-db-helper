@@ -5,18 +5,19 @@ kind: control
 source:
   - src/MyPlugin/Ui/SqlWorkspaceEdit.cs
   - src/MyPlugin/Ui/RowEditLogic.cs
+  - src/MyPlugin/Doc/ResultExcel.cs
   - src/MyPlugin/Db/DbSession.cs
   - src/MyPlugin/Db/Providers/IDbProvider.cs
 base: System.Windows.Controls.Border (DockPanel)
 used_by: [sql-workspace]
 summary: >-
-  빠른 조회(트리 F1) 결과 위에만 보이는 [행 추가]·[복제]·[편집]·[삭제] │ [저장] │ WHERE 칸·[다시 조회] 막대.
+  빠른 조회(트리 F1) 결과 위에만 보이는 [행 추가]·[복제]·[편집]·[삭제] │ [저장] │ WHERE 칸·[다시 조회] │ 엑셀 연동 막대.
   고친 행은 UPDATE, 삭제 표시한 행은 DELETE로 행을 찾는 키(기본 키 → NOT NULL 고유 키 → Oracle ROWID)를 써서 DB에 보낸다(커밋 전).
   WHERE 칸의 조건으로 같은 테이블을 다시 조회해 앞 100행 밖의 행도 편집한다.
 features:
   - name: 버튼 순서
     description: >-
-      행을 바꾸는 버튼(행 추가 → 복제 → 편집 → 삭제), 간격을 두고 DB에 보내는 [저장], 간격을 두고 WHERE 칸·[다시 조회].
+      행을 바꾸는 버튼(행 추가 → 복제 → 편집 → 삭제), 간격을 두고 DB에 보내는 [저장], 간격을 두고 WHERE 칸·[다시 조회], 오른쪽에 엑셀 버튼(내보내기·템플릿·임포트).
   - name: 행 추가
     description: >-
       빈 새 행을 행 편집 창(새 행 모드)에서 채워 결과 끝에 붙인다(초록 바탕·＋). 취소하거나 값이 하나도 없으면 만들지 않는다.
@@ -39,6 +40,10 @@ features:
       DELETE·UPDATE의 WHERE는 키(기본 키·고유 키)의 원래 값 또는 ROWID이고 값은 바인드 변수로 보낸다(Oracle·PostgreSQL ':', SQL Server '@').
       INSERT는 NULL(빈 칸)인 열과 LOB 같은 편집할 수 없는 형식의 열을 빼서 DB 기본값·자동 번호가 들어가게 한다.
       실행한 변경은 편집기 DML과 같이 커밋 대기로 센다.
+  - name: 엑셀 연동
+    description: >-
+      [엑셀 내보내기]로 조회된 행을 .xlsx 파일로 저장하고, [엑셀 템플릿]으로 컬럼 헤더만 있는 빈 서식을 생성하며,
+      [엑셀 임포트]로 엑셀 데이터를 읽어 새 행(INSERT 예정)으로 한 번에 추가한다.
   - name: INSERT 문 만들기(오른쪽 메뉴)
     description: >-
       빠른 조회(F1, 테이블 하나) 결과에서 행을 고르고 오른쪽 메뉴 → 고른 행(화면 순서, 고친 값 그대로)마다 값을 글자로 쓴
@@ -104,6 +109,7 @@ limits:
   - ORDER BY는 넣을 수 없다(괄호 안 조건만).
 tests:
   - tests/MyPlugin.Tests/RowEditLogicTests.cs
+  - tests/MyPlugin.Tests/ResultExcelTests.cs
   - tests/MyPlugin.Tests/DbSessionTests.cs
   - tests/MyPlugin.Tests/TableInfoTests.cs
 related: [result-grid, row-edit-dialog, dialogs]

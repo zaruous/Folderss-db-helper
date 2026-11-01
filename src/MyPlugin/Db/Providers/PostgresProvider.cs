@@ -9,7 +9,7 @@ namespace MyPlugin
     /// <summary>
     /// PostgreSQL 공급자(Npgsql). 접속 프로필의 ServiceName은 데이터베이스 이름이다.
     /// 지원: 접속, 트리(스키마·테이블·뷰·시퀀스·함수/프로시저·열), 검색, SQL 실행(세션의 일반 경로), GCM 정의서.
-    /// 아직 아님: 테이블 정보(F4)·테이블 정의서(ALL_* 기반) — <see cref="IMetadataProvider.SupportsTableInfo"/> false.
+    /// 테이블 정보(F4)·구조 편집은 <see cref="PostgresTableSchema"/>. 아직 아님: 테이블 정의서(ALL_* 기반) — <see cref="IMetadataProvider.SupportsTableInfo"/> false.
     /// </summary>
     internal sealed class PostgresProvider : IDbProvider
     {
@@ -26,6 +26,7 @@ namespace MyPlugin
         public SqlLexRules Lex { get { return SqlLexRules.Postgres; } }
         public IMetadataProvider Metadata { get { return _metadata; } }
         public IMonitorProvider Monitor { get { return _monitor; } }
+        public ITableSchemaProvider TableSchema { get { return PostgresTableSchema.Instance; } }
 
         public List<string> Validate(OracleConnectionProfile profile, string label)
         {

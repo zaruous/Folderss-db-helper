@@ -89,6 +89,11 @@ namespace PluginPreview
             Directory.CreateDirectory(work);
             foreach (var old in Directory.GetDirectories(work, "plugin-*"))
             {
+                // plugin-data는 설정·접속·임시 저장 폴더다. 배포 압축 해제 폴더만 정리한다.
+                var suffix = Path.GetFileName(old).Substring("plugin-".Length);
+                if (!DateTime.TryParseExact(suffix, "yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out _))
+                    continue;
                 try
                 {
                     Directory.Delete(old, true);

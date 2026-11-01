@@ -136,6 +136,47 @@ namespace MyPlugin
         }
 
         /// <summary>
+        /// 테이블 구조 저장 확인. "table에 DDL n문장을 실행할까요?", 실행 순서대로의 문장(고정폭, 스크롤, [SQL 복사]),
+        /// DDL 자동 커밋 안내. 컬럼 삭제(데이터 손실)가 있으면 경고 + 확인 체크(체크 전 [실행] 비활성). 실행이면 true.
+        /// </summary>
+        public static bool ConfirmSchemaChanges(Window owner, OracleConnectionProfile profile, string table, System.Collections.Generic.IList<string> statements, int droppedColumns)
+        {
+            var window = DialogKit.Create(owner, DialogKit.TitleFor("구조 변경 저장", profile), 640);
+            var body = DialogKit.Body(window);
+            body.Children.Add(DialogKit.Text((table ?? "") + "에 DDL " + statements.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "문장을 실행할까요?", 0));
+            var sql = string.Join(Environment.NewLine, statements);
+            var box = DialogKit.SqlBox(sql, 10);
+            box.MaxHeight = 300;
+            box.TextWrapping = TextWrapping.NoWrap;
+            box.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+            body.Children.Add(box);
+            body.Children.Add(DialogKit.Hint("위에서부터 차례로 실행합니다(제약·인덱스 삭제 → 컬럼 → 인덱스 생성 → 제약 추가). 오류가 나면 그 문장에서 멈추고, 앞 문장은 이미 반영된 상태로 남습니다. Oracle DDL은 자동 커밋되어 [롤백]으로 되돌릴 수 없습니다.", 8));
+            CheckBox check = null;
+            if (droppedColumns > 0)
+            {
+                body.Children.Add(DialogKit.Warning("⚠ 컬럼 " + droppedColumns.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개를 삭제합니다. 그 컬럼의 데이터는 되돌릴 수 없습니다.", 8));
+                check = DialogKit.Check("삭제할 컬럼과 대상 DB를 확인했고 실행합니다");
+                body.Children.Add(check);
+            }
+            var run = DialogKit.PrimaryButton("실행");
+            var copy = DialogKit.PlainButton("SQL 복사");
+            copy.Margin = new Thickness(0, 0, 6, 0);
+            run.Margin = new Thickness(0, 0, 6, 0);
+            var cancel = DialogKit.CancelButton("취소", true);
+            if (check != null)
+                DialogKit.EnableWhenChecked(run, check);
+            copy.Click += (s, e) => DialogKit.TryCopy(sql);
+            run.Click += (s, e) =>
+            {
+                if (check == null || check.IsChecked == true)
+                    window.DialogResult = true;
+            };
+            body.Children.Add(DialogKit.Buttons(copy, run, cancel));
+            DialogKit.FocusOnLoad(window, check != null ? (IInputElement)check : run);
+            return window.ShowDialog() == true;
+        }
+
+        /// <summary>
         /// 편집 막대 [다시 조회] 전: 저장하지 않은 수정·삭제 표시를 버릴지. 기본 버튼은 [취소](Enter를 잘못 눌러도 버리지 않게). 버리면 true.
         /// </summary>
         public static bool ConfirmDiscardEdits(Window owner, OracleConnectionProfile profile, string table, string pendingText)

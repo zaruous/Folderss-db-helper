@@ -224,7 +224,8 @@ Ui ── 중립 모델만 안다(ConnectionProfile, SchemaInfo, DbObjectInfo, C
 - 세션: `DbSession(DbConnection, IDbProvider)`·`Provider` 속성·`Create(provider, cs)`. 정적 `IsCancellation`·`IsBrokenError`가 공급자에게도 묻는다. Oracle 분기(명령 설정·ORA 표)는 그대로(3단계).
 - 화면: 접속 관리에 [DBMS] 콤보(라벨·기본 포트 전환, 접속 테스트는 공급자 연결), 연결 흐름이 `DbSession.Create`·`provider.Metadata.CurrentSchema()`, 트리·검색이 `session.Provider.Metadata`, F4·테이블 정의서는 `SupportsTableInfo`로 가드.
 - 테스트: `DbProvidersTests`(등록·호환·연결 문자열·PG SQL·읽기), `PostgresIT`(PG_IT_DSN·PG_IT_USER·PG_IT_PW가 있을 때 실제 서버로 연결·트리·검색·SELECT 커서·GCM 조회 — 사내 mesdb로 통과 확인).
-- 남은 것(3단계): `DbSession`의 Oracle 분기 14곳, `ValueFormatter`, `SqlScript` 방언, 이름 바꾸기(`OracleConnectionProfile → ConnectionProfile`). PostgreSQL의 테이블 정보·테이블 정의서는 1단계(메타데이터 공급자에 `TableInfo`·`TableSpec` 조회 추가)에서.
+- 남은 것(3단계): `DbSession`의 Oracle 분기 14곳, `ValueFormatter`, `SqlScript` 방언, 이름 바꾸기(`OracleConnectionProfile → ConnectionProfile`). 테이블 정의서의 PostgreSQL·SQL Server 조회.
+- 테이블 정보(F4)·구조 편집(2026-11): `IDbProvider.TableSchema`(`ITableSchemaProvider` — `DescribeAsync` + `ISchemaDdl`)로 분리. 구현은 `Db/Schema/`의 `OracleTableSchema`(기존 `TableInfo` ALL_* 조회에 위임)·`PostgresTableSchema`(pg_catalog)·`SqlServerTableSchema`(sys.*). 편집 모델(`SchemaRow`·`SchemaPlan`)과 화면은 `ISchemaDdl`만 쓴다 — 작업 단위(컬럼 추가·형식·NULL·기본값·주석, 인덱스, 제약)마다 실행 단위 SQL 하나를 받고, 실행 순서·부분 실패 재시도는 공통. 생성 SQL은 `SchemaRead.DdlStatement`로 DDL 종류를 정해 실행(세션이 열린 트랜잭션을 먼저 끝내고 자동 커밋). `TableSchemaIT`가 세 DBMS 실제 DB에서 왕복을 확인한다.
 
 ## 9. `SqlScript` 방언 적용 기록 (2026-10-20, PR #23 · v1.10.0)
 

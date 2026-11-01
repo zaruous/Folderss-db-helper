@@ -9,7 +9,7 @@ namespace MyPlugin
     /// <summary>
     /// SQL Server 공급자(Microsoft.Data.SqlClient). 접속 프로필의 ServiceName은 데이터베이스 이름, 주소는 host,port.
     /// 암호화는 Optional + TrustServerCertificate(사내 서버의 자체 서명 인증서에서도 붙게). 지원 범위는 PostgreSQL 공급자와 같다
-    /// (접속·트리·검색·SQL 실행·GCM 정의서, 테이블 정보·테이블 정의서는 아직 아님).
+    /// (접속·트리·검색·SQL 실행·GCM 정의서, 테이블 정보(F4)·구조 편집은 <see cref="SqlServerTableSchema"/>. 테이블 정의서는 아직 아님).
     /// </summary>
     internal sealed class SqlServerProvider : IDbProvider
     {
@@ -26,6 +26,7 @@ namespace MyPlugin
         public SqlLexRules Lex { get { return SqlLexRules.SqlServer; } }
         public IMetadataProvider Metadata { get { return _metadata; } }
         public IMonitorProvider Monitor { get { return _monitor; } }
+        public ITableSchemaProvider TableSchema { get { return SqlServerTableSchema.Instance; } }
 
         public List<string> Validate(OracleConnectionProfile profile, string label)
         {
@@ -424,7 +425,7 @@ namespace MyPlugin
         }
 
         // "nvarchar(50)"·"nvarchar(max)"·"decimal(10,2)"·"datetime2(7)"·"int". 문자 길이는 n 형식이면 바이트/2
-        private static string TypeLabel(string c, string t)
+        internal static string TypeLabel(string c, string t)
         {
             return "CASE"
                 + " WHEN " + t + ".name IN ('varchar', 'char', 'varbinary', 'binary') THEN " + t + ".name + '(' + CASE WHEN " + c + ".max_length = -1 THEN 'max' ELSE CAST(" + c + ".max_length AS VARCHAR(10)) END + ')'"
