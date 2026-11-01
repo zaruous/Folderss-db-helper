@@ -110,6 +110,43 @@ namespace MyPlugin
         }
     }
 
+    /// <summary>트랜잭션이 어떻게 끝났는지(<see cref="DbSession.TransactionFinished"/>).</summary>
+    public enum TransactionOutcome
+    {
+        Committed,
+        RolledBack,
+        /// <summary>블록 안 커밋·롤백, 서버가 끝냄(커밋·롤백 실패), 연결 끊김, ROLLBACK TO(일부만 되돌림) — 대기 변경이 남았는지 모름.</summary>
+        Unknown
+    }
+
+    /// <summary>
+    /// 결과 편집 저장 묶음의 결과(<see cref="DbSession.ExecuteDmlBatchAsync"/>). 멈추면 저장점까지 되돌려 이번 묶음의 변경은 남기지 않는다.
+    /// </summary>
+    public sealed class DmlBatchResult
+    {
+        /// <summary>실행이 끝난 문장의 영향 행 수(순서대로). 오류·취소된 문장은 없고, 영향 행 수가 다른 문장은 들어 있다.</summary>
+        public List<int> Affected { get; } = new List<int>();
+
+        /// <summary>Affected와 같은 순서의 걸린 시간.</summary>
+        public List<TimeSpan> Elapsed { get; } = new List<TimeSpan>();
+
+        /// <summary>멈춘 문장 위치(오류·취소·영향 행 수가 기대와 다름). 모두 성공하면 -1.</summary>
+        public int FailedIndex { get; set; } = -1;
+
+        /// <summary>멈추게 한 오류(취소 포함). 영향 행 수가 달라 멈췄으면 null.</summary>
+        public Exception Error { get; set; }
+
+        public bool Canceled { get; set; }
+
+        /// <summary>멈춘 뒤 저장점까지 되돌렸음(이번 묶음의 변경은 하나도 남지 않음).</summary>
+        public bool RolledBack { get; set; }
+
+        /// <summary>저장점까지 되돌리지 못한 오류(이번 묶음의 일부가 커밋 대기로 남았을 수 있음). 없으면 null.</summary>
+        public Exception RollbackError { get; set; }
+
+        public bool Succeeded { get { return FailedIndex < 0; } }
+    }
+
     /// <summary>
     /// DB(접속) 하나의 세션. 연결 1개를 오래 유지하고 모든 연결 사용을 내부 잠금(SemaphoreSlim) 아래에서 한다.
     /// - ExecuteAsync·FetchAsync·CommitAsync·RollbackAsync·CloseCursorAsync: 잠금을 바로 못 얻으면 <see cref="SessionBusyException"/>(기다리지 않음).
@@ -126,6 +163,8 @@ namespace MyPlugin
     ///   컴파일 오류가 있는 PL/SQL 객체(ORA-24344)는 예외가 아니라 InfoMessage 경고로만 오므로 ExecuteResult.Warning으로 알린다.
     /// - PL/SQL 블록·CALL 뒤에는 서버에 트랜잭션이 남았는지 물어(Oracle) 블록 안의 커밋·롤백을 대기 표시에 반영한다.
     /// - LOCK TABLE은 트랜잭션 안에서 실행하고 커밋 대기(잠금 보유)로 표시한다.
+    /// - 결과 편집 저장(ExecuteDmlBatchAsync)은 잠금을 한 번 쥐고 저장점 안에서 실행해, 멈추면 이번 묶음만 되돌린다.
+    /// - 트랜잭션이 끝나면 TransactionFinished(커밋·롤백·모름)로 알린다 — 저장한 결과 편집이 DB와 어긋났는지 화면이 판단한다.
     /// - OracleConnection은 연 뒤 AutoCommit = false: 트랜잭션 객체가 없는 동안에도 ODP.NET이 명령마다 커밋하지 않게.
     /// - 커밋·롤백이 실패하면 ODP.NET이 끝내 버린 트랜잭션 객체를 버리고, 서버에 트랜잭션이 남았으면 새 객체로 이어 받는다.
     /// - COMMIT·ROLLBACK 문장은 SQL로 보내지 않고 CommitAsync·RollbackAsync와 같게 처리한다(트랜잭션 객체가 없어도 서버 트랜잭션까지 끝낸다).
@@ -376,6 +415,9 @@ namespace MyPlugin
                     var parameter = command.CreateParameter();
                     parameter.ParameterName = pair.Key;
                     parameter.Value = pair.Value ?? DBNull.Value;
+                    // SQL Server: DateTime 기본 형식 datetime(1/300초)은 datetime2 열의 초 미만을 깎아 SET·원래 값 비교가 어긋난다 — datetime2로 보낸다
+                    if (pair.Value is DateTime && IsSqlServer(Provider.Kind))
+                        parameter.DbType = DbType.DateTime2;
                     command.Parameters.Add(parameter);
                 }
                 SetExecuting(command);
@@ -394,6 +436,186 @@ namespace MyPlugin
             else
                 _countUnknown = true;
             return affected;
+        }
+
+        /// <summary>결과 편집 저장 묶음의 저장점 이름(DBMS 모두 30자 이내 보통 이름).</summary>
+        internal const string EditSavepoint = "DBH_EDIT_SAVE";
+
+        /// <summary>저장점 만들기: SQL Server "SAVE TRANSACTION x", 그 밖(Oracle·PostgreSQL·SQLite) "SAVEPOINT x".</summary>
+        internal static string SavepointSql(string providerKind, string name)
+        {
+            return IsSqlServer(providerKind) ? "SAVE TRANSACTION " + name : "SAVEPOINT " + name;
+        }
+
+        /// <summary>저장점까지 되돌리기(트랜잭션은 이어짐): SQL Server "ROLLBACK TRANSACTION x", 그 밖 "ROLLBACK TO SAVEPOINT x".</summary>
+        internal static string RollbackToSavepointSql(string providerKind, string name)
+        {
+            return IsSqlServer(providerKind) ? "ROLLBACK TRANSACTION " + name : "ROLLBACK TO SAVEPOINT " + name;
+        }
+
+        /// <summary>저장점 풀기: PostgreSQL·SQLite(generic) "RELEASE SAVEPOINT x". Oracle·SQL Server는 없음(null) — 트랜잭션이 끝날 때 사라진다.</summary>
+        internal static string ReleaseSavepointSql(string providerKind, string name)
+        {
+            return string.Equals(providerKind, "postgres", StringComparison.OrdinalIgnoreCase) || string.Equals(providerKind, "generic", StringComparison.OrdinalIgnoreCase)
+                ? "RELEASE SAVEPOINT " + name
+                : null;
+        }
+
+        private static bool IsSqlServer(string providerKind)
+        {
+            return string.Equals(providerKind, "mssql", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 결과 편집 [저장]: 바인드 DML 여럿을 잠금을 한 번 쥔 채(다른 탭의 작업이 끼어들지 않게) 차례로 실행한다.
+        /// 시작 전에 저장점(<see cref="EditSavepoint"/>)을 만들고, 오류·취소·영향 행 수가 expectedAffected와 다르면 그 문장에서 멈추고 저장점까지 되돌린다 —
+        /// 이번 묶음의 변경만 사라지고 그 전의 커밋 대기 변경은 남는다(대기 행 수도 묶음 전으로). PostgreSQL은 오류 뒤 트랜잭션이 중단 상태가 되는데 이것도 풀린다.
+        /// 저장점을 만들지 못하면 아무것도 실행하지 않고 예외. 되돌리지 못하면 RollbackError(대기 행 수는 모름으로).
+        /// 이 세션에서 다른 작업 중이면 SessionBusyException.
+        /// </summary>
+        internal async Task<DmlBatchResult> ExecuteDmlBatchAsync(IReadOnlyList<SqlQuery> queries, int expectedAffected, CancellationToken cancellationToken = default)
+        {
+            if (queries == null)
+                throw new ArgumentNullException(nameof(queries));
+            if (queries.Any(q => q == null || string.IsNullOrWhiteSpace(q.Sql)))
+                throw new ArgumentException("실행할 문장이 없습니다.", nameof(queries));
+            cancellationToken.ThrowIfCancellationRequested();
+            EnterNow();
+            try
+            {
+                // 취소는 문장 실행 중에만 건다 — 되돌리기(ROLLBACK TO)는 취소되면 안 된다
+                return await Task.Run(() => DmlBatchCore(queries, expectedAffected, cancellationToken)).ConfigureAwait(false);
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+
+        // 잠금을 쥔 작업 스레드에서만 부른다
+        private DmlBatchResult DmlBatchCore(IReadOnlyList<SqlQuery> queries, int expectedAffected, CancellationToken cancellationToken)
+        {
+            var result = new DmlBatchResult();
+            var hadPending = _hasPending;
+            var pendingRows = _pendingRows;
+            var countUnknown = _countUnknown;
+            try
+            {
+                EnsureTransaction();
+                ExecuteNonQuery(SavepointSql(Provider.Kind, EditSavepoint));
+            }
+            catch (Exception ex)
+            {
+                NoteFailure(ex);
+                throw;
+            }
+            _operationToken = cancellationToken;
+            try
+            {
+                using (cancellationToken.Register(Cancel))
+                {
+                    for (var i = 0; i < queries.Count; i++)
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            result.FailedIndex = i;
+                            result.Canceled = true;
+                            result.Error = new OperationCanceledException(cancellationToken);
+                            break;
+                        }
+                        var watch = Stopwatch.StartNew();
+                        int affected;
+                        try
+                        {
+                            affected = ExecuteDmlCore(queries[i]);
+                        }
+                        catch (Exception ex)
+                        {
+                            NoteFailure(ex);
+                            result.FailedIndex = i;
+                            result.Error = ex;
+                            result.Canceled = IsCancellation(ex) || cancellationToken.IsCancellationRequested;
+                            break;
+                        }
+                        result.Affected.Add(affected);
+                        result.Elapsed.Add(watch.Elapsed);
+                        if (affected != expectedAffected)
+                        {
+                            result.FailedIndex = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _operationToken = CancellationToken.None;
+            }
+            var release = ReleaseSavepointSql(Provider.Kind, EditSavepoint);
+            if (result.Succeeded)
+            {
+                ReleaseQuietly(release);
+                return result;
+            }
+            if (_broken)
+            {
+                // 연결이 끊기면 서버가 트랜잭션 전체를 롤백한다 — 되돌릴 저장점도 없다
+                result.RollbackError = new InvalidOperationException("DB 연결이 끊겼습니다(서버가 트랜잭션 전체를 롤백). 다시 연결하세요.");
+                return result;
+            }
+            try
+            {
+                ExecuteNonQuery(RollbackToSavepointSql(Provider.Kind, EditSavepoint));
+                _hasPending = hadPending;
+                _pendingRows = pendingRows;
+                _countUnknown = countUnknown;
+                result.RolledBack = true;
+                ReleaseQuietly(release);
+            }
+            catch (Exception ex)
+            {
+                NoteFailure(ex);
+                result.RollbackError = ex;
+                _hasPending = true;
+                _countUnknown = true;
+            }
+            return result;
+        }
+
+        // 저장점 풀기는 정리일 뿐 — 실패해도 저장 결과를 바꾸지 않는다(트랜잭션이 끝날 때 사라진다)
+        private void ReleaseQuietly(string sql)
+        {
+            if (sql == null)
+                return;
+            try
+            {
+                ExecuteNonQuery(sql);
+            }
+            catch (Exception ex)
+            {
+                NoteFailure(ex);
+            }
+        }
+
+        /// <summary>
+        /// 트랜잭션이 끝났음(커밋·롤백·DDL 앞 커밋·블록 안 커밋·롤백·닫기·끊김) 또는 ROLLBACK TO로 일부 되돌렸음(Unknown).
+        /// 잠금을 쥔 작업 스레드에서 부른다 — 받는 쪽이 UI 스레드로 넘긴다. 처리기 예외는 무시한다.
+        /// </summary>
+        public event Action<DbSession, TransactionOutcome> TransactionFinished;
+
+        private void RaiseFinished(TransactionOutcome outcome)
+        {
+            var handler = TransactionFinished;
+            if (handler == null)
+                return;
+            try
+            {
+                handler(this, outcome);
+            }
+            catch (Exception)
+            {
+                // 화면 알림 실패가 트랜잭션 처리를 막지 않는다
+            }
         }
 
         /// <summary>열린 커서에서 다음 count행. 끝에 닿으면 cursor.HasMore = false, 커서를 닫는다. 닫힌 커서면 빈 목록.</summary>
@@ -651,6 +873,7 @@ namespace MyPlugin
                     DisposeQuietly(transaction);
                 }
                 CloseConnection();
+                RaiseFinished(TransactionOutcome.RolledBack);
             }
             catch (Exception)
             {
@@ -823,7 +1046,10 @@ namespace MyPlugin
                 ExecuteNonQuery(statement.Text);
                 // ROLLBACK TO는 일부 변경만 되돌리므로 남은 대기 행 수를 알 수 없다
                 if (_hasPending && string.Equals(statement.Verb, "ROLLBACK", StringComparison.OrdinalIgnoreCase))
+                {
                     _countUnknown = true;
+                    RaiseFinished(TransactionOutcome.Unknown);
+                }
                 result.Summary = "실행함";
             }
             else
@@ -1062,13 +1288,17 @@ namespace MyPlugin
                 // 커밋한 뒤 오류를 낸 블록도 앞서 대기하던 변경을 이미 끝냈다(대기 표시만 남지 않게)
                 NoteFailure(ex);
                 if (_hasPending && !IsCancellation(ex) && TransactionAfterBlock() == false)
+                {
                     EndTransaction();
+                    RaiseFinished(TransactionOutcome.Unknown);
+                }
                 throw;
             }
             // 블록 안의 COMMIT·ROLLBACK·EXECUTE IMMEDIATE DDL은 앞서 대기하던 변경까지 끝낸다. 무엇을 했는지는 서버에 물어야 안다.
             if (TransactionAfterBlock() == false)
             {
                 EndTransaction();
+                RaiseFinished(TransactionOutcome.Unknown);
                 result.TransactionEnded = true;
                 result.Summary = wasPending ? "실행함 (블록 안에서 커밋·롤백됨)" : "실행함";
                 return;
@@ -1493,6 +1723,7 @@ namespace MyPlugin
             _transaction = null;
             DisposeQuietly(transaction);
             EndTransaction();
+            RaiseFinished(TransactionOutcome.Committed);
         }
 
         private void RollbackCore()
@@ -1514,6 +1745,7 @@ namespace MyPlugin
             _transaction = null;
             DisposeQuietly(transaction);
             EndTransaction();
+            RaiseFinished(TransactionOutcome.RolledBack);
         }
 
         /// <summary>
@@ -1534,6 +1766,7 @@ namespace MyPlugin
             if (ServerTransactionActive() == false)
             {
                 EndTransaction();
+                RaiseFinished(TransactionOutcome.Unknown);
                 return true;
             }
             try
@@ -1590,6 +1823,8 @@ namespace MyPlugin
                 DisposeQuietly(transaction);
             }
             CloseConnection();
+            // 연결을 닫으면 서버가 남은 트랜잭션을 롤백한다
+            RaiseFinished(!commit ? TransactionOutcome.RolledBack : failure == null ? TransactionOutcome.Committed : TransactionOutcome.Unknown);
             if (failure != null)
                 ExceptionDispatchInfo.Capture(failure).Throw();
         }
@@ -1687,8 +1922,13 @@ namespace MyPlugin
 
         private void NoteFailure(Exception ex)
         {
-            if (IsBrokenError(ex) || (_opened && !ConnectionIsOpen()))
+            if (!_broken && (IsBrokenError(ex) || (_opened && !ConnectionIsOpen())))
+            {
                 _broken = true;
+                // 끊긴 연결의 트랜잭션은 서버가 롤백한다(커밋 중 끊겼으면 커밋됐는지 모름)
+                if (!_closed)
+                    RaiseFinished(TransactionOutcome.Unknown);
+            }
         }
 
         private bool ConnectionIsOpen()

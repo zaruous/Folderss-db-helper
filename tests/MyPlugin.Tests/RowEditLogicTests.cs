@@ -124,8 +124,10 @@ namespace MyPlugin.Tests
 
             var query = RowEditLogic.UpdateStatement(table, original, current);
 
-            Assert.Equal("UPDATE HR.EMP SET ID = :s0, HIRED = :s1 WHERE ID = :k0", query.Sql);
-            Assert.Equal(new[] { "s0", "s1", "k0" }, query.Parameters.Select(p => p.Key));
+            // 고친 키가 아닌 열(HIRED)은 원래 값과도 비교한다(동시성). 키(ID)는 이미 WHERE에 있다
+            Assert.Equal("UPDATE HR.EMP SET ID = :s0, HIRED = :s1 WHERE ID = :k0 AND HIRED = :o0", query.Sql);
+            Assert.Equal(new[] { "s0", "s1", "k0", "o0" }, query.Parameters.Select(p => p.Key));
+            Assert.Equal(new DateTime(2024, 1, 2, 3, 4, 5), query.Parameters[3].Value);
             Assert.Equal(8m, query.Parameters[0].Value);
             Assert.Equal(DBNull.Value, query.Parameters[1].Value);
             // WHERE는 원래 키 값
@@ -134,7 +136,7 @@ namespace MyPlugin.Tests
             Assert.Null(RowEditLogic.UpdateStatement(table, original, (string[])original.Clone()));
 
             var lower = RowEditLogic.UpdateStatement(table, original, new[] { "7", "KIM", "2024-01-02 03:04:05", "2" });
-            Assert.Equal("UPDATE HR.EMP SET \"lower\" = :s0 WHERE ID = :k0", lower.Sql);
+            Assert.Equal("UPDATE HR.EMP SET \"lower\" = :s0 WHERE ID = :k0 AND \"lower\" = :o0", lower.Sql);
         }
 
         [Fact]
@@ -143,13 +145,14 @@ namespace MyPlugin.Tests
             var table = RowEditLogic.Describe("HR", "EMP HIST", Columns("A:NUMBER", "B:VARCHAR2(3)", "V:NUMBER"), Meta("A", true, "B", true), "@");
 
             var query = RowEditLogic.DeleteStatement(table, new[] { "1", "x", "9" });
-            Assert.Equal("DELETE FROM HR.\"EMP HIST\" WHERE A = @k0 AND B = @k1", query.Sql);
+            // DELETE는 키가 아닌 비교할 수 있는 열 모두를 원래 값과 비교한다
+            Assert.Equal("DELETE FROM HR.\"EMP HIST\" WHERE A = @k0 AND B = @k1 AND V = @o0", query.Sql);
             Assert.Equal(1m, query.Parameters[0].Value);
             Assert.Equal("x", query.Parameters[1].Value);
 
             var nullKey = RowEditLogic.DeleteStatement(table, new[] { "1", null, "9" });
-            Assert.Equal("DELETE FROM HR.\"EMP HIST\" WHERE A = @k0 AND B IS NULL", nullKey.Sql);
-            Assert.Single(nullKey.Parameters);
+            Assert.Equal("DELETE FROM HR.\"EMP HIST\" WHERE A = @k0 AND B IS NULL AND V = @o0", nullKey.Sql);
+            Assert.Equal(2, nullKey.Parameters.Count);
 
             Assert.Null(RowEditLogic.DeleteStatement(RowEditLogic.Unavailable("HR", "EMP", "x"), new[] { "1" }));
         }
@@ -207,7 +210,7 @@ namespace MyPlugin.Tests
 
             Assert.Null(RowEditLogic.UpdateBlockReason(table, original, current));
             var query = RowEditLogic.UpdateStatement(table, original, current);
-            Assert.Equal("UPDATE HR.T SET NAME = :s0 WHERE ID = :k0", query.Sql);
+            Assert.Equal("UPDATE HR.T SET NAME = :s0 WHERE ID = :k0 AND NAME = :o0", query.Sql);
             Assert.Equal("LEE", query.Parameters[0].Value);
             // LOB만 그대로면 바꿀 것이 없다
             Assert.Null(RowEditLogic.UpdateStatement(table, original, (string[])original.Clone()));
@@ -226,7 +229,7 @@ namespace MyPlugin.Tests
             Assert.Throws<InvalidOperationException>(() => RowEditLogic.UpdateStatement(table, new[] { "1", "a", "x" }, new[] { "1", "a", "y…(전체 9000자)" }));
             // 잘린 값이 그대로면 SET에서 빠진다
             var query = RowEditLogic.UpdateStatement(table, new[] { "1", "abc…(전체 4000자)", "x" }, new[] { "1", "abc…(전체 4000자)", "y" });
-            Assert.Equal("UPDATE HR.T SET BODY = :s0 WHERE ID = :k0", query.Sql);
+            Assert.Equal("UPDATE HR.T SET BODY = :s0 WHERE ID = :k0 AND BODY = :o0", query.Sql);
         }
 
         [Fact]
@@ -252,7 +255,7 @@ namespace MyPlugin.Tests
             var current = new[] { "1", null, "2024-02-03 00:00:00", "200.5" };
 
             Assert.Null(RowEditLogic.UpdateBlockReason(table, original, current));
-            Assert.Equal("UPDATE HR.EMP SET NAME = :s0, HIRED = :s1, SAL = :s2 WHERE ID = :k0", RowEditLogic.UpdateStatement(table, original, current).Sql);
+            Assert.Equal("UPDATE HR.EMP SET NAME = :s0, HIRED = :s1, SAL = :s2 WHERE ID = :k0 AND NAME = :o0 AND HIRED = :o1 AND SAL = :o2", RowEditLogic.UpdateStatement(table, original, current).Sql);
             Assert.Null(RowEditLogic.InsertBlockReason(table, current));
         }
 
@@ -322,7 +325,8 @@ namespace MyPlugin.Tests
         {
             var table = RowEditLogic.Describe("HR", "EMP", Columns("ID:NUMBER", "NAME:VARCHAR2(10)", "HIRED:DATE"), Meta("ID", true), ":");
             var query = RowEditLogic.UpdateStatement(table, new[] { "1", "a", null }, new[] { "1", "o'k", "2024-01-02 03:04:05" });
-            Assert.Equal("UPDATE HR.EMP SET NAME = :s0, HIRED = :s1 WHERE ID = :k0  -- s0='o''k', s1='2024-01-02 03:04:05', k0=1", RowEditLogic.Describe(query));
+            // 원래 값이 NULL인 열은 IS NULL(바인드 없음)
+            Assert.Equal("UPDATE HR.EMP SET NAME = :s0, HIRED = :s1 WHERE ID = :k0 AND NAME = :o0 AND HIRED IS NULL  -- s0='o''k', s1='2024-01-02 03:04:05', k0=1, o0='a'", RowEditLogic.Describe(query));
             Assert.Equal("", RowEditLogic.Describe(null));
         }
 
@@ -476,7 +480,7 @@ namespace MyPlugin.Tests
             Assert.Equal("고유 키 UK_CODE_SEQ", table.KeyNote);
 
             var update = RowEditLogic.UpdateStatement(table, new[] { "a", "X", "1" }, new[] { "b", "X", "1" });
-            Assert.Equal("UPDATE HR.T SET NAME = :s0 WHERE CODE = :k0 AND SEQ = :k1", update.Sql);
+            Assert.Equal("UPDATE HR.T SET NAME = :s0 WHERE CODE = :k0 AND SEQ = :k1 AND NAME = :o0", update.Sql);
             Assert.Equal(1m, update.Parameters[2].Value);
 
             // 결과에 고유 키 열이 빠졌으면 편집 불가
@@ -499,13 +503,15 @@ namespace MyPlugin.Tests
 
             const string rid = "AAAR3sAAEAAAACXAAA";
             var update = RowEditLogic.UpdateStatement(table, new[] { "a", "1" }, new[] { "b", "1" }, rid);
-            Assert.Equal("UPDATE HR.LOG SET NAME = :s0 WHERE ROWID = :rid", update.Sql);
-            Assert.Equal(new[] { "s0", "rid" }, update.Parameters.Select(p => p.Key));
+            Assert.Equal("UPDATE HR.LOG SET NAME = :s0 WHERE ROWID = :rid AND NAME = :o0", update.Sql);
+            Assert.Equal(new[] { "s0", "rid", "o0" }, update.Parameters.Select(p => p.Key));
             Assert.Equal(rid, update.Parameters[1].Value);
 
             var delete = RowEditLogic.DeleteStatement(table, new[] { "a", "1" }, rid);
-            Assert.Equal("DELETE FROM HR.LOG WHERE ROWID = :rid", delete.Sql);
-            Assert.Equal(rid, Assert.Single(delete.Parameters).Value);
+            // ROWID 키 DELETE는 모든 비교할 수 있는 열을 원래 값과 비교한다
+            Assert.Equal("DELETE FROM HR.LOG WHERE ROWID = :rid AND NAME = :o0 AND QTY = :o1", delete.Sql);
+            Assert.Equal(rid, delete.Parameters[0].Value);
+            Assert.Equal(1m, delete.Parameters[2].Value);
 
             // ROWID를 모르는 행(저장한 새 행)은 문장을 만들지 않고 막는다
             Assert.Null(RowEditLogic.UpdateStatement(table, new[] { "a", "1" }, new[] { "b", "1" }));
@@ -544,6 +550,103 @@ namespace MyPlugin.Tests
             // 행 주소는 Oracle만
             Assert.Null(DbProviders.Postgres.Metadata.RowIdTable("public", "t"));
             Assert.Null(DbProviders.SqlServer.Metadata.RowIdTable("dbo", "t"));
+        }
+
+        // 동시성 비교에서 빼는 형식(정책)과 비교하는 형식
+        [Theory]
+        [InlineData("CLOB", "oracle", true)]
+        [InlineData("jsonb", "postgres", true)]
+        [InlineData("xml", "mssql", true)]
+        [InlineData("BINARY_DOUBLE", "oracle", true)]
+        [InlineData("BINARY_FLOAT", "oracle", true)]
+        [InlineData("FLOAT(126)", "oracle", true)]
+        [InlineData("double precision", "postgres", true)]
+        [InlineData("real", "postgres", true)]
+        [InlineData("float", "mssql", true)]
+        [InlineData("TIMESTAMP(9)", "oracle", true)]
+        [InlineData("ntext", "mssql", true)]
+        [InlineData("text", "mssql", true)]
+        [InlineData("character(5)", "postgres", true)]
+        [InlineData("bpchar", "postgres", true)]
+        [InlineData("NUMBER(7,2)", "oracle", false)]
+        [InlineData("VARCHAR2(10)", "oracle", false)]
+        [InlineData("CHAR(5)", "oracle", false)]
+        [InlineData("nchar(5)", "mssql", false)]
+        [InlineData("text", "postgres", false)]
+        [InlineData("DATE", "oracle", false)]
+        [InlineData("TIMESTAMP(6)", "oracle", false)]
+        [InlineData("datetime2", "mssql", false)]
+        [InlineData("datetime", "mssql", false)]
+        [InlineData("numeric(10,2)", "postgres", false)]
+        [InlineData("integer", "postgres", false)]
+        public void CompareSkipReason_Policy(string label, string provider, bool skipped)
+        {
+            Assert.Equal(skipped, RowEditLogic.CompareSkipReason(label, provider) != null);
+        }
+
+        [Fact]
+        public void Concurrency_SkipsUncomparableAndTruncated_AndCanBeTurnedOff()
+        {
+            var table = RowEditLogic.Describe("HR", "T", Columns("ID:NUMBER", "MEMO:VARCHAR2(4000)", "RATE:BINARY_DOUBLE", "NOTE:CLOB", "QTY:NUMBER"), Meta("ID", true), ":");
+            table.ProviderKind = "oracle";
+            var original = new[] { "1", "abc…(전체 4000자)", "0.1", "x…(전체 9000자)", null };
+
+            // 잘린 값·근사값·LOB은 비교하지 않고, 원래 NULL은 IS NULL
+            var delete = RowEditLogic.DeleteStatement(table, original);
+            Assert.Equal("DELETE FROM HR.T WHERE ID = :k0 AND QTY IS NULL", delete.Sql);
+            Assert.Single(delete.Parameters);
+
+            // UPDATE는 고친 열만 비교: RATE(근사값)를 고치면 비교 없이, QTY를 고치면 IS NULL
+            var update = RowEditLogic.UpdateStatement(table, original, new[] { "1", "abc…(전체 4000자)", "0.2", "x…(전체 9000자)", "5" });
+            Assert.Equal("UPDATE HR.T SET RATE = :s0, QTY = :s1 WHERE ID = :k0 AND QTY IS NULL", update.Sql);
+
+            table.CheckConcurrency = false;
+            Assert.Equal("DELETE FROM HR.T WHERE ID = :k0", RowEditLogic.DeleteStatement(table, original).Sql);
+        }
+
+        [Fact]
+        public void Concurrency_PostgresFixedCharIsNotCompared()
+        {
+            var table = RowEditLogic.Describe("public", "t", Columns("id:integer", "code:character(3)", "name:text"), Meta("id", true), ":");
+            table.ProviderKind = "postgres";
+            var delete = RowEditLogic.DeleteStatement(table, new[] { "1", "ab ", "x" });
+            Assert.DoesNotContain("code", delete.Sql);
+            Assert.EndsWith(WorkspaceLogic.QuoteIdentifier("name") + " = :o0", delete.Sql);
+            Assert.Equal(new[] { "k0", "o0" }, delete.Parameters.Select(p => p.Key));
+            // Oracle CHAR는 비교한다(VARCHAR2 바인드와 비교하면 공백을 채우지 않는 비교 — 읽은 값에 공백이 들어 있다)
+            table.ProviderKind = "oracle";
+            Assert.Contains("code", RowEditLogic.DeleteStatement(table, new[] { "1", "ab ", "x" }).Sql);
+        }
+
+        [Fact]
+        public void BindValue_SqlServerLegacyDateTimeIsSqlDateTime()
+        {
+            var table = RowEditLogic.Describe("dbo", "T", Columns("ID:int", "OLD:datetime", "TS:datetime2"), Meta("ID", true), "@");
+            table.ProviderKind = "mssql";
+            var old = RowEditLogic.BindValue(table, 1, "2024-01-02 03:04:05.003");
+            Assert.IsType<System.Data.SqlTypes.SqlDateTime>(old);
+            Assert.IsType<DateTime>(RowEditLogic.BindValue(table, 2, "2024-01-02 03:04:05.1234567"));
+            Assert.Equal(5m, RowEditLogic.BindValue(table, 0, "5"));
+            // 바인드 값 글은 DateTime과 같게
+            var delete = RowEditLogic.DeleteStatement(table, new[] { "1", "2024-01-02 03:04:05.003", null });
+            Assert.Contains("o0='2024-01-02 03:04:05.003", RowEditLogic.Describe(delete));
+            // 다른 DBMS는 DateTime 그대로
+            table.ProviderKind = "postgres";
+            Assert.IsType<DateTime>(RowEditLogic.BindValue(table, 1, "2024-01-02 03:04:05.003"));
+        }
+
+        [Fact]
+        public void StaleAndSaveMessages()
+        {
+            Assert.Null(RowEditLogic.StaleReason(TransactionOutcome.Committed));
+            Assert.Contains("롤백", RowEditLogic.StaleReason(TransactionOutcome.RolledBack));
+            Assert.Contains("다시 조회", RowEditLogic.StaleReason(TransactionOutcome.RolledBack));
+            Assert.Contains("알 수 없습니다", RowEditLogic.StaleReason(TransactionOutcome.Unknown));
+            Assert.Contains("충돌", RowEditLogic.AffectedMismatch(0));
+            Assert.Contains("다시 조회", RowEditLogic.AffectedMismatch(0));
+            Assert.Contains("2개 문장", RowEditLogic.SaveRolledBackNote(2));
+            Assert.Contains("ORA-1", RowEditLogic.SaveRollbackFailed("ORA-1"));
+            Assert.Contains("[롤백]", RowEditLogic.SaveRollbackFailed("x"));
         }
 
         private static ColumnInfo Col(string name, bool nullable, string type, bool pk = false)
