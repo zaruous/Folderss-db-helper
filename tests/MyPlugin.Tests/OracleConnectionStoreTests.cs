@@ -46,6 +46,91 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void Deserialize_OldSqlServerProfile_KeepsPreviousOptionalTrustBehaviour()
+        {
+            // 암호화 설정이 없던 이전 버전의 SQL Server 접속: 갑자기 붙지 못하지 않게 이전 동작(Optional + 신뢰)으로 읽는다
+            var back = OracleConnectionStore.Deserialize("[{\"name\":\"MS\",\"provider\":\"mssql\",\"host\":\"h\",\"port\":1433,\"serviceName\":\"db\",\"userId\":\"sa\"}]");
+
+            var p = Assert.Single(back);
+            Assert.Equal("optional", p.SqlEncrypt);
+            Assert.True(p.SqlTrustServerCertificate);
+            Assert.NotNull(SqlServerSecurity.Hint(p));
+            var b = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(OracleConnectionStore.BuildConnectionString(p, "pw", 5));
+            Assert.Equal(Microsoft.Data.SqlClient.SqlConnectionEncryptOption.Optional, b.Encrypt);
+            Assert.True(b.TrustServerCertificate);
+
+            // 저장하면 값을 명시하므로 다시 읽어도 같다
+            var json = OracleConnectionStore.Serialize(back);
+            Assert.Contains("\"sqlEncrypt\":\"optional\"", json);
+            Assert.Contains("\"sqlTrustServerCertificate\":true", json);
+            var again = Assert.Single(OracleConnectionStore.Deserialize(json));
+            Assert.True(p.SameAs(again));
+        }
+
+        [Fact]
+        public void Serialize_NewSqlServerProfile_StoresSecureDefaultsExplicitly()
+        {
+            // 새 접속(값 없음)을 저장하면 필수 + 검증을 명시한다 — 빈 값으로 두면 다음에 이전 형식으로 읽힌다
+            var p = Valid("MS");
+            p.Provider = "mssql";
+            var json = OracleConnectionStore.Serialize(new[] { p });
+            Assert.Null(p.SqlEncrypt); // 넘긴 객체는 그대로
+            Assert.Contains("\"sqlEncrypt\":\"mandatory\"", json);
+            Assert.Contains("\"sqlTrustServerCertificate\":false", json);
+            Assert.DoesNotContain("sqlHostNameInCertificate", json);
+
+            var back = Assert.Single(OracleConnectionStore.Deserialize(json));
+            Assert.Equal("mandatory", back.SqlEncrypt);
+            Assert.False(back.SqlTrustServerCertificate);
+            Assert.Null(SqlServerSecurity.Hint(back));
+        }
+
+        [Fact]
+        public void SerializeDeserialize_SqlServerSecurity_RoundTrip_AndOtherProvidersOmitFields()
+        {
+            var ms = Valid("MS");
+            ms.Provider = "mssql";
+            ms.SqlEncrypt = "strict";
+            ms.SqlHostNameInCertificate = " sql.corp.local ";
+            var ora = Valid("ORA");
+            ora.SqlEncrypt = "optional"; // 공급자를 바꾼 흔적 — 저장하지 않는다
+            ora.SqlTrustServerCertificate = true;
+
+            var json = OracleConnectionStore.Serialize(new[] { ms, ora });
+            var back = OracleConnectionStore.Deserialize(json);
+
+            Assert.Equal("strict", back[0].SqlEncrypt);
+            Assert.False(back[0].SqlTrustServerCertificate);
+            Assert.Equal("sql.corp.local", back[0].SqlHostNameInCertificate);
+            Assert.Null(back[1].SqlEncrypt);
+            Assert.Null(back[1].SqlTrustServerCertificate);
+            Assert.Single(System.Text.RegularExpressions.Regex.Matches(json, "sqlEncrypt"));
+
+            // 모르는 값(다음 버전 등)은 약해지지 않게 필수로
+            var unknown = Assert.Single(OracleConnectionStore.Deserialize("[{\"name\":\"MS\",\"provider\":\"mssql\",\"host\":\"h\",\"port\":1433,\"serviceName\":\"db\",\"userId\":\"sa\",\"sqlEncrypt\":\"future\"}]"));
+            Assert.Equal("mandatory", unknown.SqlEncrypt);
+            Assert.Null(unknown.SqlTrustServerCertificate);
+        }
+
+        [Fact]
+        public void CopyAndSameAs_IncludeSqlServerSecurity()
+        {
+            var a = Valid();
+            a.Provider = "mssql";
+            a.SqlEncrypt = "mandatory";
+            a.SqlTrustServerCertificate = true;
+            a.SqlHostNameInCertificate = "h";
+            var b = a.Copy();
+            Assert.True(a.SameAs(b));
+            b.SqlTrustServerCertificate = false;
+            Assert.False(a.SameAs(b));
+            b = a.Copy(); b.SqlEncrypt = "strict";
+            Assert.False(a.SameAs(b));
+            b = a.Copy(); b.SqlHostNameInCertificate = "x";
+            Assert.False(a.SameAs(b));
+        }
+
+        [Fact]
         public void SerializeDeserialize_KeepsReadOnlyAndColor_UnknownColorBecomesNone()
         {
             var a = Valid("A"); a.ReadOnly = true; a.Color = "red";

@@ -39,7 +39,9 @@ namespace MyPlugin.Tests
             {
                 Id = kind, Name = kind + " 시험", Provider = kind,
                 Host = hostPort.Split(':')[0], Port = int.Parse(hostPort.Split(':')[1]), ServiceName = dsn.Split('/')[1],
-                UserId = Environment.GetEnvironmentVariable(prefix + "_USER") ?? defaultUser
+                UserId = Environment.GetEnvironmentVariable(prefix + "_USER") ?? defaultUser,
+                // 시험용 SQL Server(도커)는 자체 서명 인증서 — 새 접속 기본값(검증)이면 붙지 않는다
+                SqlTrustServerCertificate = kind == "mssql" ? true : (bool?)null
             };
             var provider = DbProviders.For(profile);
             var cs = OracleConnectionStore.BuildConnectionString(profile, Environment.GetEnvironmentVariable(prefix + "_PW") ?? "", ShellLogic.ConnectTimeoutSeconds);

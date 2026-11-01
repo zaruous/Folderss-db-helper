@@ -287,16 +287,32 @@ namespace MyPlugin
         /// <summary>
         /// 연결할 때(접속 테스트·연결)의 오류 문장. 연결 끊김 번호(ORA-12537 등)는 DescribeError가 "다시 연결하세요"로 바꾸는데,
         /// 아직 연결되지 않았으므로 리스너·TNS가 알려 준 원래 첫 줄이 정확하다.
+        /// SQL Server 인증서 검증 실패는 설정 안내로 바꾸고, 문장에 비밀번호(Password=…·입력한 값)가 섞여 있으면 가린다.
         /// </summary>
-        public static string DescribeConnectError(Exception ex)
+        public static string DescribeConnectError(Exception ex, string password = null)
         {
+            var certificate = SqlServerSecurity.CertificateProblem(ex);
+            if (certificate != null)
+                return certificate;
             if (DbSession.IsBrokenError(ex) && !DbSession.IsCancellation(ex))
             {
                 var line = FirstLine(ex.Message);
                 if (line.Length > 0)
-                    return line;
+                    return SqlServerSecurity.Redact(line, password);
             }
-            return DbSession.DescribeError(ex);
+            return SqlServerSecurity.Redact(DbSession.DescribeError(ex), password);
+        }
+
+        /// <summary>SQL Server 암호화 설정 칸 아래 안내: 약한 설정이면 강화 권고(경고), 아니면 설명.</summary>
+        public static string SqlSecurityNote(OracleConnectionProfile profile, out bool warning)
+        {
+            var hint = SqlServerSecurity.Hint(profile);
+            warning = hint != null;
+            if (hint != null)
+                return hint;
+            return SqlServerSecurity.EncryptOf(profile) == SqlServerSecurity.Strict
+                ? "엄격 모드는 TDS 8.0으로 처음부터 TLS로 붙고 서버 인증서를 항상 검증합니다(SQL Server 2022 이상)."
+                : "연결을 암호화하고 서버 인증서를 검증합니다. 사내 자체 서명 인증서면 [서버 인증서 신뢰]를 켜세요.";
         }
 
         /// <summary>
