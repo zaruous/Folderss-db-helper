@@ -101,7 +101,9 @@ namespace MyPlugin.UiTests
                     page.GetType().GetMethod("Save").Invoke(page, null);
                 });
                 // 서식 내보내기: 고른 서식 파일을 원하는 위치에 복사(관리 폴더의 파일은 그대로)
-                var exported = Path.Combine(work, "건넬 서식.xlsx");
+                // 이름은 대화상자 기본 이름(서식 이름.xlsx)과 같게 — CI 러너의 저장 대화상자는 넣은 경로 대신 기본 이름으로
+                // 마지막 폴더(앞의 열기 대화상자가 쓴 work)에 저장하는 일이 있어, 어느 쪽이든 같은 파일이 되게 한다.
+                var exported = Path.Combine(work, "사원 등록 서식.xlsx");
                 if (File.Exists(exported)) File.Delete(exported);
                 ui.Post(() => Ui.Click(Ui.Find<Button>(window, b => AutomationProperties.GetAutomationId(b) == "excel-format-export")));
                 await NativeDialogs.SaveAs(ui, exported, TimeSpan.FromSeconds(30));
