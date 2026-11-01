@@ -62,8 +62,16 @@ namespace MyPlugin.UiTests.Headless
                 await Task.Delay(100);
             }
             var title = TextOf(dialog);
-            SendMessageW(edit, WM_SETTEXT, IntPtr.Zero, path);
-            await Task.Delay(100);
+            // 대화상자는 초기화를 마치며 기본 파일 이름(FileName)을 칸에 다시 써 넣는다 — 느린 머신(CI)에서는 우리가 넣은 경로를 덮어써
+            // 기본 이름으로 저장된다. 넣은 값이 잠시 뒤에도 남아 있을 때까지 다시 넣는다.
+            while (true)
+            {
+                SendMessageW(edit, WM_SETTEXT, IntPtr.Zero, path);
+                await Task.Delay(300);
+                if (TextOf(edit) == path) break;
+                if (DateTime.UtcNow > deadline)
+                    throw new InvalidOperationException("파일 이름 칸에 경로가 남지 않습니다(지금: '" + TextOf(edit) + "'): " + Describe(dialog));
+            }
             var ok = Children(dialog).FirstOrDefault(h => GetDlgCtrlID(h) == IDOK && ClassOf(h) == "Button");
             PostMessageW(dialog, WM_COMMAND, (IntPtr)IDOK, ok);
             return title;
