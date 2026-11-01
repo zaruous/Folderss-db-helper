@@ -89,6 +89,8 @@ namespace MyPlugin
         // 넘겨받았지만 이 창 파일에 아직 저장하지 못한 파일(저장에 성공하면 지운다)
         private readonly List<string> _adoptedDrafts = new List<string>();
         private bool _draftSaveFailed;
+        // 열 때 풀지 못한 임시 저장 파일이 있었음 — 메시지 칸을 먼저 보인다
+        private bool _draftBroken;
 
         private Grid _strip;
         private StackPanel _tabPanel;
@@ -174,7 +176,7 @@ namespace MyPlugin
                 first.Editor.CaretOffset = first.Editor.TextLength;
                 ActivateTab(first, false);
             }
-            SelectPane(WorkspacePane.Grid);
+            SelectPane(_draftBroken ? WorkspacePane.Messages : WorkspacePane.Grid);
         }
 
         /// <summary>지금 탭의 대상 DB Id(없으면 null). 셸의 커밋·롤백·모드 표시가 이 DB를 대상으로 한다.</summary>
@@ -1094,7 +1096,12 @@ namespace MyPlugin
                 List<string> live;
                 lock (LiveDraftOwners)
                     live = LiveDraftOwners.ToList();
-                orphans = SqlDraftLogic.LoadOrphans(folder, live);
+                var load = SqlDraftLogic.LoadOrphans(folder, live);
+                // 풀지 못한 파일(다른 사용자·손상)은 보관 폴더로 옮겼다 — 어디 있는지 알린다
+                foreach (var broken in load.Broken)
+                    AddMessage(null, SqlDraftLogic.BrokenMessage(broken), MessageKind.Error);
+                _draftBroken = load.Broken.Count > 0;
+                orphans = load.Orphans;
             }
             catch (Exception ex)
             {
@@ -1199,7 +1206,8 @@ namespace MyPlugin
             }
             try
             {
-                SqlDraftLogic.Save(folder, _draftOwner, set);
+                // 설정에서 임시 저장에서 뺀 접속의 탭은 쓰지 않는다
+                SqlDraftLogic.Save(folder, _draftOwner, SqlDraftLogic.WithoutExcluded(set, _editorSettings.DraftExcludedConnections));
             }
             catch (Exception ex)
             {
@@ -2900,6 +2908,8 @@ namespace MyPlugin
                 _editorSettings = settings ?? new SqlEditorSettings();
                 foreach (var tab in _tabs)
                     tab.Editor.ApplySettings(_editorSettings);
+                // 임시 저장에서 뺀 접속이 바뀌었을 수 있다 — 파일에 남은 그 탭을 바로 뺀다
+                ScheduleDraftSave();
             });
         }
 

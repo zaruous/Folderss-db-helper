@@ -17,6 +17,7 @@ namespace MyPlugin
     /// - 구문 강조: 키워드·자료형·문자열·주석마다 칠함·색(비우면 테마 색)·굵게·기울임, 지금 테마 바탕 대비 명암비
     /// - 키워드 대상: 더 칠할 낱말, 칠하지 않을 낱말(세 DBMS 모두)
     /// - 미리 보기: 고치는 대로 바로 보인다(저장 전). [기본값으로 되돌리기]
+    /// - 임시 저장: 접속마다 "임시 저장 안 함", [임시 저장 지우기](확인 뒤 바로 지움)
     /// 설정 창 [저장]에서 쓰고 열려 있는 편집기(지금은 AvalonEdit PoC 창)에 바로 알린다. 잘못 적은 칸이 있으면 저장 실패로 알린다.
     /// </summary>
     public sealed class SqlEditorSettingsPage : IPluginSettingsPage
@@ -45,6 +46,9 @@ namespace MyPlugin
         private TextEditor _preview;
         private SqlEditorHighlighting _previewHighlighting;
         private readonly Dictionary<SqlSpanKind, StyleRow> _rows = new Dictionary<SqlSpanKind, StyleRow>();
+        // 임시 저장에서 뺄 접속 — 접속마다 체크 상자(Tag = 접속 Id). 지금 목록에 없는 접속의 저장값은 그대로 남긴다
+        private StackPanel _draftExcluded;
+        private readonly List<string> _draftExcludedUnknown = new List<string>();
         private bool _filling;
 
         public SqlEditorSettingsPage(IPluginManager manager)
@@ -131,6 +135,21 @@ namespace MyPlugin
             SqlEditorSetup.ApplyBehavior(_preview);
             _preview.Document.Text = PreviewText;
             root.Children.Add(_preview);
+
+            // ---- 임시 저장 ----
+            root.Children.Add(Heading("임시 저장", 18));
+            var draftNote = Theme.Secondary("쓰던 SQL 탭은 이 Windows 사용자만 풀 수 있게(DPAPI) 잠가 자동 저장합니다: " + (DraftFolder() ?? "(데이터 폴더 없음)")
+                + ". 아래에서 체크한 접속을 대상으로 한 탭은 저장하지 않습니다 — 그 탭은 DB Helper 창을 닫으면 남지 않습니다.");
+            draftNote.TextWrapping = TextWrapping.Wrap;
+            draftNote.Margin = new Thickness(0, 0, 0, 4);
+            root.Children.Add(draftNote);
+            _draftExcluded = new StackPanel();
+            AutomationProperties.SetAutomationId(_draftExcluded, "sqleditor-draft-excluded");
+            root.Children.Add(_draftExcluded);
+            var clear = new Button { Content = "임시 저장 지우기…", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(12, 3, 12, 3) };
+            AutomationProperties.SetAutomationId(clear, "sqleditor-draft-clear");
+            clear.Click += (s, e) => ClearDrafts(Window.GetWindow(root));
+            root.Children.Add(clear);
 
             _error = Theme.Text("");
             _error.Foreground = Theme.Danger;
@@ -321,6 +340,7 @@ namespace MyPlugin
                 }
                 _extra.Text = SqlEditorSettings.FormatWords(settings.ExtraKeywords);
                 _excluded.Text = SqlEditorSettings.FormatWords(settings.ExcludedKeywords);
+                FillDraftExcluded(settings.DraftExcludedConnections);
             }
             finally
             {
@@ -362,6 +382,8 @@ namespace MyPlugin
             if (problem != null)
                 errors.Add("칠하지 않을 " + problem);
             settings.ExcludedKeywords.AddRange(words);
+            settings.DraftExcludedConnections.AddRange(_draftExcluded.Children.OfType<CheckBox>().Where(b => b.IsChecked == true).Select(b => (string)b.Tag));
+            settings.DraftExcludedConnections.AddRange(_draftExcludedUnknown);
             error = errors.Count == 0 ? null : string.Join("\n", errors);
             return error == null ? settings : null;
         }
@@ -393,6 +415,75 @@ namespace MyPlugin
             SqlEditorSetup.ApplyFont(_preview, Theme.Mono, 13, settings.LineHeight);
             if (_previewHighlighting != null)
                 _previewHighlighting.Settings = settings;
+        }
+
+        /// <summary>저장된 접속마다 "임시 저장 안 함" 체크 상자. 접속 목록을 읽지 못하면 저장값을 그대로 둔다.</summary>
+        private void FillDraftExcluded(IList<string> excluded)
+        {
+            _draftExcluded.Children.Clear();
+            _draftExcludedUnknown.Clear();
+            List<OracleConnectionProfile> profiles;
+            try
+            {
+                profiles = ConnectionRepository.Load(_manager);
+            }
+            catch (Exception ex)
+            {
+                _draftExcludedUnknown.AddRange(excluded);
+                _draftExcluded.Children.Add(Theme.Secondary("접속 목록을 읽지 못했습니다: " + ex.Message));
+                return;
+            }
+            if (profiles.Count == 0)
+                _draftExcluded.Children.Add(Theme.Secondary("저장된 접속이 없습니다."));
+            foreach (var profile in profiles)
+            {
+                var box = Theme.Foreground(new CheckBox
+                {
+                    Content = (profile.Name ?? "") + " — 임시 저장 안 함",
+                    Tag = profile.Id,
+                    IsChecked = excluded.Contains(profile.Id),
+                    Margin = new Thickness(0, 2, 0, 2),
+                    HorizontalAlignment = HorizontalAlignment.Left
+                });
+                AutomationProperties.SetAutomationId(box, "sqleditor-draft-exclude-" + profile.Id);
+                AutomationProperties.SetName(box, (profile.Name ?? "") + " 임시 저장 안 함");
+                _draftExcluded.Children.Add(box);
+            }
+            _draftExcludedUnknown.AddRange(excluded.Where(id => profiles.All(p => p.Id != id)));
+        }
+
+        private string DraftFolder()
+        {
+            try
+            {
+                var directory = _manager.DataDirectory;
+                return string.IsNullOrEmpty(directory) ? null : SqlDraftLogic.FolderOf(directory);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>[임시 저장 지우기]: 확인 뒤 임시 저장 폴더의 파일(보관한 것 포함)을 지우고 지운 수를 알린다(설정 창 [저장]과 관계없이 바로).</summary>
+        private void ClearDrafts(Window owner)
+        {
+            var folder = DraftFolder();
+            if (folder == null)
+            {
+                Dialogs.Show(owner, Title, "데이터 폴더가 없어 지울 임시 저장이 없습니다.", false);
+                return;
+            }
+            if (!Dialogs.Confirm(owner, Title, "임시 저장한 SQL 탭(되살리지 못해 보관한 파일 포함)을 모두 지웁니다. 지운 내용은 되살릴 수 없습니다.\n" + folder, "지우기", true))
+                return;
+            try
+            {
+                Dialogs.Show(owner, Title, SqlDraftLogic.ClearedMessage(SqlDraftLogic.Clear(folder)), false);
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Show(owner, Title, "임시 저장을 지우지 못했습니다: " + ex.Message, true);
+            }
         }
 
         private static int Rgb(FrameworkElement view, string key, int fallback)

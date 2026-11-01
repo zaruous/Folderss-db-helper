@@ -73,6 +73,9 @@ namespace MyPlugin
         /// <summary>칠하지 않을 낱말(대문자) — 키워드·자료형 목록에서 뺀다.</summary>
         public List<string> ExcludedKeywords { get; } = new List<string>();
 
+        /// <summary>SQL 탭을 임시 저장하지 않을 접속(접속 Id). 그 접속 대상 탭은 자동 저장에서 빠진다.</summary>
+        public List<string> DraftExcludedConnections { get; } = new List<string>();
+
         /// <summary>저장한 설정이 바뀌었다(설정 창 [저장]) — 열려 있는 편집기가 바로 따른다.</summary>
         public static event EventHandler<SqlEditorSettings> Changed;
 
@@ -118,6 +121,7 @@ namespace MyPlugin
                 copy.Styles[pair.Key] = pair.Value.Clone();
             copy.ExtraKeywords.AddRange(ExtraKeywords);
             copy.ExcludedKeywords.AddRange(ExcludedKeywords);
+            copy.DraftExcludedConnections.AddRange(DraftExcludedConnections);
             return copy;
         }
 
@@ -169,6 +173,10 @@ namespace MyPlugin
                     writer.WriteStartArray("excludedKeywords");
                     foreach (var word in ExcludedKeywords)
                         writer.WriteStringValue(word);
+                    writer.WriteEndArray();
+                    writer.WriteStartArray("draftExcludedConnections");
+                    foreach (var id in DraftExcludedConnections)
+                        writer.WriteStringValue(id);
                     writer.WriteEndArray();
                     writer.WriteEndObject();
                 }
@@ -224,6 +232,9 @@ namespace MyPlugin
                 }
                 settings.ExtraKeywords.AddRange(Words(root, "extraKeywords"));
                 settings.ExcludedKeywords.AddRange(Words(root, "excludedKeywords"));
+                if (root.TryGetProperty("draftExcludedConnections", out value) && value.ValueKind == JsonValueKind.Array)
+                    settings.DraftExcludedConnections.AddRange(value.EnumerateArray().Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString())
+                        .Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal));
             }
             return settings;
         }
