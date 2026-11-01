@@ -112,7 +112,8 @@ namespace MyPlugin
             box.TextWrapping = TextWrapping.NoWrap;
             box.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             body.Children.Add(box);
-            body.Children.Add(DialogKit.Hint("행마다 문장 하나를 DELETE → UPDATE → INSERT 순으로 실행합니다(DELETE·UPDATE는 기본 키로 행을 찾음). 커밋 전까지 [롤백]으로 되돌릴 수 있고, 오류가 나면 그 행에서 멈춥니다.", 8));
+            body.Children.Add(DialogKit.Hint("행마다 문장 하나를 DELETE → UPDATE → INSERT 순으로 실행합니다(DELETE·UPDATE는 키로 행을 찾고 조회한 원래 값과 비교 — 그 사이 다른 세션이 바꾼 행은 충돌로 멈춤). "
+                + "오류·충돌·취소가 나면 그 행에서 멈추고 이번 저장 전체를 되돌립니다(저장 전 커밋 대기는 유지). 커밋 전까지 [롤백]으로 되돌릴 수 있습니다.", 8));
             CheckBox check = null;
             if (deletes > 0)
             {
