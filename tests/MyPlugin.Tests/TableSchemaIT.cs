@@ -56,13 +56,8 @@ namespace MyPlugin.Tests
             catch (Exception ex) when (ignoreError) { _output.WriteLine("(무시) " + ex.Message); }
         }
 
-        /// <summary>DDL 하나를 실행하고 커밋 대기가 남으면(트랜잭션 DDL — PostgreSQL·SQL Server) 커밋한다 — 편집 창 [저장] 경로와 같다.</summary>
-        static async Task ExecCommit(DbSession session, string sql)
-        {
-            await session.ExecuteAsync(SchemaRead.DdlStatement(sql), 0);
-            if (session.HasPendingChanges)
-                await session.CommitAsync();
-        }
+        /// <summary>DDL 하나를 실행하고 트랜잭션 DDL(PostgreSQL·SQL Server)이면 같은 잠금 안에서 커밋한다 — 편집 창 [저장] 경로와 같다.</summary>
+        static Task ExecCommit(DbSession session, string sql) => session.ExecuteDdlCommittedAsync(SchemaRead.DdlStatement(sql));
 
         async Task<TableDescription> Describe(DbSession session, string name)
         {

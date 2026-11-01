@@ -93,6 +93,9 @@ verification:
     TableSchemaIT로 실제 DB 세 종류(Oracle 12c, PostgreSQL 16, SQL Server 2022 — Docker)에서 테이블을 만들고
     조회 → 컬럼 추가·이름·기본값·NOT NULL·주석·형식 변경, 인덱스 다시 만들기·이름 변경, 고유 제약 추가, 검사 제약 삭제, 외래 키 끄기(가능한 DBMS) →
     저장(DDL 실행) → 다시 조회해 반영을 확인했다(화면을 거치지 않는 모델·DDL 경로).
+  - >-
+    저장 단계마다 DbSession.ExecuteDdlCommittedAsync로 커밋 대기 확인·DDL 실행·(트랜잭션 DDL이면) 커밋을 세션 잠금 한 번 안에서 한다 —
+    실행과 커밋 사이에 같은 DB의 다른 탭 DML이 끼어 함께 커밋되지 않는다(DbSessionTests).
 tests:
   - tests/MyPlugin.Tests/TableInfoTests.cs
   - tests/MyPlugin.Tests/TableSchemaTests.cs

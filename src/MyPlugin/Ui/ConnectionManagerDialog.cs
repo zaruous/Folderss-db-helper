@@ -255,7 +255,7 @@ namespace MyPlugin
                 {
                     Title = "접속 관리",
                     Width = 720,
-                    Height = 480,
+                    Height = 560,
                     MinWidth = 640,
                     MinHeight = 420,
                     ResizeMode = ResizeMode.CanResize,
@@ -273,6 +273,7 @@ namespace MyPlugin
                 _window.KeyDown += Window_KeyDown;
                 _window.Loaded += (s, e) =>
                 {
+                    FitHeight();
                     if (Selected != null)
                         _name.Focus();
                     else
@@ -1112,6 +1113,36 @@ namespace MyPlugin
                 var sql = provider.Kind == SqlServerProvider.KindName;
                 foreach (var element in _sqlOnly)
                     element.Visibility = sql ? Visibility.Visible : Visibility.Collapsed;
+                FitHeight();
+            }
+
+            /// <summary>
+            /// 입력 칸이 창보다 길면(SQL Server 암호화 칸·안내 등) 스크롤하지 않아도 보이게 창을 늘린다 — 화면 작업 영역의 90%까지.
+            /// 늘리기만 하고 줄이지는 않는다(사용자가 키운 크기 유지). 그보다 길면 입력 칸만 스크롤한다.
+            /// </summary>
+            private void FitHeight()
+            {
+                if (_window == null || _form == null)
+                    return;
+                _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+                {
+                    if (!_window.IsLoaded || _window.WindowState != WindowState.Normal)
+                        return;
+                    _window.UpdateLayout();
+                    var missing = _form.ExtentHeight - _form.ViewportHeight;
+                    if (missing <= 0.5)
+                        return;
+                    var limit = SystemParameters.WorkArea.Height * 0.9;
+                    var height = Math.Min(_window.ActualHeight + missing + 2, Math.Max(limit, _window.MinHeight));
+                    if (height <= _window.ActualHeight)
+                        return;
+                    var grow = height - _window.ActualHeight;
+                    _window.Height = height;
+                    // 화면 아래로 넘치면 위로 올린다
+                    var bottom = _window.Top + height;
+                    if (bottom > SystemParameters.WorkArea.Bottom)
+                        _window.Top = Math.Max(SystemParameters.WorkArea.Top, _window.Top - Math.Min(grow, bottom - SystemParameters.WorkArea.Bottom));
+                }));
             }
 
             /// <summary>

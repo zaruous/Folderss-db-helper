@@ -1375,13 +1375,12 @@ namespace MyPlugin
                         if (IsRunning(dbId) || live.IsBusy) throw new InvalidOperationException("DB에서 다른 작업이 실행 중입니다.");
                         if (live.HasPendingChanges) throw new InvalidOperationException("기존 변경이 구조 변경과 함께 커밋되지 않도록 먼저 커밋하거나 롤백한 후 저장하세요.");
                         // 구조 편집이 만든 문장(SQL Server는 기본값 제약 정리 등을 한 배치로 묶는다)을 DDL로 실행한다. 단계마다 성공하면 반영된 것으로 본다
-                        // (편집기의 부분 실패 재시도가 그 전제): Oracle은 DDL 자동 커밋, PostgreSQL·SQL Server는 트랜잭션 DDL이라 여기서 바로 커밋한다.
-                        // 실패하면 세션이 그 DDL만 롤백한다(앞선 대기는 위에서 막았다).
+                        // (편집기의 부분 실패 재시도가 그 전제): Oracle은 DDL 자동 커밋, PostgreSQL·SQL Server는 트랜잭션 DDL이라 바로 커밋한다.
+                        // 대기 확인·실행·커밋을 세션 잠금 한 번 안에서 한다 — 사이에 다른 탭의 DML이 끼어 함께 커밋되지 않게(#30).
+                        // 실패하면 세션이 그 DDL만 롤백한다.
                         var statement = SchemaRead.DdlStatement(sql);
                         try {
-                            await live.ExecuteAsync(statement, 0);
-                            if (live.HasPendingChanges)
-                                await live.CommitAsync();
+                            await live.ExecuteDdlCommittedAsync(statement);
                             AddMessage(dbId, "구조 변경 완료: " + sql, MessageKind.Success);
                         } finally { _host.StateChanged(dbId); }
                     },

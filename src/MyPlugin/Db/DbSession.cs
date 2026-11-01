@@ -788,6 +788,42 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>
+        /// 구조 편집 DDL 한 단계: 커밋 대기가 없을 때만, 세션 잠금을 한 번 잡은 채 실행하고 트랜잭션 DDL(PostgreSQL·SQL Server)이면 바로 커밋한다.
+        /// 실행과 커밋을 따로 부르면 그 사이(잠금이 풀린 틈)에 다른 탭의 DML이 끼어 함께 커밋될 수 있다(#30) — 그래서 한 작업으로 묶는다.
+        /// 커밋 대기가 있으면 InvalidOperationException, 다른 작업 중이면 SessionBusyException. DDL이 실패하면 Execute가 그 DDL만 되돌린다.
+        /// </summary>
+        public async Task<ExecuteResult> ExecuteDdlCommittedAsync(SqlStatement statement, CancellationToken cancellationToken = default)
+        {
+            if (statement == null)
+                throw new ArgumentNullException(nameof(statement));
+            if (string.IsNullOrWhiteSpace(statement.Text))
+                throw new ArgumentException("실행할 문장이 없습니다.", nameof(statement));
+            cancellationToken.ThrowIfCancellationRequested();
+            EnterNow();
+            try
+            {
+                return await RunDb(() =>
+                {
+                    // 잠금 안에서 확인한다(확인 뒤 실행 전에 다른 탭이 DML을 보내는 틈이 없게)
+                    if (_hasPending)
+                        throw new InvalidOperationException("기존 변경이 구조 변경과 함께 커밋되지 않도록 먼저 커밋하거나 롤백한 후 저장하세요.");
+                    var result = Execute(statement, 0);
+                    if (_hasPending)
+                    {
+                        CommitCore();
+                        result.TransactionEnded = true;
+                        result.Summary = "실행함 (구조 변경 커밋됨)";
+                    }
+                    return result;
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+
         public async Task CommitAsync()
         {
             EnterNow();

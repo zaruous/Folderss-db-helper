@@ -329,6 +329,42 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public async Task DdlCommitted_RunsAndCommitsUnderOneLock()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.Postgres))
+            {
+                var result = await session.ExecuteDdlCommittedAsync(Ddl("CREATE TABLE u (y INTEGER)"));
+                Assert.True(result.TransactionEnded);
+                Assert.False(session.HasPendingChanges);
+                Assert.Equal(0, await CountAsync(session, "u"));
+
+                // 커밋 대기가 있으면 실행하지 않는다(함께 커밋되지 않게) — 대기는 그대로
+                await session.ExecuteAsync(Dml("INSERT INTO u VALUES (1)"), 0);
+                await Assert.ThrowsAsync<InvalidOperationException>(() => session.ExecuteDdlCommittedAsync(Ddl("CREATE TABLE v (z INTEGER)")));
+                Assert.True(session.HasPendingChanges);
+                await Assert.ThrowsAsync<SqliteException>(() => CountAsync(session, "v"));
+                await session.RollbackAsync();
+                Assert.Equal(0, await CountAsync(session, "u"));
+            }
+        }
+
+        [Fact]
+        public async Task DdlCommitted_HoldsTheSessionUntilCommitted()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.SqlServer))
+            {
+                // 실행 중(잠금을 잡은 동안) 다른 탭의 문장은 SessionBusyException — 실행과 커밋 사이에 끼어들 틈이 없다
+                var run = session.ExecuteDdlCommittedAsync(Ddl("CREATE TABLE u (y INTEGER)"));
+                Assert.True(session.IsBusy || run.IsCompleted);
+                if (!run.IsCompleted)
+                    await Assert.ThrowsAsync<SessionBusyException>(() => session.ExecuteAsync(Dml("SELECT 1"), 0));
+                await run;
+                Assert.False(session.HasPendingChanges);
+                Assert.False(session.IsBusy);
+            }
+        }
+
+        [Fact]
         public async Task TransactionalDdl_WithoutPending_IsPendingUntilCommit()
         {
             using (var session = await OpenAsync(new SqliteConnection(Memory), DbProviders.SqlServer))

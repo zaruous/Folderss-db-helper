@@ -481,7 +481,8 @@ namespace MyPlugin.UiTests
                     ed.TextArea.Caret.Offset = text.IndexOf("DUAL", StringComparison.Ordinal) + 1;
                     Press(Input(editor), Key.F4, ModifierKeys.None);
                 });
-                info = await ui.WaitFor(() => Ui.Window("테이블 정보 — "), Wait, "테이블 정보 창");
+                // 쓰기 가능한 접속의 테이블은 구조 편집 창("테이블 편집 — "), 읽기 전용·뷰는 "테이블 정보 — "
+                info = await ui.WaitFor(() => Ui.Window("테이블 정보 — ") ?? Ui.Window("테이블 편집 — "), Wait, "테이블 정보 창");
                 var title = ui.Run(() => info.Title);
                 Assert.Contains("DUAL", title);
                 _out.WriteLine("캡처: " + ui.Run(() => Ui.Snap(main, plugin.ShotFolder, "sqltab-run")));

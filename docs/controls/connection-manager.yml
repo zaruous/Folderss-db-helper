@@ -44,9 +44,16 @@ theme:
 limits:
   - 호스트·포트·서비스명(EZConnect)만 지원한다. TNS 별칭·Wallet은 없다.
   - 비밀번호는 이 PC의 이 Windows 사용자만 풀 수 있다.
+  - 창 크기: 기본 720×560. 입력 칸이 창보다 길면(SQL Server 암호화 칸·안내) 열 때와 DBMS를 바꿀 때 화면 작업 영역의 90%까지 늘린다(줄이지는 않음). 그보다 길면 입력 칸만 스크롤.
+verification:
+  - >-
+    ConnectionManagerHeadlessTests(헤드리스): 이전 SQL Server 접속은 선택 + 신뢰와 강화 안내(경고색), Oracle 접속엔 SQL Server 칸 없음,
+    새 SQL Server 접속은 필수 + 검증, 엄격이면 [서버 인증서 신뢰] 꺼짐, 신뢰면 [인증서 이름] 꺼짐, 입력 칸 전체가 스크롤 없이 보임.
+    FMON_UI_MSSQL이 있으면 자체 서명 인증서 SQL Server(Docker 2022)에 [접속 테스트] — 기본값은 인증서 안내와 함께 실패, 신뢰는 성공(비밀번호가 문구에 없음).
 tests:
   - tests/MyPlugin.Tests/ConnectionManagerLogicTests.cs
   - tests/MyPlugin.Tests/OracleConnectionStoreTests.cs
   - tests/MyPlugin.Tests/DbProvidersTests.cs
   - tests/MyPlugin.Tests/SqlServerEncryptionIT.cs
+  - tests/MyPlugin.UiTests/ConnectionManagerHeadlessTests.cs
 related: [connection-settings-page, shell-menu]
