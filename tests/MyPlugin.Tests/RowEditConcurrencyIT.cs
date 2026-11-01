@@ -77,7 +77,9 @@ namespace MyPlugin.Tests
             {
                 Id = d.Kind, Name = d.Kind + " 시험", Provider = d.Kind,
                 Host = hostPort.Split(':')[0], Port = int.Parse(hostPort.Split(':')[1]), ServiceName = dsn.Split('/')[1],
-                UserId = Environment.GetEnvironmentVariable(d.Prefix + "_USER") ?? d.User
+                UserId = Environment.GetEnvironmentVariable(d.Prefix + "_USER") ?? d.User,
+                // 시험용 SQL Server(Docker)는 자체 서명 인증서 — 새 접속 기본값(인증서 검증)으로는 붙지 않는다(#34)
+                SqlTrustServerCertificate = d.Kind == "mssql" ? true : (bool?)null
             };
             var cs = OracleConnectionStore.BuildConnectionString(profile, Environment.GetEnvironmentVariable(d.Prefix + "_PW") ?? "", ShellLogic.ConnectTimeoutSeconds);
             var session = DbSession.Create(DbProviders.For(profile), cs);
