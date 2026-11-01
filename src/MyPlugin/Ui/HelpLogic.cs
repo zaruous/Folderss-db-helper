@@ -15,6 +15,7 @@ namespace MyPlugin
         public const string TableSpec = "table-spec.html";
         public const string CodeSpec = "gcm-spec.html";
         public const string Monitor = "monitor.html";
+        public const string ExcelFormat = "excel-format.html";
 
         /// <summary>온라인 사본(플러그인 폴더에 파일이 없을 때).</summary>
         public const string OnlineBase = "https://zaruous.github.io/Folderss-oracle-db-helper/help/";
@@ -50,6 +51,7 @@ namespace MyPlugin
                 case TableSpec: return "DB Helper 도움말 — 테이블 정의서";
                 case CodeSpec: return "DB Helper 도움말 — GCM 정의서";
                 case Monitor: return "DB Helper 도움말 — 성능 모니터";
+                case ExcelFormat: return "DB Helper 도움말 — 결과 엑셀 서식";
                 default: return "DB Helper 도움말";
             }
         }

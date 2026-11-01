@@ -7,8 +7,9 @@ using ClosedXML.Excel;
 namespace MyPlugin
 {
     /// <summary>
-    /// 조회 결과 ↔ 엑셀(.xlsx). 규칙은 하나다 — 데이터 시트(이름이 '_'로 시작하지 않는 첫 시트)의 컬럼명 행 아래가 데이터다.
-    /// 컬럼명 행은 위쪽 <see cref="HeaderScanRows"/>행 안에서 결과 컬럼명이 처음 나오는 행이다 — 그 위에 로고(그림)·제목·설명 행을 둘 수 있다.
+    /// 조회 결과 ↔ 엑셀(.xlsx). 규칙은 하나다 — 엑셀 이름 정의 <see cref="HeaderName"/>(DBH_COLUMNS)가 가리키는 범위의 첫 행이
+    /// 컬럼명 행이고 그 아래가 데이터, 그 범위의 열만 데이터 열이다(밖의 열은 메모 등 자유). 이름이 없는 파일은 거부한다(짐작하지 않음).
+    /// 컬럼명 행 위에는 로고(그림)·제목·설명을 둘 수 있다. 플러그인이 만드는 파일(기본 서식·서식 만들기·빈 서식)에는 이 이름이 들어간다.
     /// 열 순서·서식·너비·색·그림·다른 시트('_규칙' 등)는 자유다. 그래서 등록한 엑셀 서식(설정 창 "엑셀 서식")으로 내보낸 파일을 고쳐 그대로 가져올 수 있다.
     /// - 내보내기: 기본 서식(새 파일) 또는 등록 서식 파일에 채우기(그 파일의 열 순서·서식·그림은 그대로, 컬럼명 행에 맞춰 값만).
     /// - 서식 만들기: 컬럼명 머리 + 자료형별 열 서식(문자 @, 숫자, 날짜 yyyy-mm-dd hh:mm:ss) + '_규칙' 안내 시트.
@@ -21,8 +22,8 @@ namespace MyPlugin
         private const double MaxColumnWidth = 60.0;
         public const string DateFormat = "yyyy-mm-dd hh:mm:ss";
         public const string RulesSheet = "_규칙";
-        /// <summary>컬럼명 행을 찾는 범위(데이터 시트 위쪽 행 수).</summary>
-        public const int HeaderScanRows = 30;
+        /// <summary>컬럼명 행을 지정하는 엑셀 이름 정의(이름 상자). 그 범위의 첫 행이 컬럼명 행, 그 범위의 열이 데이터 열.</summary>
+        public const string HeaderName = "DBH_COLUMNS";
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
         private static readonly string[] GridDateFormats =
         {
@@ -70,23 +71,22 @@ namespace MyPlugin
         {
             using (var book = new XLWorkbook(templatePath))
             {
-                var sheet = DataSheet(book);
-                var headerRow = HeaderRow(sheet, columns);
-                var headers = Headers(sheet, headerRow);
+                var layout = Locate(book, columns);
+                var sheet = layout.Sheet;
                 var kinds = Kinds(columns);
                 var map = new int[columns.Count];
                 var skipped = new List<string>();
                 for (int i = 0; i < columns.Count; i++)
                 {
-                    var at = headers.FindIndex(h => string.Equals(h, columns[i].Name, StringComparison.OrdinalIgnoreCase));
-                    map[i] = at < 0 ? 0 : at + 1;
+                    var at = layout.Headers.FindIndex(h => string.Equals(h, columns[i].Name, StringComparison.OrdinalIgnoreCase));
+                    map[i] = at < 0 ? 0 : layout.FirstColumn + at;
                     if (at < 0) skipped.Add(columns[i].Name);
                 }
-                // 이전 값 지우기(서식·그림은 둠) — 컬럼명 행 아래, 서식의 열 범위만
+                // 이전 값 지우기(서식·그림은 둠) — 컬럼명 행 아래, 서식의 데이터 열 범위만
                 var used = sheet.LastRowUsed();
-                if (used != null && used.RowNumber() > headerRow)
-                    sheet.Range(headerRow + 1, 1, used.RowNumber(), Math.Max(headers.Count, 1)).Clear(XLClearOptions.Contents);
-                Fill(sheet, map, kinds, rows, headerRow + 1);
+                if (used != null && used.RowNumber() > layout.Row && layout.Headers.Count > 0)
+                    sheet.Range(layout.Row + 1, layout.FirstColumn, used.RowNumber(), layout.FirstColumn + layout.Headers.Count - 1).Clear(XLClearOptions.Contents);
+                Fill(sheet, map, kinds, rows, layout.Row + 1);
                 book.SaveAs(outPath);
                 return skipped;
             }
@@ -105,6 +105,9 @@ namespace MyPlugin
                 cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#DDEBF7");
             }
             sheet.SheetView.FreezeRows(1);
+            // 컬럼명 행을 이름 정의로 지정해 둔다 — 사람이 위에 로고·제목 행을 넣거나 옆에 메모 열을 둬도 엑셀이 범위를 따라 옮긴다
+            if (columns.Count > 0)
+                sheet.Workbook.DefinedNames.Add(HeaderName, sheet.Range(1, 1, 1, columns.Count));
         }
 
         static string FormatOf(ColumnValueKind kind)
@@ -171,12 +174,12 @@ namespace MyPlugin
                 "엑셀 서식 규칙 (DB Helper 결과 편집 [엑셀 임포트]·[엑셀 내보내기])",
                 "대상: " + (string.IsNullOrWhiteSpace(target) ? "(모든 결과)" : target),
                 "",
-                "1. 데이터는 이름이 '_'로 시작하지 않는 첫 시트에 둡니다. DB 컬럼명 행 아래가 데이터입니다. 컬럼명 행 위(위쪽 30행 안)에는 로고·제목·설명을 둘 수 있습니다.",
-                "2. 열 순서·너비·색·글꼴·그림은 바꿔도 됩니다. 컬럼명은 바꾸지 마세요(대소문자는 무시). 데이터 아래에 메모를 쓰려면 데이터 열이 아닌 열에 쓰세요.",
+                "1. 이름 정의 DBH_COLUMNS(이름 상자)가 가리키는 행이 DB 컬럼명 행이고 그 아래가 데이터입니다. 그 위에는 로고·제목·설명을 둘 수 있습니다.",
+                "2. 열 순서·너비·색·글꼴·그림은 바꿔도 됩니다. 컬럼명은 바꾸지 마세요(대소문자는 무시). DBH_COLUMNS 범위 밖의 열은 읽지 않으니 메모 열로 쓸 수 있습니다.",
                 "3. 결과에 없는 컬럼명이 있거나 같은 컬럼명이 두 번 있으면 가져오지 않습니다. 열을 빼면 그 열은 비워 두어 DB 기본값이 됩니다.",
                 "4. 수식·오류 값(#N/A 등)은 가져오지 않습니다. 값을 붙여 넣으세요. 빈 셀은 NULL입니다.",
                 "5. 날짜는 엑셀 날짜 또는 'yyyy-MM-dd HH:mm:ss' 글자, 숫자는 엑셀 숫자 또는 '.' 소수점 글자로 넣습니다.",
-                "6. 이름이 '_'로 시작하는 시트(이 시트 등)는 읽지 않습니다.",
+                "6. 열을 더하거나 빼면 수식 > 이름 관리자에서 DBH_COLUMNS가 컬럼명 셀 전체를 덮는지 확인하세요. 이름이 없으면 가져오지 않습니다.",
                 "",
                 "컬럼\t형식\t엑셀 열 서식"
             };
@@ -213,12 +216,13 @@ namespace MyPlugin
         {
             using (var book = new XLWorkbook(path))
             {
-                var sheet = DataSheet(book);
+                var layout = Locate(book, columns);
+                var sheet = layout.Sheet;
                 var used = sheet.RangeUsed();
                 if (used == null)
                     throw new InvalidOperationException("엑셀 파일에 데이터가 없습니다.");
-                var headerRow = HeaderRow(sheet, columns);
-                var headers = Headers(sheet, headerRow);
+                var headerRow = layout.Row;
+                var headers = layout.Headers;
 
                 // 알 수 없는 열은 거부한다(오타·다른 테이블 서식을 조용히 무시하지 않게). 머리가 빈 열은 본다고 치지 않는다.
                 var unknown = headers.Where(h => h.Length > 0 && !columns.Any(c => string.Equals(c.Name, h, StringComparison.OrdinalIgnoreCase))).ToList();
@@ -234,11 +238,11 @@ namespace MyPlugin
                     var at = headers.FindIndex(h => string.Equals(h, name, StringComparison.OrdinalIgnoreCase));
                     if (at >= 0 && headers.FindLastIndex(h => string.Equals(h, name, StringComparison.OrdinalIgnoreCase)) != at)
                         throw new InvalidOperationException("엑셀 컬럼명 행(" + headerRow + "행)에 컬럼명이 중복되었습니다: " + name);
-                    map[i] = at + 1; // 0 = 서식에 없는 열
+                    map[i] = at < 0 ? 0 : layout.FirstColumn + at; // 0 = 서식에 없는 열
                 }
 
                 var rows = new List<string[]>();
-                int lastRow = used.LastRow().RowNumber();
+                int lastRow = sheet.LastRowUsed()?.RowNumber() ?? headerRow;
                 for (int r = headerRow + 1; r <= lastRow; r++)
                 {
                     var row = new string[columns.Count];
@@ -265,53 +269,66 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 등록할 서식 파일인지 확인한다: 데이터 시트 위쪽 <see cref="HeaderScanRows"/>행 안에 글이 있는 행(컬럼명 행 후보)이 있어야 한다.
-        /// 어느 행이 컬럼명 행인지는 결과 열을 알 때(내보내기·가져오기) 정한다.
+        /// 등록할 서식 파일인지 확인한다: 이름 정의 <see cref="HeaderName"/>가 있고 그 범위 첫 행에 컬럼명이 있어야 한다.
+        /// 그 컬럼명이 어느 결과에 맞는지는 내보내기·가져오기 때 본다.
         /// </summary>
         internal static void Inspect(string path)
         {
             using (var book = new XLWorkbook(path))
             {
-                var sheet = DataSheet(book);
-                for (int r = 1; r <= HeaderScanRows; r++)
-                    if (Headers(sheet, r).Any(h => h.Length > 0))
-                        return;
-                throw new InvalidOperationException("데이터 시트 위쪽 " + HeaderScanRows + "행 안에 컬럼명이 없습니다.");
+                var named = Named(book);
+                if (!Headers(named.Worksheet, named.FirstRow().RowNumber(), named.FirstColumn().ColumnNumber(), named.LastColumn().ColumnNumber()).Any(h => h.Length > 0))
+                    throw new InvalidOperationException("이름 정의 " + HeaderName + "(" + Where(named) + ")의 첫 행에 컬럼명이 없습니다.");
             }
         }
 
-        /// <summary>
-        /// 컬럼명 행: 위쪽 <see cref="HeaderScanRows"/>행 안에서 결과 컬럼명(대소문자 무시)이 처음 나오는 행. 그 위의 로고·제목·설명 행은 건너뛴다.
-        /// 없으면 거부한다.
-        /// </summary>
-        static int HeaderRow(IXLWorksheet sheet, IList<ResultColumn> columns)
+        static List<string> Headers(IXLWorksheet sheet, int row, int first, int last)
         {
-            for (int r = 1; r <= HeaderScanRows; r++)
-                if (Headers(sheet, r).Any(h => h.Length > 0 && columns.Any(c => string.Equals(c.Name, h, StringComparison.OrdinalIgnoreCase))))
-                    return r;
-            throw new InvalidOperationException("데이터 시트(" + sheet.Name + ") 위쪽 " + HeaderScanRows + "행 안에 이 결과의 컬럼명이 있는 행이 없습니다.");
-        }
-
-        static IXLWorksheet DataSheet(XLWorkbook book)
-        {
-            var sheet = book.Worksheets.FirstOrDefault(s => !s.Name.StartsWith("_", StringComparison.Ordinal));
-            if (sheet == null)
-                throw new InvalidOperationException("데이터 시트가 없습니다(이름이 '_'로 시작하지 않는 시트).");
-            return sheet;
-        }
-
-        /// <summary>한 행의 글(열 1부터 그 행의 마지막 값까지). 오류 셀은 빈 글로 본다(제목 행의 #N/A 등으로 막지 않게).</summary>
-        static List<string> Headers(IXLWorksheet sheet, int row)
-        {
-            var last = sheet.Row(row).LastCellUsed();
-            var count = last == null ? 0 : last.Address.ColumnNumber;
             var headers = new List<string>();
-            for (int c = 1; c <= count; c++)
+            for (int c = first; c <= last; c++)
             {
                 var cell = sheet.Cell(row, c);
                 headers.Add(cell.DataType == XLDataType.Error ? "" : CellString(cell)?.Trim() ?? "");
             }
             return headers;
+        }
+
+        /// <summary>컬럼명 행의 위치: 시트·행·첫 열과 그 행의 컬럼명(첫 열부터).</summary>
+        sealed class Layout
+        {
+            public IXLWorksheet Sheet;
+            public int Row;
+            public int FirstColumn = 1;
+            public List<string> Headers;
+        }
+
+        /// <summary>
+        /// 이름 정의 DBH_COLUMNS(통합 문서 또는 시트 범위, 대소문자 무시)의 첫 범위. 없으면 거부한다 — 컬럼명 행을 짐작하지 않는다
+        /// (제목·설명 행에 컬럼명과 같은 글자가 있으면 엉뚱한 행을 머리로 잡아 진짜 머리를 데이터로 넣게 되므로).
+        /// </summary>
+        static IXLRange Named(XLWorkbook book)
+        {
+            var names = book.DefinedNames.Concat(book.Worksheets.SelectMany(w => w.DefinedNames));
+            var name = names.FirstOrDefault(n => string.Equals(n.Name, HeaderName, StringComparison.OrdinalIgnoreCase));
+            var range = name?.Ranges.FirstOrDefault();
+            if (range == null)
+                throw new InvalidOperationException("엑셀에 이름 정의 " + HeaderName + "가 없습니다. 컬럼명 셀들을 고르고 이름 상자에 " + HeaderName
+                    + "를 입력해 지정하세요(수식 > 이름 정의). 플러그인이 만든 서식·내보낸 파일에는 들어 있습니다.");
+            return range;
+        }
+
+        static string Where(IXLRange range) => range.Worksheet.Name + "!" + range.RangeAddress.ToStringRelative();
+
+        /// <summary>컬럼명 행: 이름 정의 DBH_COLUMNS 범위의 첫 행, 데이터 열은 그 범위의 열.</summary>
+        static Layout Locate(XLWorkbook book, IList<ResultColumn> columns)
+        {
+            var named = Named(book);
+            var row = named.FirstRow().RowNumber();
+            var first = named.FirstColumn().ColumnNumber();
+            var headers = Headers(named.Worksheet, row, first, named.LastColumn().ColumnNumber());
+            if (!headers.Any(h => h.Length > 0 && columns.Any(c => string.Equals(c.Name, h, StringComparison.OrdinalIgnoreCase))))
+                throw new InvalidOperationException("이름 정의 " + HeaderName + "(" + Where(named) + ")의 첫 행에 이 결과의 컬럼명이 없습니다.");
+            return new Layout { Sheet = named.Worksheet, Row = row, FirstColumn = first, Headers = headers };
         }
 
         /// <summary>

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>결과 엑셀 서식 — DB Helper 도움말</title>
+<link rel="stylesheet" href="help.css">
+<style>
+  .shot { border: 1px solid #c9d3e6; margin: 6px 0 4px; max-width: 100%; }
+  .cap { font-size: 12px; color: #595959; margin: 0 0 12px; }
+  .sheet td, .sheet th { font-size: 12px; padding: 3px 8px; }
+  .sheet .rn { background: #f2f2f2; color: #888; text-align: center; width: 28px; }
+  .sheet .logo { background: #eef3fb; color: #1F3864; font-weight: bold; }
+  .sheet .hdr { background: #DDEBF7; font-weight: bold; }
+  .sheet .skip { color: #999; }
+  ol.steps > li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="index.html">개요·단축키</a><a href="connections.html">접속</a><a href="table-spec.html">테이블 정의서</a><a href="gcm-spec.html">GCM 정의서</a><a href="excel-format.html">결과 엑셀 서식</a><a href="monitor.html">성능 모니터</a></div>
+<h1>결과 엑셀 서식</h1>
+<p>엑셀 <b>서식</b> 하나로 열 구성과 저장 서식(열 순서·셀 서식·색·너비·로고)을 관리하고, 그 서식에 맞춰 조회 결과를 <b>내보내고</b>, 서식대로 채운 파일을 <b>가져와</b> 새 행으로 넣습니다.
+서식은 <b>설정 창 &gt; 엑셀 서식</b> 탭에 등록해 두고, 빠른 조회(트리에서 <span class="kbd">F1</span>) 결과 위의 편집 막대에서 씁니다.</p>
+
+<h2>한눈에 보기</h2>
+<ol class="steps">
+  <li><b>서식 등록</b> — 결과 편집 막대 [엑셀 내보내기 ▾] → <b>이 결과로 서식 만들기</b>, 또는 설정 [엑셀 서식] 탭 → <b>[파일 추가…]</b>.</li>
+  <li><b>서식 다듬기</b> — 설정 탭에서 서식을 고르고 <b>[엑셀로 열기]</b>. 열 순서를 바꾸고, 쓰지 않을 열을 지우고, 로고·제목·색·날짜 형식을 넣습니다.</li>
+  <li><b>내보내기</b> — [엑셀 내보내기 ▾]에서 서식을 고르면 그 서식 모양 그대로 값이 채워진 파일이 저장됩니다.</li>
+  <li><b>빈 서식 건네기</b> — [엑셀 내보내기 ▾] → <b>빈 서식 저장</b>(또는 설정 탭 <b>[서식 내보내기…]</b>)으로 받은 파일을 데이터를 채울 사람에게 줍니다.</li>
+  <li><b>가져오기</b> — 채운 파일을 <b>[엑셀 임포트]</b> → 새 행(INSERT 대기)으로 들어옴 → <b>[저장]</b> → <b>[커밋]</b>.</li>
+</ol>
+
+<h2>서식 규칙 (이것 하나만 지키면 됩니다)</h2>
+<p>엑셀 <b>이름 정의 <code>DBH_COLUMNS</code></b>가 가리키는 범위의 첫 행이 <b>DB 컬럼명 행</b>이고, 그 <b>아래가 데이터</b>입니다. <b>그 범위의 열만</b> 데이터 열이라 범위 밖 열은 읽지도 지우지도 않습니다(메모·계산 열로 자유롭게 씀). 컬럼명 행 위에는 로고(그림)·제목·설명을 둘 수 있습니다.</p>
+<p class="note">이 이름이 없는 파일은 가져오지 않습니다 — 컬럼명 행을 짐작하지 않습니다. 플러그인이 만든 파일("이 결과로 서식 만들기"·빈 서식·기본 서식 내보내기)에는 이미 들어 있으니, 직접 만든 엑셀만 아래 "이름 정의로 지정하기"대로 지정하면 됩니다.</p>
+<table class="sheet">
+  <tr><th class="rn"></th><th>A</th><th>B</th><th>C</th><th>설명</th></tr>
+  <tr><td class="rn">1</td><td class="logo">[로고 그림]</td><td class="logo" colspan="2">사원 명부</td><td class="skip">로고·제목 — 읽지 않음</td></tr>
+  <tr><td class="rn">2</td><td></td><td colspan="2">작성: 인사팀 (2026-11)</td><td class="skip">설명 — 읽지 않음</td></tr>
+  <tr><td class="rn">3</td><td></td><td></td><td></td><td class="skip">빈 행 — 읽지 않음</td></tr>
+  <tr><td class="rn">4</td><td class="hdr">CODE</td><td class="hdr">ID</td><td class="hdr">CREATED</td><td><b>컬럼명 행</b> = 이름 정의 <code>DBH_COLUMNS</code>(A4:C4) — 순서·대소문자 상관없음</td></tr>
+  <tr><td class="rn">5</td><td>007</td><td>1</td><td>2026-11-01 09:30</td><td>데이터</td></tr>
+  <tr><td class="rn">6</td><td>A-1</td><td>2</td><td></td><td>빈 칸 = NULL(새 행이면 DB 기본값)</td></tr>
+</table>
+<ul>
+  <li>열 순서·너비·색·글꼴·셀 서식·그림은 바꿔도 됩니다. <b>컬럼명 글자만</b> 바꾸지 마세요.</li>
+  <li>서식에서 <b>열을 빼도</b> 됩니다 — 내보낼 때는 그 열을 쓰지 않고(상태 줄에 알림), 가져올 때는 비워 두어 DB 기본값이 들어갑니다.</li>
+  <li><code>DBH_COLUMNS</code>가 있는 시트만 읽습니다. 다른 시트(예: 만든 서식의 <code>_규칙</code>)에는 설명·코드표를 두면 됩니다.</li>
+  <li>데이터 아래에 메모를 남기려면 데이터 열이 아닌 열에 쓰세요(데이터 열에 쓰면 그 메모도 한 행으로 읽힙니다).</li>
+</ul>
+
+<h3>이름 정의로 지정하기 (DBH_COLUMNS)</h3>
+<p>직접 만든 엑셀을 서식으로 쓰거나 가져오려면 컬럼명 행에 이름을 붙입니다. 몇 번째 행·몇 번째 시트에 있어도 됩니다.</p>
+<ol class="steps">
+  <li>엑셀에서 컬럼명 셀들(예: <code>B4:D4</code>)을 고릅니다.</li>
+  <li>왼쪽 위 <b>이름 상자</b>에 <code>DBH_COLUMNS</code>를 입력하고 <span class="kbd">Enter</span>(또는 <b>수식 &gt; 이름 정의</b>).</li>
+  <li>저장합니다. 위에 행을 넣거나 열을 옮기면 엑셀이 범위를 따라 바꿔 줍니다.</li>
+</ol>
+<p>"이 결과로 서식 만들기"·빈 서식·기본 서식 내보내기로 만든 파일에는 이 이름이 이미 들어 있습니다(1행의 컬럼명 범위). 열을 더하거나 뺐다면 <b>수식 &gt; 이름 관리자</b>에서 범위가 컬럼명 셀 전체를 덮는지 확인하세요.</p>
+
+<h2>1. 서식 등록하기</h2>
+<h3>결과에서 바로 만들기</h3>
+<p>빠른 조회 결과의 [엑셀 내보내기 ▾] → <b>이 결과로 서식 만들기…</b>. 결과 열로 서식 파일을 만들어 설정에 바로 등록합니다(대상 테이블 = 이 테이블).
+열마다 자료형에 맞는 셀 서식(문자 <code>@</code> 텍스트, 숫자, 날짜 <code>yyyy-mm-dd hh:mm:ss</code>)과 규칙을 적은 <code>_규칙</code> 시트가 들어 있습니다.</p>
+<img class="shot" src="img/excel-export-menu.png" alt="엑셀 내보내기 메뉴">
+<p class="cap">[엑셀 내보내기 ▾] 메뉴 — 기본 서식, 이 테이블에 맞는 등록 서식, 빈 서식 저장, 이 결과로 서식 만들기.</p>
+
+<h3>설정 창에서 관리하기</h3>
+<p><b>설정 창 &gt; 엑셀 서식</b> 탭에서 등록한 서식을 관리합니다.</p>
+<img class="shot" src="img/excel-settings.png" alt="설정 창 엑셀 서식 탭">
+<p class="cap">설정 창 "엑셀 서식" 탭 — 맨 위 "기본 서식"은 처음부터 있는 항목입니다.</p>
+<table>
+  <tr><th>항목·버튼</th><th>하는 일</th></tr>
+  <tr><td>기본 서식 (자동)</td><td>처음 등록 항목. 결과 열 그대로 새 파일을 만듭니다(지우거나 고칠 수 없음). 문자 열은 텍스트, 숫자·날짜 열은 엑셀 숫자·날짜로 씁니다.</td></tr>
+  <tr><td>[파일 추가…]</td><td>가지고 있는 .xlsx를 서식으로 등록합니다. 파일은 플러그인 데이터 폴더의 <code>excel-formats\</code>로 복사되어 원본을 옮기거나 지워도 남습니다.</td></tr>
+  <tr><td>이름 · 대상 테이블</td><td>대상 테이블은 <code>OWNER.TABLE</code> 또는 <code>TABLE</code>(대소문자 무시). 비우면 모든 결과의 [엑셀 내보내기 ▾]에 보입니다.</td></tr>
+  <tr><td>[엑셀로 열기]</td><td>등록한 서식 파일을 엑셀로 열어 다듬습니다(저장하면 다음 내보내기부터 반영).</td></tr>
+  <tr><td>[서식 내보내기…]</td><td>등록한 서식 파일을 원하는 곳에 복사합니다 — 다른 사람에게 건네거나 보관할 때.</td></tr>
+  <tr><td>[삭제]</td><td>목록에서 뺍니다. 설정 창 [저장] 때 관리 폴더의 파일도 지웁니다.</td></tr>
+</table>
+<p class="note">설정 창에서 바꾼 이름·대상·삭제는 설정 창 <b>[저장]</b>을 눌러야 남습니다. [파일 추가…]는 누르는 즉시 관리 폴더로 복사합니다.</p>
+
+<h2>2. 내보내기</h2>
+<ul>
+  <li>[엑셀 내보내기 ▾]에서 <b>기본 서식</b> 또는 <b>등록 서식</b>을 고르고 저장할 파일을 정합니다.</li>
+  <li>등록 서식으로 내보내면 서식 파일의 열 순서·셀 서식·색·너비·로고·제목은 그대로 두고, 컬럼명 행 아래에 값만 채웁니다. 첫 데이터 행의 꾸밈(색·테두리·표시 형식)은 아래 행들에 이어집니다. 서식 파일 자체는 바뀌지 않습니다.</li>
+  <li>내보내는 행은 <b>화면에 보이는 대로</b>입니다 — 정렬과 열 필터를 따르고, 삭제 표시한 행은 뺍니다. 열 필터가 걸려 있으면 상태 줄에 "(열 필터 적용)"이라고 알립니다.</li>
+  <li>숫자는 엑셀 숫자로 씁니다. 단 15자리를 넘는 숫자는 엑셀이 정확히 담지 못해 글자로 씁니다. <code>007</code> 같은 코드는 문자 열이라 앞의 0이 그대로입니다.</li>
+</ul>
+
+<h2>3. 빈 서식 건네기</h2>
+<p>데이터를 채울 사람에게는 값이 없는 서식을 줍니다. [엑셀 내보내기 ▾] → <b>빈 서식 저장</b>에서 서식을 고르면, 등록 서식은 그 모양 그대로 데이터 칸만 비운 파일, 기본 서식은 이 결과 열로 만든 서식 파일(열 서식 + <code>_규칙</code> 시트)이 저장됩니다.</p>
+<img class="shot" src="img/excel-blank-submenu.png" alt="빈 서식 저장 하위 메뉴">
+<p class="cap">빈 서식 저장 — 이 결과에 쓸 수 있는 서식 목록.</p>
+
+<h2>4. 가져오기</h2>
+<ol class="steps">
+  <li>빠른 조회 결과에서 <b>[엑셀 임포트]</b>를 누르고 채운 파일을 고릅니다. 행마다 새 행(✚ 추가 표시)으로 들어오고, 엑셀에 없는 열은 상태 줄에 알려 줍니다.</li>
+  <li><b>[저장]</b> — 실행할 INSERT를 확인하고 [실행]. 오류가 나면 이번 저장 전체를 되돌립니다(저장 전 커밋 대기는 유지).</li>
+  <li><b>[커밋]</b>해야 DB에 남습니다. 커밋 전에는 [롤백]으로 되돌릴 수 있습니다.</li>
+</ol>
+<img class="shot" src="img/excel-import-result.png" alt="엑셀 임포트 결과">
+<p class="cap">엑셀에서 1행을 가져온 뒤 — 새 행(3번)과, 엑셀에 없는 열(CREATED)은 DB 기본값이 된다는 안내.</p>
+<img class="shot" src="img/excel-save-confirm.png" alt="결과 편집 저장 확인">
+<p class="cap">[저장] 확인 창 — 실행할 INSERT 문.</p>
+<p>엑셀 칸의 값은 이렇게 읽습니다.</p>
+<table>
+  <tr><th>엑셀 칸</th><th>읽는 값</th></tr>
+  <tr><td>글자</td><td>그대로 (앞의 0·공백 포함)</td></tr>
+  <tr><td>숫자</td><td><code>1234.5</code>처럼 '.' 소수점, 지수 표기 없이 — PC 지역 설정과 무관</td></tr>
+  <tr><td>날짜·시각</td><td><code>2026-11-01 09:30:00</code> — PC 지역 설정과 무관(글자로 써도 이 형식이면 됨)</td></tr>
+  <tr><td>참/거짓</td><td><code>1</code> / <code>0</code></td></tr>
+  <tr><td>빈 칸</td><td>NULL — 새 행이면 INSERT에서 빠져 DB 기본값</td></tr>
+</table>
+
+<h2>가져오지 않는 경우</h2>
+<table>
+  <tr><th>안내</th><th>고칠 것</th></tr>
+  <tr><td>엑셀에 이름 정의 DBH_COLUMNS가 없습니다</td><td>컬럼명 셀들을 고르고 이름 상자에 <code>DBH_COLUMNS</code>를 입력하세요(위 "이름 정의로 지정하기").</td></tr>
+  <tr><td>이름 정의 DBH_COLUMNS(…)의 첫 행에 이 결과의 컬럼명이 없습니다</td><td>이름이 컬럼명 행이 아닌 곳을 가리킵니다. <b>수식 &gt; 이름 관리자</b>에서 범위를 고치세요.</td></tr>
+  <tr><td>컬럼명 행에 이 결과에 없는 컬럼이 있습니다</td><td>컬럼명 오타이거나 다른 테이블의 서식입니다. 그 열을 지우거나 이름을 고치세요.</td></tr>
+  <tr><td>컬럼명이 중복되었습니다</td><td>같은 컬럼명이 두 번 있습니다. 하나를 지우세요.</td></tr>
+  <tr><td>수식 셀은 임포트할 수 없습니다</td><td>수식 대신 값으로 붙여 넣으세요(엑셀 [값 붙여넣기]).</td></tr>
+  <tr><td>오류 값이 든 셀은 가져올 수 없습니다</td><td><code>#N/A</code>·<code>#VALUE!</code> 같은 칸을 고치세요.</td></tr>
+  <tr><td>[저장] 때 "날짜 형식이 아닙니다" 등</td><td>그 칸의 값이 열 형식(숫자·날짜)과 맞지 않습니다. 셀을 날짜·숫자로 넣거나 위 표의 형식으로 쓰세요.</td></tr>
+</table>
+
+<h2>알아 둘 점</h2>
+<ul>
+  <li>[엑셀 내보내기 ▾]·[엑셀 임포트]는 빠른 조회(트리 <span class="kbd">F1</span>) 결과 — 테이블 하나를 편집할 수 있는 결과 — 위의 편집 막대에 있습니다. 일반 SQL 결과는 [복사(TSV)]를 쓰세요.</li>
+  <li>가져오기는 새 행 추가(INSERT)만 합니다. 기존 행 수정은 그리드에서 고치거나 [편집]을 쓰세요.</li>
+  <li>읽기 전용 접속에서는 [엑셀 임포트]가 꺼집니다(내보내기는 됩니다).</li>
+</ul>
+</body>
+</html>

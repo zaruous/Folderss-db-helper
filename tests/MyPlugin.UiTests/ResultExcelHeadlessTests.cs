@@ -80,7 +80,7 @@ namespace MyPlugin.UiTests
 
                 // 3) 그 서식으로 내보내기: 서식의 열 순서·색 유지, 뺀 열은 안내
                 var shaped = Path.Combine(folder, "shaped.xlsx");
-                await ExportWith(ui, main, item => item.Contains("서식") && !item.StartsWith("기본", StringComparison.Ordinal) && !item.StartsWith("이 결과로", StringComparison.Ordinal), shaped);
+                await ExportWith(ui, main, item => item.Contains("서식") && !item.StartsWith("기본", StringComparison.Ordinal) && !item.StartsWith("이 결과로", StringComparison.Ordinal) && !item.StartsWith("빈 서식", StringComparison.Ordinal), shaped);
                 Assert.Contains(ui.Run(() => Ui.Texts(main)), t => t.Contains("서식에 없어 뺀 열: CREATED"));
                 using (var book = new XLWorkbook(shaped))
                 {
@@ -94,15 +94,46 @@ namespace MyPlugin.UiTests
                     sheet.Cell(2, 1).Value = "009"; sheet.Cell(2, 2).Value = 3;
                     book.SaveAs(Path.Combine(folder, "import.xlsx"));
                 }
+                // 빈 서식 저장(등록 서식): 열 순서·색은 두고 값만 비운 파일 — 데이터를 채울 사람에게 건넬 것
+                var blank = Path.Combine(folder, "blank.xlsx");
+                if (File.Exists(blank)) File.Delete(blank);
+                await OpenExportMenu(ui, main);
+                ui.Run(() =>
+                {
+                    var sub = MenuItems(main).First(m => Header(m) == "빈 서식 저장");
+                    sub.IsSubmenuOpen = true;
+                });
+                await Idle(ui);
+                ui.Run(() =>
+                {
+                    var sub = MenuItems(main).First(m => Header(m) == "빈 서식 저장");
+                    var popup = Ui.Descendants(sub).OfType<System.Windows.Controls.Primitives.Popup>().FirstOrDefault();
+                    if (popup?.Child is FrameworkElement child)
+                        Ui.SnapElement(child, main.Background, HeadlessEnvironment.WorkFolder, "help-excel-blank-submenu");
+                    sub.IsSubmenuOpen = false;
+                });
+                var blankItem = ui.Run(() => MenuItems(main).First(m => Header(m) == "빈 서식 저장").Items.OfType<MenuItem>().First(m => !Header(m).StartsWith("기본", StringComparison.Ordinal)));
+                ui.Post(() => blankItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)));
+                await NativeDialogs.SaveAs(ui, blank, Wait);
+                await ui.WaitUntil(() => File.Exists(blank) && Ui.Texts(main).Any(t => t.Contains("빈 서식을 저장했습니다")), Wait, "빈 서식 저장");
+                using (var book = new XLWorkbook(blank))
+                {
+                    var sheet = book.Worksheet("Data");
+                    Assert.Equal("CODE", sheet.Cell(1, 1).GetString());
+                    Assert.True(sheet.Cell(2, 1).IsEmpty());
+                    Assert.Equal(XLColor.LightYellow, sheet.Cell(2, 2).Style.Fill.BackgroundColor);
+                }
                 ui.Post(() => Ui.Click((ButtonBase)Ui.Find<Button>(main, b => AutomationProperties.GetAutomationId(b) == "excel-import")));
                 _out.WriteLine("열기: " + await NativeDialogs.Open(ui, Path.Combine(folder, "import.xlsx"), Wait));
                 await ui.WaitUntil(() => Ui.Texts(main).Any(t => t.Contains("엑셀에서 1개 행을 추가했습니다")), Wait, "가져오기");
                 Assert.Contains(ui.Run(() => Ui.Texts(main)), t => t.Contains("엑셀에 없는 열(CREATED)"));
                 _out.WriteLine("캡처: " + ui.Run(() => Ui.Snap(main, plugin.ShotFolder, "excel-imported")));
+                ui.Run(() => Ui.Snap(main, HeadlessEnvironment.WorkFolder, "help-excel-imported"));
 
                 // 5) [저장] → 확인 창 [실행] → [커밋]
                 ui.Post(() => Ui.Click(Ui.Button(main, "저장")));
                 var confirm = await ui.WaitFor(() => Ui.Window("결과 편집 저장"), Wait, "저장 확인 창");
+                ui.Run(() => { confirm.UpdateLayout(); Ui.Snap(confirm, HeadlessEnvironment.WorkFolder, "help-excel-confirm"); });
                 ui.Run(() => Ui.Click(Ui.Button(confirm, "실행")));
                 await ui.WaitUntil(() => !confirm.IsVisible && Ui.Texts(main).Any(t => t.Contains("커밋 대기")), Wait, "INSERT");
                 ui.Run(() => Ui.Click(Ui.Button(main, "커밋")));
@@ -196,12 +227,19 @@ namespace MyPlugin.UiTests
         static System.Collections.Generic.List<MenuItem> MenuItems(Window main)
             => Ui.Find<Button>(main, b => AutomationProperties.GetAutomationId(b) == "excel-export").ContextMenu.Items.OfType<MenuItem>().ToList();
 
-        static string Header(MenuItem item) => item.Header as string ?? "";
+        static string Header(MenuItem item) => (item.Header as string ?? "").Replace("__", "_"); // 메뉴 글의 _는 두 번 써 둔다
 
         async Task ExportWith(UiThread ui, Window main, Func<string, bool> pick, string path)
         {
             if (File.Exists(path)) File.Delete(path);
             await OpenExportMenu(ui, main);
+            // 도움말 캡처: 열린 메뉴(등록 서식이 있으면 그것까지)
+            ui.Run(() =>
+            {
+                var menu = Ui.Find<Button>(main, b => AutomationProperties.GetAutomationId(b) == "excel-export").ContextMenu;
+                menu.UpdateLayout();
+                Ui.SnapElement(menu, main.Background, HeadlessEnvironment.WorkFolder, "help-excel-menu-" + MenuItems(main).Count);
+            });
             var item = ui.Run(() => MenuItems(main).First(m => pick(Header(m))));
             _out.WriteLine("내보내기 서식: " + ui.Run(() => Header(item)));
             ui.Post(() => item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)));

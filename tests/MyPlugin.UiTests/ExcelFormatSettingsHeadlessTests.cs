@@ -14,7 +14,7 @@ namespace MyPlugin.UiTests
     /// <summary>
     /// 설정 창 "엑셀 서식": 처음 등록 항목(기본 서식)은 고정·편집 불가, [파일 추가…]는 관리 폴더로 복사해 등록,
     /// 이름·대상 테이블 수정, 삭제 → [저장]하면 설정 값(resultExcel.formats)에 남고 지운 파일은 관리 폴더에서 빠진다.
-    /// 첫 행 컬럼명이 없는 파일은 등록하지 않는다.
+    /// 이름 정의 DBH_COLUMNS가 없는 파일은 등록하지 않는다.
     /// </summary>
     public class ExcelFormatSettingsHeadlessTests
     {
@@ -30,10 +30,16 @@ namespace MyPlugin.UiTests
             {
                 var sheet = book.AddWorksheet("Data");
                 sheet.Cell(1, 1).Value = "ID"; sheet.Cell(1, 2).Value = "NAME";
+                book.DefinedNames.Add("DBH_COLUMNS", sheet.Range(1, 1, 1, 2)); // 컬럼명 행 지정
                 book.SaveAs(good);
             }
-            var bad = Path.Combine(work, "빈 파일.xlsx");
-            using (var book = new XLWorkbook()) { book.AddWorksheet("Data"); book.SaveAs(bad); }
+            var bad = Path.Combine(work, "이름 없는 파일.xlsx");
+            using (var book = new XLWorkbook())
+            {
+                var sheet = book.AddWorksheet("Data");
+                sheet.Cell(1, 1).Value = "ID"; sheet.Cell(1, 2).Value = "NAME"; // 컬럼명은 있지만 이름 정의가 없다
+                book.SaveAs(bad);
+            }
 
             Window window = null;
             object page = null;
@@ -69,7 +75,7 @@ namespace MyPlugin.UiTests
                 var notice = await ui.WaitFor(() => Ui.Window("엑셀 서식"), TimeSpan.FromSeconds(30), "등록 거부 안내");
                 ui.Run(() =>
                 {
-                    Assert.Contains(Ui.Texts(notice), t => t.Contains("컬럼명이 없습니다"));
+                    Assert.Contains(Ui.Texts(notice), t => t.Contains("DBH_COLUMNS"));
                     notice.Close();
                 });
 
@@ -87,7 +93,26 @@ namespace MyPlugin.UiTests
                     Assert.Contains("SCOTT.EMP", (string)((ListBoxItem)list.Items[start]).Content);
                     window.UpdateLayout();
                     Ui.Snap(window, HeadlessEnvironment.WorkFolder, "excel-format-settings");
+                    // 도움말 캡처: 등록 서식이 보이고 기본 서식을 고른 상태(파일 경로가 드러나지 않게)
+                    list.SelectedIndex = 0;
+                    window.UpdateLayout();
+                    Ui.Snap(window, HeadlessEnvironment.WorkFolder, "help-excel-settings");
+                    list.SelectedIndex = start;
                     page.GetType().GetMethod("Save").Invoke(page, null);
+                });
+                // 서식 내보내기: 고른 서식 파일을 원하는 위치에 복사(관리 폴더의 파일은 그대로)
+                var exported = Path.Combine(work, "건넬 서식.xlsx");
+                if (File.Exists(exported)) File.Delete(exported);
+                ui.Post(() => Ui.Click(Ui.Find<Button>(window, b => AutomationProperties.GetAutomationId(b) == "excel-format-export")));
+                await NativeDialogs.SaveAs(ui, exported, TimeSpan.FromSeconds(30));
+                await ui.WaitUntil(() => File.Exists(exported), TimeSpan.FromSeconds(30), "서식 내보내기");
+                using (var book = new XLWorkbook(exported))
+                    Assert.Equal("NAME", book.Worksheet("Data").Cell(1, 2).GetString());
+                ui.Run(() =>
+                {
+                    list.SelectedIndex = 0;
+                    Assert.False(Ui.Find<Button>(window, b => AutomationProperties.GetAutomationId(b) == "excel-format-export").IsEnabled); // 기본 서식은 결과 편집 막대에서
+                    list.SelectedIndex = start;
                 });
                 var saved = plugin.Manager.GetSetting("resultExcel.formats");
                 Assert.Contains("\"name\":\"사원 등록 서식\"", saved);

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using ClosedXML.Excel;
@@ -9,6 +10,10 @@ namespace MyPlugin.Tests
 {
     public class ResultExcelTests
     {
+        /// <summary>컬럼명 행을 이름 정의 DBH_COLUMNS로 지정(가져오기·서식 채우기는 이 이름이 있는 파일만 읽는다).</summary>
+        static void Name(IXLWorksheet sheet, int row, int first, int last)
+            => sheet.Workbook.DefinedNames.Add(ResultExcel.HeaderName, sheet.Range(row, first, row, last));
+
         [Fact]
         public void RoundTripAndReorderedHeaders()
         {
@@ -64,6 +69,7 @@ namespace MyPlugin.Tests
                     sheet.Cell(2, 1).Value = "ignore_me";
                     sheet.Cell(2, 2).Value = "EMP_101";
                     sheet.Cell(2, 3).Value = 12500; // Number 타입
+                    Name(sheet, 1, 1, 3);
                     book.SaveAs(path);
                 }
 
@@ -105,6 +111,7 @@ namespace MyPlugin.Tests
                     var sheet = book.AddWorksheet("Data");
                     sheet.Cell(1, 1).Value = "COL1";
                     sheet.Cell(1, 2).Value = "COL1"; // 중복
+                    Name(sheet, 1, 1, 2);
                     book.SaveAs(path);
                 }
 
@@ -147,6 +154,7 @@ namespace MyPlugin.Tests
                     sheet.Cell(2, 4).Value = 12345678901234d;
                     sheet.Cell(2, 5).Value = 0.000125;
                     sheet.Cell(2, 6).Value = true;
+                    Name(sheet, 1, 1, columns.Length);
                     book.SaveAs(path);
                 }
                 var row = Assert.Single(ResultExcel.Read(path, columns));
@@ -178,7 +186,17 @@ namespace MyPlugin.Tests
                     var sheet = book.Worksheet(1);
                     Assert.Equal("@", sheet.Cell(2, 1).Style.NumberFormat.Format);
                     Assert.Equal("@", sheet.Cell(500, 2).Style.NumberFormat.Format);
-                    sheet.Cell(1, 3).Value = "EXTRA";
+                    // 기본 서식은 컬럼명 행을 이름 정의 DBH_COLUMNS(A1:B1)로 지정해 둔다 — 범위 밖 C열은 메모 열(읽지 않음)
+                    Assert.Equal("Data!$A$1:$B$1", book.DefinedNames.Single(n => n.Name == ResultExcel.HeaderName).RefersTo);
+                    sheet.Cell(1, 3).Value = "메모";
+                    sheet.Cell(2, 3).Value = "아무 글";
+                    book.Save();
+                }
+                Assert.Empty(ResultExcel.Read(path, columns));
+                // 범위 안에 결과에 없는 컬럼명이 있으면 거부
+                using (var book = new XLWorkbook(path))
+                {
+                    book.Worksheet(1).Cell(1, 2).Value = "EXTRA";
                     book.Save();
                 }
                 var error = Assert.Throws<InvalidOperationException>(() => ResultExcel.Read(path, columns));
@@ -265,6 +283,7 @@ namespace MyPlugin.Tests
                     sheet.Cell(2, 1).Value = new DateTime(2000, 1, 1);
                     sheet.Cell(2, 2).Value = 999;
                     sheet.Cell(5, 2).Value = 888;
+                    Name(sheet, 1, 1, 2);
                     book.SaveAs(template);
                 }
                 var skipped = ResultExcel.WriteInto(template, output, Typed, new[] { new[] { "1", "A", "2026-11-01 00:00:00" }, new[] { "2", "B", null } });
@@ -305,6 +324,7 @@ namespace MyPlugin.Tests
                     var sheet = book.AddWorksheet("Data");
                     sheet.Cell(1, 1).Value = "code"; // 소문자·ID와 CREATED는 서식에서 뺐다
                     sheet.Cell(2, 1).Value = "X1";
+                    Name(sheet, 1, 1, 1);
                     book.SaveAs(path);
                 }
                 var row = Assert.Single(ResultExcel.Read(path, Typed, out var missing));
@@ -336,9 +356,10 @@ namespace MyPlugin.Tests
                     sheet.Cell(2, 2).Value = "작성: 인사팀 (2026-11)";                  // 설명
                     sheet.Cell(4, 1).Value = "CODE"; sheet.Cell(4, 2).Value = "ID";      // 컬럼명 행(4행)
                     sheet.Cell(5, 1).Value = "X1"; sheet.Cell(5, 2).Value = 7;
+                    Name(sheet, 4, 1, 2);
                     book.SaveAs(template);
                 }
-                // 가져오기: 컬럼명 행(4행) 아래만
+                // 가져오기: 컬럼명 행(이름 정의 4행) 아래만
                 var row = Assert.Single(ResultExcel.Read(template, Typed, out var missing));
                 Assert.Equal(new string[] { "7", "X1", null }, row);
                 Assert.Equal(new[] { "CREATED" }, missing);
@@ -357,15 +378,84 @@ namespace MyPlugin.Tests
                 }
                 Assert.Equal(new[] { new string[] { "1", "A", null }, new string[] { "2", "B", null } }, ResultExcel.Read(output, Typed));
 
-                // 위쪽 30행 안에 컬럼명 행이 없으면 거부
+                // 빈 서식 저장(값 없이): 그림·제목·컬럼명 행은 두고 데이터 칸만 비운다
+                var blank = output + ".blank.xlsx";
+                ResultExcel.WriteInto(output, blank, Typed, new List<string[]>());
+                using (var book = new XLWorkbook(blank))
+                {
+                    var sheet = book.Worksheet("사원");
+                    Assert.Single(sheet.Pictures);
+                    Assert.Equal("사원 명부", sheet.Cell(1, 2).GetString());
+                    Assert.Equal("CODE", sheet.Cell(4, 1).GetString());
+                    Assert.True(sheet.Cell(5, 1).IsEmpty() && sheet.Cell(6, 2).IsEmpty());
+                }
+                Assert.Empty(ResultExcel.Read(blank, Typed));
+                File.Delete(blank);
+
+                // 이름 정의가 없으면 컬럼명 행을 짐작하지 않고 거부한다 — 설명 행의 "ID" 같은 글을 머리로 잡지 않게
                 using (var book = new XLWorkbook())
                 {
                     var sheet = book.AddWorksheet("Data");
-                    sheet.Cell(1, 1).Value = "제목만 있음";
-                    sheet.Cell(31, 1).Value = "CODE";
+                    sheet.Cell(1, 1).Value = "ID";                 // 설명 행에 우연히 컬럼명과 같은 글
+                    sheet.Cell(3, 1).Value = "CODE"; sheet.Cell(3, 2).Value = "ID";
+                    sheet.Cell(4, 1).Value = "X1"; sheet.Cell(4, 2).Value = 1;
                     book.SaveAs(output);
                 }
-                Assert.Contains("컬럼명이 있는 행이 없습니다", Assert.Throws<InvalidOperationException>(() => ResultExcel.Read(output, Typed)).Message);
+                Assert.Contains(ResultExcel.HeaderName, Assert.Throws<InvalidOperationException>(() => ResultExcel.Read(output, Typed)).Message);
+                Assert.Throws<InvalidOperationException>(() => ResultExcel.Inspect(output));
+            }
+            finally
+            {
+                if (File.Exists(template)) File.Delete(template);
+                if (File.Exists(output)) File.Delete(output);
+            }
+        }
+
+        /// <summary>
+        /// 이름 정의 DBH_COLUMNS로 컬럼명 행을 지정한 서식: 그 범위의 첫 행이 컬럼명 행, 그 범위의 열만 데이터 열.
+        /// 위쪽 30행을 넘는 곳·다른 시트에 있어도 되고, 범위 밖 열(메모·계산 열)은 가져오기·채우기 모두 건드리지 않는다.
+        /// </summary>
+        [Fact]
+        public void NamedRange_DBH_COLUMNS_SetsHeaderRowAndDataColumns()
+        {
+            var template = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".xlsx");
+            var output = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".xlsx");
+            try
+            {
+                using (var book = new XLWorkbook())
+                {
+                    book.AddWorksheet("표지").Cell(1, 1).Value = "표지 시트(첫 시트지만 데이터 시트 아님)";
+                    var sheet = book.AddWorksheet("사원");
+                    sheet.Cell(1, 1).Value = "ID";                          // 위에 있는 같은 글자(머리 아님)
+                    sheet.Cell(40, 2).Value = "CODE"; sheet.Cell(40, 3).Value = "ID"; // 40행 B:C가 컬럼명 행
+                    sheet.Cell(40, 4).Value = "비고";                         // 범위 밖 메모 열
+                    sheet.Cell(41, 2).Value = "X1"; sheet.Cell(41, 3).Value = 7; sheet.Cell(41, 4).Value = "메모는 읽지 않음";
+                    book.DefinedNames.Add(ResultExcel.HeaderName, sheet.Range(40, 2, 40, 3));
+                    book.SaveAs(template);
+                }
+                ResultExcel.Inspect(template);
+                var row = Assert.Single(ResultExcel.Read(template, Typed, out var missing));
+                Assert.Equal(new string[] { "7", "X1", null }, row);
+                Assert.Equal(new[] { "CREATED" }, missing);
+
+                ResultExcel.WriteInto(template, output, Typed, new[] { new[] { "1", "A", null }, new[] { "2", "B", null } });
+                using (var book = new XLWorkbook(output))
+                {
+                    var sheet = book.Worksheet("사원");
+                    Assert.Equal("ID", sheet.Cell(1, 1).GetString());         // 위쪽 글은 그대로
+                    Assert.Equal("A", sheet.Cell(41, 2).GetString());
+                    Assert.Equal(2, sheet.Cell(42, 3).GetDouble());
+                    Assert.Equal("메모는 읽지 않음", sheet.Cell(41, 4).GetString()); // 범위 밖 열은 지우지 않는다
+                }
+
+                // 범위 첫 행에 결과 컬럼명이 하나도 없으면 거부(이름이 잘못 걸림)
+                using (var book = new XLWorkbook(template))
+                {
+                    book.DefinedNames.Delete(ResultExcel.HeaderName);
+                    book.DefinedNames.Add(ResultExcel.HeaderName, book.Worksheet("사원").Range(41, 2, 41, 3));
+                    book.Save();
+                }
+                Assert.Throws<InvalidOperationException>(() => ResultExcel.Read(template, Typed));
             }
             finally
             {

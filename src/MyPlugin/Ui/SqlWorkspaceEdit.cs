@@ -133,11 +133,21 @@ namespace MyPlugin
             foreach (var format in ExcelFormats.For(result.Edit?.Owner, result.Edit?.Name))
             {
                 var chosen = format;
-                var item = new MenuItem { Header = format.BuiltIn ? format.Name : format.Name + (string.IsNullOrWhiteSpace(format.Table) ? "" : "  (" + format.Table + ")") };
+                var item = new MenuItem { Header = MenuText(format.BuiltIn ? format.Name : format.Name + (string.IsNullOrWhiteSpace(format.Table) ? "" : "  (" + format.Table + ")")) };
                 item.Click += (s, e) => Safe(() => ExportExcel(chosen));
                 menu.Items.Add(item);
             }
             menu.Items.Add(new Separator());
+            // 빈 서식 저장: 값 없이 서식만(데이터를 채울 사람에게 건넬 파일)
+            var blank = new MenuItem { Header = "빈 서식 저장" };
+            foreach (var format in ExcelFormats.For(result.Edit?.Owner, result.Edit?.Name))
+            {
+                var chosen = format;
+                var item = new MenuItem { Header = MenuText(format.Name + "…") };
+                item.Click += (s, e) => Safe(() => SaveBlankFormat(chosen));
+                blank.Items.Add(item);
+            }
+            menu.Items.Add(blank);
             var make = new MenuItem { Header = "이 결과로 서식 만들기… (설정 \"엑셀 서식\"에 등록)" };
             make.Click += (s, e) => Safe(MakeExcelFormat);
             menu.Items.Add(make);
@@ -189,6 +199,47 @@ namespace MyPlugin
                 SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 저장 실패: " + ex.Message));
                 throw;
             }
+        }
+
+        /// <summary>메뉴 글: '_'는 WPF가 단축키 표시로 먹으므로 두 번 써서 그대로 보이게(DBH_XL_IT).</summary>
+        private static string MenuText(string text) => (text ?? "").Replace("_", "__");
+
+        /// <summary>
+        /// 빈 서식 저장: 기본 서식은 이 결과 열로 만든 서식(자료형별 열 서식 + '_규칙' 시트), 등록 서식은 그 파일 그대로에서 데이터 칸만 비운 것.
+        /// 데이터를 채울 사람에게 건네고, 채운 파일은 [엑셀 임포트]로 가져온다.
+        /// </summary>
+        private void SaveBlankFormat(ExcelFormatEntry format)
+        {
+            var tab = _active;
+            var result = tab != null ? tab.ActiveResult : null;
+            if (result == null || result.Columns == null)
+                return;
+            var templatePath = ExcelFormats.PathOf(format);
+            if (!format.BuiltIn && (templatePath == null || !System.IO.File.Exists(templatePath)))
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("엑셀 서식 파일이 없습니다: " + format.Name + " — 설정 창 \"엑셀 서식\"에서 다시 추가하세요."));
+                return;
+            }
+            var save = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "빈 서식 저장 — " + format.Name,
+                Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx",
+                DefaultExt = ".xlsx",
+                FileName = (format.BuiltIn ? (result.Edit != null ? result.Edit.Name : "Result") + " 서식" : format.Name) + ".xlsx"
+            };
+            if (save.ShowDialog() != true)
+                return;
+            if (templatePath != null && string.Equals(System.IO.Path.GetFullPath(save.FileName), System.IO.Path.GetFullPath(templatePath), StringComparison.OrdinalIgnoreCase))
+            {
+                SetStatus(tab, WorkspaceLogic.TextStatus("서식 파일 자체에는 저장할 수 없습니다. 다른 이름으로 저장하세요."));
+                return;
+            }
+            var target = result.Edit == null ? "" : WorkspaceLogic.QualifiedName(result.Edit.Owner, result.Edit.Name);
+            if (format.BuiltIn)
+                ResultExcel.WriteTemplate(save.FileName, result.Columns, target);
+            else
+                ResultExcel.WriteInto(templatePath, save.FileName, result.Columns, new List<string[]>());
+            SetStatus(tab, WorkspaceLogic.TextStatus("빈 서식을 저장했습니다: " + System.IO.Path.GetFileName(save.FileName) + " — 값을 채운 뒤 [엑셀 임포트]하세요."));
         }
 
         /// <summary>이 결과의 열로 서식 파일(자료형별 열 서식 + '_규칙' 시트)을 만들어 설정 "엑셀 서식"에 등록한다(대상 = 이 테이블).</summary>
