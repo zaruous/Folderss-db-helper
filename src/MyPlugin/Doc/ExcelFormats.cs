@@ -90,7 +90,7 @@ namespace MyPlugin
 
         public static string PathOf(ExcelFormatEntry entry) => entry == null || entry.BuiltIn || Folder == null ? null : Path.Combine(Folder, entry.File);
 
-        /// <summary>파일을 관리 폴더로 복사해 등록 항목을 만든다(같은 이름이 있으면 " (2)"…). 서식 규칙(위쪽에 컬럼명 행)을 먼저 확인한다.</summary>
+        /// <summary>파일을 관리 폴더로 복사해 등록 항목을 만든다(같은 이름이 있으면 " (2)"…). 서식 규칙(이름 정의 DBH_COLUMNS로 지정한 컬럼명 행)을 먼저 확인한다.</summary>
         public static ExcelFormatEntry Import(string sourcePath, string table)
         {
             if (Folder == null) throw new InvalidOperationException("플러그인 데이터 폴더를 알 수 없어 서식을 등록할 수 없습니다.");

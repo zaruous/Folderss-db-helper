@@ -23,13 +23,16 @@ namespace MyPlugin.Tests
         public void Pages_Exist_AndLocalLinksResolve()
         {
             var folder = HelpFolder();
-            foreach (var page in new[] { HelpLogic.Index, HelpLogic.Connections, HelpLogic.TableSpec, HelpLogic.CodeSpec, HelpLogic.Monitor })
+            foreach (var page in new[] { HelpLogic.Index, HelpLogic.Connections, HelpLogic.TableSpec, HelpLogic.CodeSpec, HelpLogic.Monitor, HelpLogic.ExcelFormat })
             {
                 var path = HelpLogic.LocalPath(folder, page);
                 Assert.True(path != null, page + " 없음");
                 var html = File.ReadAllText(path);
                 Assert.Contains("<meta charset=\"utf-8\">", html);
                 Assert.Contains("help.css", html);
+                // 그림(캡처)도 help\ 안에 있어야 한다(플러그인 폴더로 함께 배포)
+                foreach (Match image in Regex.Matches(html, "src=\"([^\"]+)\""))
+                    Assert.True(File.Exists(Path.Combine(folder, image.Groups[1].Value.Replace('/', Path.DirectorySeparatorChar))), page + " → 그림 " + image.Groups[1].Value + " 없음");
                 foreach (Match link in Regex.Matches(html, "href=\"([^\"#]+)\""))
                 {
                     var target = link.Groups[1].Value;
