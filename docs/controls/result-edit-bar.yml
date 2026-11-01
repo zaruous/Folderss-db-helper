@@ -6,6 +6,7 @@ source:
   - src/MyPlugin/Ui/SqlWorkspaceEdit.cs
   - src/MyPlugin/Ui/RowEditLogic.cs
   - src/MyPlugin/Doc/ResultExcel.cs
+  - src/MyPlugin/Doc/ExcelFormats.cs
   - src/MyPlugin/Db/DbSession.cs
   - src/MyPlugin/Db/Providers/IDbProvider.cs
   - src/MyPlugin/Ui/SqlWorkspaceTab.cs
@@ -18,7 +19,7 @@ summary: >-
 features:
   - name: 버튼 순서
     description: >-
-      행을 바꾸는 버튼(행 추가 → 복제 → 편집 → 삭제), 간격을 두고 DB에 보내는 [저장], 간격을 두고 WHERE 칸·[다시 조회], 오른쪽에 엑셀 버튼(내보내기·템플릿·임포트).
+      행을 바꾸는 버튼(행 추가 → 복제 → 편집 → 삭제), 간격을 두고 DB에 보내는 [저장], 간격을 두고 WHERE 칸·[다시 조회], 오른쪽에 엑셀 버튼([엑셀 내보내기 ▾]·[엑셀 임포트]).
   - name: 행 추가
     description: >-
       빈 새 행을 행 편집 창(새 행 모드)에서 채워 결과 끝에 붙인다(초록 바탕·＋). 취소하거나 값이 하나도 없으면 만들지 않는다.
@@ -65,8 +66,11 @@ features:
       커밋·롤백이 실패했지만 트랜잭션이 남았으면(서버가 끝내지 않음) 커밋 대기 표시가 그대로 남는다.
   - name: 엑셀 연동
     description: >-
-      [엑셀 내보내기]로 조회된 행을 .xlsx 파일로 저장하고, [엑셀 템플릿]으로 컬럼 헤더만 있는 빈 서식을 생성하며,
-      [엑셀 임포트]로 엑셀 데이터를 읽어 새 행(INSERT 예정)으로 한 번에 추가한다.
+      서식은 설정 창 "엑셀 서식"에서 관리한다(excel-format-settings-page). [엑셀 내보내기 ▾] 메뉴: 기본 서식(결과 열 그대로 새 파일) ·
+      이 테이블에 맞는 등록 서식(그 파일의 열 순서·셀 서식·너비·색은 그대로 두고 첫 행 컬럼명에 맞춰 값만 채움, 서식에 없는 결과 열은 상태 줄에 알림) ·
+      "이 결과로 서식 만들기"(자료형별 열 서식 + '_규칙' 시트를 만들어 설정에 등록). 내보내는 행은 화면에 보이는 대로(정렬·열 필터 반영, 삭제 표시 제외).
+      [엑셀 임포트]는 데이터 시트 첫 행 컬럼명으로 맞춰(순서·서식 무관, 대소문자 무시) 새 행(INSERT 예정)으로 더한다 —
+      날짜·숫자 셀은 PC 지역 설정과 무관하게 그리드 형식으로 읽고, 엑셀에 없는 열은 비워 DB 기본값, 결과에 없는 열·중복 열·수식·오류 셀은 거부.
   - name: INSERT 문 만들기(오른쪽 메뉴)
     description: >-
       빠른 조회(F1, 테이블 하나) 결과에서 행을 고르고 오른쪽 메뉴 → 고른 행(화면 순서, 고친 값 그대로)마다 값을 글자로 쓴
@@ -142,7 +146,8 @@ limits:
 tests:
   - tests/MyPlugin.Tests/RowEditLogicTests.cs
   - tests/MyPlugin.Tests/ResultExcelTests.cs
+  - tests/MyPlugin.UiTests/ResultExcelHeadlessTests.cs
   - tests/MyPlugin.Tests/DbSessionTests.cs
   - tests/MyPlugin.Tests/TableInfoTests.cs
   - tests/MyPlugin.Tests/RowEditConcurrencyIT.cs
-related: [result-grid, row-edit-dialog, dialogs]
+related: [result-grid, row-edit-dialog, dialogs, excel-format-settings-page]

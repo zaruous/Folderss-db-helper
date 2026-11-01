@@ -526,6 +526,9 @@ namespace MyPlugin
             return selected.OrderBy(r => order.TryGetValue(r, out var position) ? position : int.MaxValue).ToList();
         }
 
+        /// <summary>열 필터가 걸려 있는지(보이는 행이 가져온 행보다 적을 수 있음).</summary>
+        public bool IsFiltered => _filters.Count > 0;
+
         /// <summary>모든 행(화면 순서 — 정렬했으면 정렬한 순서).</summary>
         public List<ResultGridRow> RowsInViewOrder()
         {

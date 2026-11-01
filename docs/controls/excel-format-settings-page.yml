@@ -1,0 +1,50 @@
+id: excel-format-settings-page
+name: ExcelFormatSettingsPage
+title: 설정 창 엑셀 서식 탭
+kind: settings-page
+source:
+  - src/MyPlugin/ExcelFormatSettingsPage.cs
+  - src/MyPlugin/Doc/ExcelFormats.cs
+  - src/MyPlugin/Doc/ResultExcel.cs
+base: Folderss.PluginContract.IPluginSettingsPage
+used_by: [result-edit-bar]
+summary: >-
+  Folderss 설정 창의 "엑셀 서식" 탭 — 결과 편집의 [엑셀 내보내기]·[엑셀 임포트]에 쓸 서식(.xlsx)을 등록·관리한다.
+  서식 파일 하나가 열 구성·순서·셀 서식을 정하고, 사용자는 그 서식에 맞춰 데이터를 내보내고 고쳐 다시 가져온다.
+features:
+  - name: 처음 등록 항목 — 기본 서식
+    description: >-
+      "기본 서식 (자동 — 결과 열 그대로)"이 맨 위에 늘 있다(지우거나 고칠 수 없음). 내보낼 때 결과 열 그대로 새 파일을 만든다
+      (문자 열은 텍스트 @, 숫자 열은 엑셀 숫자 — 15자리를 넘으면 글자, 날짜 열은 엑셀 날짜 yyyy-mm-dd hh:mm:ss).
+  - name: 파일 추가
+    description: >-
+      [파일 추가…]로 고른 .xlsx를 플러그인 데이터 폴더의 excel-formats\에 복사해 등록한다(원본을 옮기거나 지워도 남음).
+      데이터 시트(이름이 '_'로 시작하지 않는 첫 시트) 첫 행에 컬럼명이 없으면 등록하지 않고 안내한다.
+  - name: 이름·대상 테이블
+    description: >-
+      고른 서식의 이름과 대상 테이블(OWNER.TABLE 또는 TABLE, 대소문자 무시)을 고친다. 대상이 비면 모든 결과의 [엑셀 내보내기 ▾]에 보인다.
+  - name: 엑셀로 열기·삭제
+    description: >-
+      [엑셀로 열기]는 관리 폴더의 서식 파일을 연결된 프로그램(엑셀)으로 연다(열 순서·서식·색·너비를 다듬는다).
+      [삭제]는 목록에서 빼고, [저장]할 때 관리 폴더의 파일도 지운다.
+  - name: 결과 그리드에서 등록
+    description: >-
+      결과 편집 막대 [엑셀 내보내기 ▾] → "이 결과로 서식 만들기"가 자료형별 열 서식 + '_규칙' 시트를 가진 서식을 만들어 여기에 바로 등록한다(대상 = 그 테이블).
+  - name: 저장
+    description: 설정 창 [저장] 시 목록을 설정 값 resultExcel.formats(JSON)에 남긴다. 이름이 비면 저장하지 않는다.
+theme:
+  - part: 안내·파일 경로
+    keys: [PrimaryText, SecondaryText]
+limits:
+  - 서식 규칙은 하나다 — 데이터 시트 첫 행 = DB 컬럼명. 가져오기는 결과에 없는 컬럼명·중복 컬럼명·수식·오류 셀을 거부하고, 서식에서 뺀 열은 비워 두어 DB 기본값이 된다.
+  - "[파일 추가…]는 바로 관리 폴더에 복사한다 — 설정 창을 [취소]해도 복사한 파일은 남는다(목록에는 없음)."
+verification:
+  - >-
+    ExcelFormatSettingsHeadlessTests(헤드리스): 기본 서식 고정·편집 불가, 컬럼명 없는 파일 거부 안내, 파일 추가(관리 폴더 복사)·이름·대상 수정·저장·삭제.
+    SqlEditorHeadlessTests.X_ResultExcel_FormatExportImport_Oracle(실제 Oracle 12c): 기본 서식 내보내기, 이 결과로 서식 만들기→등록,
+    다듬은 서식(열 순서 바꿈·열 뺌·색)으로 내보내기, 그 파일을 고쳐 임포트→저장·커밋→다시 조회.
+tests:
+  - tests/MyPlugin.Tests/ResultExcelTests.cs
+  - tests/MyPlugin.UiTests/ExcelFormatSettingsHeadlessTests.cs
+  - tests/MyPlugin.UiTests/ResultExcelHeadlessTests.cs
+related: [result-edit-bar, query-settings-page]
