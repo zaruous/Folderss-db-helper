@@ -327,6 +327,20 @@ namespace MyPlugin
             return query;
         }
 
+        public SqlQuery SearchTables(string pattern, int limit)
+        {
+            var query = new SqlQuery
+            {
+                Sql = "SELECT " + Top(limit) + "s.name AS OWNER, 'TABLE' AS OBJECT_TYPE, o.name AS OBJECT_NAME"
+                    + " FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id"
+                    + " WHERE o.type = 'U' AND o.is_ms_shipped = 0 AND s.name = SCHEMA_NAME()"
+                    + " AND UPPER(o.name) LIKE @pattern ESCAPE '\\'"
+                    + " ORDER BY o.name"
+            };
+            Bind(query, "pattern", pattern);
+            return query;
+        }
+
         public SearchHit ReadObjectHit(IDataRecord record)
         {
             return new SearchHit

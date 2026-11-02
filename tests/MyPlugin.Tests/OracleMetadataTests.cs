@@ -230,6 +230,18 @@ namespace MyPlugin.Tests
             AssertParameters(query, "pattern", "%EMP%", "limit", 501);
         }
 
+        [Fact]
+        public void SearchTables_CurrentSchemaTablesOnly_OrderedByName()
+        {
+            var query = OracleMetadata.SearchTables("%EMP%", 500);
+
+            Assert.Equal(Limited("SELECT OWNER, OBJECT_TYPE, OBJECT_NAME FROM ALL_OBJECTS"
+                + " WHERE OWNER = SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AND OBJECT_TYPE = 'TABLE'"
+                + @" AND UPPER(OBJECT_NAME) LIKE :pattern ESCAPE '\' AND OBJECT_NAME NOT LIKE 'BIN$%'"
+                + " ORDER BY OBJECT_NAME"), Norm(query.Sql));
+            AssertParameters(query, "pattern", "%EMP%", "limit", 501);
+        }
+
         [Theory]
         [InlineData(true, true)]
         [InlineData(true, false)]

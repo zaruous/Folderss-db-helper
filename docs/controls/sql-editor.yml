@@ -25,7 +25,11 @@ features:
   - name: 키 동작
     description: >-
       SqlEditorSetup.ApplyBehavior — Tab·Shift+Tab 들여쓰기, Enter 들여쓰기 유지, Home(첫 글자 먼저), 선택 없는 Ctrl+C·X 줄 전체는 AvalonEdit 동작,
-      Ctrl+D(줄 삭제)는 끔, Insert는 겹쳐쓰기 전환. SQL 탭 단축키(F4·F3·Ctrl+F·Ctrl+Enter·Ctrl+/·Ctrl+Shift+U·L)는 SqlWorkspace가 이 컨트롤의 PreviewKeyDown에서 먼저 처리한다.
+      Ctrl+D(줄 삭제)는 끔, Insert는 겹쳐쓰기 전환. SQL 탭 단축키(F4·F3·Ctrl+F·Ctrl+Enter·Ctrl+/·Ctrl+Shift+U·L·Ctrl+Space)는 SqlWorkspace가 이 컨트롤의 PreviewKeyDown에서 먼저 처리한다.
+  - name: 테이블 이름 목록
+    description: >-
+      ShowCompletion(start, 이름들) — Ctrl+Space(sql-workspace) 결과를 AvalonEdit CompletionWindow로 캐럿 아래에 띄운다.
+      이어 입력하면 좁혀지고(이름에 낱말이 들어 있는 것, 앞부분 일치가 위), Enter·Tab·두 번 누르기로 [start, 캐럿)을 이름으로 바꾼다(되돌리기 한 번). Esc·캐럿이 낱말 밖으로 나가면 닫힌다.
   - name: 줄 간격·글꼴
     description: 고정폭 글꼴(Theme.Mono) 13. 줄 간격은 설정(글꼴 기본 15px 또는 16~32px) — 같은 글꼴을 가리키는 합성 글꼴의 LineSpacing으로(SqlEditorSetup.WithLineHeight).
   - name: 위치 표시
@@ -38,6 +42,7 @@ theme:
   - part: 강조색(테마 색에서 계산)
     keys: [PanelBackground, PrimaryText, SecondaryText, AccentBrush]
 limits:
+  - 테이블 목록은 이름을 그대로 넣는다 — 대소문자 섞인 이름(PostgreSQL 등)도 따옴표를 붙이지 않는다. 목록 창 색은 바탕·글자만 테마에 연결(목록은 Folderss 기본 ListBox 모양).
   - 2만 자(설정) 넘는 줄은 칠하지 않는다. 한 줄 1MB는 AvalonEdit도 입력이 2~4초(편집기 자체 한계 — 예전 TextBox도 비슷).
   - 한글 IME(조합·한자 변환·조합 중 단축키)는 헤드리스로 볼 수 없어 사람이 확인한다 — 2026-10-22 사용자가 써 보고 특별한 문제 없음(항목별 정밀 확인은 쓰면서).
 verification:

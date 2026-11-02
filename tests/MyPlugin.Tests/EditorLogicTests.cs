@@ -101,6 +101,34 @@ namespace MyPlugin.Tests
             Assert.Equal("", EditorLogic.ChangeCase(null, true));
         }
 
+        // ---------- Ctrl+Space 테이블 찾기 낱말 ----------
+
+        [Theory]
+        [InlineData("SELECT * FROM emp|", "emp")]
+        [InlineData("SELECT * FROM e|mp", "e")]              // 캐럿 앞까지만
+        [InlineData("SELECT * FROM scott.em|", "em")]        // 스키마 부분은 빼고 이름만
+        [InlineData("SELECT * FROM T_$#1|", "T_$#1")]
+        [InlineData("SELECT * FROM 고객|", "고객")]
+        [InlineData("SELECT * FROM |", "")]
+        [InlineData("|", "")]
+        [InlineData("x = '\"ab|", "ab")]
+        public void CompletionWordStart(string marked, string word)
+        {
+            var caret = marked.IndexOf('|');
+            var text = marked.Remove(caret, 1);
+
+            var start = EditorLogic.CompletionWordStart(text, caret);
+
+            Assert.Equal(word, text.Substring(start, caret - start));
+        }
+
+        [Fact]
+        public void CompletionWordStart_ClampsCaret()
+        {
+            Assert.Equal(0, EditorLogic.CompletionWordStart(null, 5));
+            Assert.Equal(0, EditorLogic.CompletionWordStart("ab", 9));
+        }
+
         // ---------- F4 대상 이름 ----------
 
         [Theory]

@@ -1050,6 +1050,13 @@ namespace MyPlugin
                 Safe(() => EditorFindAgain(modifiers == ModifierKeys.None));
                 return;
             }
+            if (key == Key.Space && modifiers == ModifierKeys.Control)
+            {
+                // Ctrl+Space: 캐럿 앞 낱말이 들어 있는 테이블(현재 스키마) 목록
+                e.Handled = true;
+                CompleteTableAtCaret();
+                return;
+            }
             if ((modifiers & ModifierKeys.Control) == 0 || (modifiers & ModifierKeys.Alt) != 0)
                 return;
             var shift = (modifiers & ModifierKeys.Shift) != 0;
@@ -1305,6 +1312,76 @@ namespace MyPlugin
                 }
                 DescribeObject(tab.DbId, name.Owner, name.Name);
             });
+        }
+
+        /// <summary>
+        /// Ctrl+Space: 캐럿 앞 낱말로 탭 대상 DB의 현재 스키마 테이블을 UPPER(이름) LIKE '%낱말%'로 찾아 목록을 띄운다(낱말이 없으면 모두, 500개까지).
+        /// 고르면 낱말을 테이블 이름으로 바꾼다. 실행 중이면 묻지 않는다(세션 하나를 같이 쓴다). 결과가 오기 전에 탭·글·캐럿이 바뀌면 버린다.
+        /// </summary>
+        private async void CompleteTableAtCaret()
+        {
+            try
+            {
+                var tab = _active;
+                if (tab == null)
+                    return;
+                var dbId = tab.DbId;
+                var profile = Profile(dbId);
+                if (profile == null)
+                {
+                    SetStatus(tab, WorkspaceLogic.NoTargetStatus());
+                    return;
+                }
+                var editor = tab.Editor;
+                var caret = editor.CaretOffset;
+                var length = editor.TextLength;
+                var start = EditorLogic.CompletionWordStart(editor.Text, caret);
+                var word = editor.Text.Substring(start, caret - start);
+                var session = _host.GetSession(dbId);
+                if (session == null || session.IsBroken)
+                {
+                    if (!await _host.ConnectAsync(dbId))
+                        return;
+                    session = _host.GetSession(dbId);
+                    if (session == null)
+                        return;
+                }
+                if (IsRunning(dbId))
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("'" + profile.Name + "'에서 실행 중이라 테이블을 찾지 않았습니다. 끝난 뒤 다시 Ctrl+Space를 누르세요."));
+                    return;
+                }
+                var limit = OracleMetadata.SearchLimit;
+                var meta = session.Provider.Metadata;
+                List<SearchHit> hits;
+                try
+                {
+                    hits = await session.QueryAsync<SearchHit>(meta.SearchTables(SqlScript.ContainsPattern(word), limit), meta.ReadObjectHit);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("테이블을 찾지 못했습니다: " + DbSession.DescribeError(ex)));
+                    return;
+                }
+                // 기다리는 동안 다른 탭으로 가거나 글·캐럿이 바뀌었으면 엉뚱한 곳에 넣지 않게 버린다
+                if (!ReferenceEquals(_active, tab) || tab.DbId != dbId || editor.CaretOffset != caret || editor.TextLength != length)
+                    return;
+                if (hits.Count == 0)
+                {
+                    SetStatus(tab, WorkspaceLogic.TextStatus("현재 스키마에 '" + word + "'이(가) 들어간 테이블이 없습니다."));
+                    return;
+                }
+                if (hits.Count > limit)
+                {
+                    hits.RemoveRange(limit, hits.Count - limit);
+                    SetStatus(tab, WorkspaceLogic.TextStatus("테이블이 많아 " + limit + "개까지만 보입니다. 이름을 더 입력하세요."));
+                }
+                editor.ShowCompletion(start, hits.Select(h => h.ObjectName));
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
         }
 
         /// <summary>테이블 정보 창(트리 F4·메뉴·편집기 F4). 이름은 스키마 없이도 된다(현재 스키마·동의어·다른 스키마 순으로 찾음).</summary>

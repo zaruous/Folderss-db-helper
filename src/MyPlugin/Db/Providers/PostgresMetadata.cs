@@ -224,6 +224,20 @@ namespace MyPlugin
             return Limit(query, limit);
         }
 
+        public SqlQuery SearchTables(string pattern, int limit)
+        {
+            var query = new SqlQuery
+            {
+                Sql = "SELECT n.nspname AS \"OWNER\", 'TABLE' AS \"OBJECT_TYPE\", c.relname AS \"OBJECT_NAME\""
+                    + " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
+                    + " WHERE n.nspname = current_schema() AND c.relkind IN " + TableKinds
+                    + " AND UPPER(c.relname) LIKE :pattern ESCAPE '\\'"
+                    + " ORDER BY c.relname"
+            };
+            Bind(query, "pattern", pattern);
+            return Limit(query, limit);
+        }
+
         public SearchHit ReadObjectHit(IDataRecord record)
         {
             return new SearchHit

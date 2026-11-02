@@ -113,6 +113,7 @@ namespace MyPlugin
             public SqlQuery SearchSchemas(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit) { return OracleMetadata.SearchSchemas(pattern, includeSystem, hasMaintainedFlag, limit); }
             public SqlQuery SearchObjects(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit) { return OracleMetadata.SearchObjects(pattern, includeSystem, hasMaintainedFlag, limit); }
             public SearchHit ReadObjectHit(IDataRecord record) { return OracleMetadata.ReadObjectHit(record); }
+            public SqlQuery SearchTables(string pattern, int limit) { return OracleMetadata.SearchTables(pattern, limit); }
             public SqlQuery SearchColumns(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit) { return OracleMetadata.SearchColumns(pattern, includeSystem, hasMaintainedFlag, limit); }
             public SearchHit ReadColumnHit(IDataRecord record) { return OracleMetadata.ReadColumnHit(record); }
             public SqlQuery ServerVersion() { return TableSpecQueries.ServerVersion(); }
