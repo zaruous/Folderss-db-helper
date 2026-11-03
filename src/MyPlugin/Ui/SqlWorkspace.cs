@@ -1093,7 +1093,7 @@ namespace MyPlugin
         /// <summary>
         /// 닫힌 창(또는 비정상 종료)이 남긴 임시 저장을 넘겨받아 탭으로 되살린다. 되살린 탭이 있으면 true(첫 탭 안내문을 만들지 않음).
         /// 넘겨받은 내용을 이 창 파일에 저장한 뒤 원래 파일을 지운다.
-        /// 파일 탭: 저장하지 않은 변경이 있었으면 그 내용을, 없었으면 파일을 다시 읽어(그 사이 바뀌었을 수 있음) 되살린다.
+        /// 파일 탭도 임시 저장한 글로 되살린다(창을 여는 동안 파일에 손대지 않음). 그 사이 파일이 바뀐 것은 탭을 볼 때 확인한다.
         /// </summary>
         private bool RestoreDrafts()
         {
@@ -1146,35 +1146,20 @@ namespace MyPlugin
         {
             // 그 사이 지운 접속이면 대상 없이 되살린다
             var dbId = Profile(draft.DbId) != null ? draft.DbId : null;
-            SqlFileContent fresh = null;
-            SqlFileStamp freshStamp = null;
-            if (!string.IsNullOrEmpty(draft.FilePath) && !draft.Dirty)
-            {
-                try
-                {
-                    freshStamp = FileStampLogic.Of(draft.FilePath);
-                    fresh = SqlFileLogic.Read(draft.FilePath);
-                }
-                catch (Exception ex)
-                {
-                    AddMessage(null, SqlFileLogic.OpenFailedMessage(draft.FilePath, ex.Message) + " — 임시 저장한 내용으로 되살립니다.", MessageKind.Error);
-                }
-            }
-            var tab = CreateTab(dbId, fresh != null ? fresh.Text : draft.Text);
+            // 창을 여는 동안 파일에 손대지 않는다(끊긴 네트워크 드라이브면 창 열기가 멈춤). 임시 저장한 글로 되살리고,
+            // 그 사이 바뀐 것은 탭을 볼 때 백그라운드 확인(CheckActiveFile)이 기준과 비교해 다시 읽거나 묻는다
+            var tab = CreateTab(dbId, draft.Text);
             tab.InitialText = "";
             if (!string.IsNullOrEmpty(draft.FilePath))
             {
                 SqlFileEncoding encoding;
                 tab.FilePath = draft.FilePath;
-                tab.FileEncoding = fresh != null ? fresh.Encoding
-                    : Enum.TryParse(draft.FileEncoding, out encoding) ? encoding : SqlFileEncoding.Utf8;
-                tab.FileNewline = fresh != null ? fresh.Newline : draft.Newline;
-                // 다시 읽었으면 그때 상태, 아니면 임시 저장한 기준(창을 닫아 둔 사이 바뀐 것도 알아챈다).
-                // 이전 버전 임시 저장이라 기준이 없으면 지금 상태를 기준으로 삼는다(그 사이 바뀐 것은 알 수 없음)
-                tab.KnownStamp = fresh != null ? freshStamp
-                    : FileStampLogic.FromDraft(draft.FileWriteUtc, draft.FileLength) ?? FileStampLogic.Of(draft.FilePath);
-                // 다시 읽었으면 저장된 상태, 아니면(변경이 있었거나 읽지 못함) 변경됨
-                tab.SavedText = fresh != null ? tab.Editor.Text : null;
+                tab.FileEncoding = Enum.TryParse(draft.FileEncoding, out encoding) ? encoding : SqlFileEncoding.Utf8;
+                tab.FileNewline = draft.Newline;
+                // 이전 버전 임시 저장이면 null — 첫 확인에서 안 고친 탭은 다시 읽고 고친 탭은 기준만 잡는다
+                tab.KnownStamp = FileStampLogic.FromDraft(draft.FileWriteUtc, draft.FileLength);
+                // 저장한 뒤 고치지 않았던 탭은 저장된 상태, 아니면 변경됨
+                tab.SavedText = draft.Dirty ? null : tab.Editor.Text;
                 tab.ShownDirty = tab.Dirty;
             }
             tab.Editor.CaretOffset = draft.Caret;
@@ -1811,7 +1796,7 @@ namespace MyPlugin
             try
             {
                 var tab = _active;
-                if (tab == null || tab.FilePath == null || tab.KnownStamp == null || _window == null || !_window.IsActive)
+                if (tab == null || tab.FilePath == null || _window == null || !_window.IsActive)
                     return;
                 if (_stampRead != null && !_stampRead.IsCompleted)
                     return;
@@ -1820,7 +1805,8 @@ namespace MyPlugin
                     return;
                 var read = Task.Run(() => FileStampLogic.Of(path));
                 _stampRead = read;
-                if (await Task.WhenAny(read, Task.Delay(FileStampTimeout)) != read)
+                // 응답 없음(1초 초과)·드라이브에 닿지 않음은 묻지 않고 센다 — 3번 연속이면 이 창에서 그 드라이브 확인을 멈춘다
+                if (await Task.WhenAny(read, Task.Delay(FileStampTimeout)) != read || (read.Result != null && read.Result.IsUnreachable))
                 {
                     if (_driveChecks.Fail(path))
                         AddMessage(null, FileStampLogic.CheckStoppedMessage(DriveCheckCounter.RootOf(path)), MessageKind.Info);
@@ -1840,6 +1826,7 @@ namespace MyPlugin
 
         /// <summary>
         /// 바뀌었으면: 저장하지 않은 변경이 없는 탭은 조용히 다시 읽고, 있으면 [다시 읽기]·[취소]를 묻고, 파일이 없어졌으면 알린다.
+        /// 기준을 몰랐던 고친 탭(Adopt)은 기준만 잡는다.
         /// 묻기 전에 기준을 지금 상태로 옮긴다 — 같은 변경으로 다시 묻지 않는다(대화상자를 닫으며 창이 다시 활성화될 때 포함). 그 뒤 또 바뀌면 다시 묻는다.
         /// </summary>
         private void HandleFileChange(SqlTabState tab, SqlFileStamp current)
@@ -1861,6 +1848,7 @@ namespace MyPlugin
                 case FileChange.Missing:
                     Dialogs.Show(_window, "파일이 없습니다", FileStampLogic.MissingNotice(tab.FilePath), false);
                     break;
+                // Adopt: 위에서 기준을 잡은 것으로 끝
             }
         }
 
@@ -1881,7 +1869,9 @@ namespace MyPlugin
             }
             _driveChecks.Succeed(path);
             var text = WorkspaceLogic.NormalizeNewlines(content.Text, Environment.NewLine);
-            if (!string.Equals(tab.Editor.Text, text, StringComparison.Ordinal))
+            // 글이 같으면(시각만 바뀜, 되살린 탭의 첫 확인) 편집기·되돌리기 기록을 건드리지 않고 알리지도 않는다
+            var changed = !string.Equals(tab.Editor.Text, text, StringComparison.Ordinal);
+            if (changed)
             {
                 var caret = tab.Editor.CaretOffset;
                 tab.Editor.Replace(0, tab.Editor.TextLength, text);
@@ -1893,7 +1883,8 @@ namespace MyPlugin
             if (stamp != null)
                 tab.KnownStamp = stamp;
             UpdateDirty(tab, true);
-            AddMessage(tab.DbId, FileStampLogic.ReloadedMessage(path), MessageKind.Info);
+            if (changed)
+                AddMessage(tab.DbId, FileStampLogic.ReloadedMessage(path), MessageKind.Info);
             ScheduleDraftSave();
         }
 

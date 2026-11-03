@@ -7,12 +7,20 @@ namespace MyPlugin
     /// <summary>파일의 수정 시각(UTC)·크기. 둘 다 같으면 같은 파일 내용으로 본다. 값이 같으면 같다(record).</summary>
     internal sealed record SqlFileStamp(DateTime WriteUtc, long Length)
     {
-        /// <summary>파일이 없음(지워졌거나 이름이 바뀌었거나 접근할 수 없음).</summary>
+        /// <summary>파일이 없음(드라이브는 닿는데 파일이 없음 — 지워졌거나 이름이 바뀜).</summary>
         public static readonly SqlFileStamp Missing = new SqlFileStamp(DateTime.MinValue, -1);
+
+        /// <summary>드라이브(Z:\ · \\server\share)에 닿지 않음(네트워크 끊김 등). 기준으로 삼지 않는다.</summary>
+        public static readonly SqlFileStamp Unreachable = new SqlFileStamp(DateTime.MinValue, -2);
 
         public bool IsMissing
         {
-            get { return Length < 0; }
+            get { return Length == -1; }
+        }
+
+        public bool IsUnreachable
+        {
+            get { return Length == -2; }
         }
     }
 
@@ -25,6 +33,8 @@ namespace MyPlugin
         Reload,
         /// <summary>바뀜 — 탭에도 저장하지 않은 변경이 있다(사용자에게 묻는다).</summary>
         Conflict,
+        /// <summary>기준을 몰랐고 탭에 저장하지 않은 변경이 있다 — 묻지 않고 지금 상태를 기준으로 잡기만 한다.</summary>
+        Adopt,
         /// <summary>파일이 없어졌다.</summary>
         Missing
     }
@@ -36,15 +46,21 @@ namespace MyPlugin
     /// </summary>
     internal static class FileStampLogic
     {
-        /// <summary>지금 파일 상태. 파일이 없으면 Missing, 경로가 비었거나 읽지 못하면(경로 형식 오류 등) null(모름).</summary>
-        public static SqlFileStamp Of(string path)
+        /// <summary>
+        /// 지금 파일 상태. 파일이 없을 때 드라이브 루트도 없으면 Unreachable(끊긴 네트워크 드라이브가 바로 "없음"으로 답하는 경우), 아니면 Missing.
+        /// 경로가 비었거나 읽지 못하면(경로 형식 오류 등) null(모름). directoryExists는 시험에서 바꾼다.
+        /// </summary>
+        public static SqlFileStamp Of(string path, Func<string, bool> directoryExists = null)
         {
             if (string.IsNullOrEmpty(path))
                 return null;
             try
             {
                 var info = new FileInfo(path);
-                return info.Exists ? new SqlFileStamp(info.LastWriteTimeUtc, info.Length) : SqlFileStamp.Missing;
+                if (info.Exists)
+                    return new SqlFileStamp(info.LastWriteTimeUtc, info.Length);
+                var root = Path.GetPathRoot(info.FullName);
+                return !string.IsNullOrEmpty(root) && !(directoryExists ?? Directory.Exists)(root) ? SqlFileStamp.Unreachable : SqlFileStamp.Missing;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is NotSupportedException || ex is System.Security.SecurityException)
             {
@@ -52,13 +68,20 @@ namespace MyPlugin
             }
         }
 
-        /// <summary>기준(known)과 지금(current)을 비교한다. 어느 쪽이든 모르면(null) None — 모르는 것으로 묻지 않는다.</summary>
+        /// <summary>
+        /// 기준(known)과 지금(current)을 비교한다. 지금 상태를 모르거나 접근할 수 없으면 None(묻지 않고 기준도 그대로).
+        /// 기준을 모르면(null·접근 불가 — 이전 버전 임시 저장, 파일을 읽지 않고 되살린 탭) 고친 탭은 Adopt, 안 고친 탭은 Reload.
+        /// </summary>
         public static FileChange Detect(SqlFileStamp known, SqlFileStamp current, bool dirty)
         {
-            if (known == null || current == null || known == current)
+            if (current == null || current.IsUnreachable)
                 return FileChange.None;
             if (current.IsMissing)
-                return FileChange.Missing;
+                return known != null && known.IsMissing ? FileChange.None : FileChange.Missing;
+            if (known == null || known.IsUnreachable)
+                return dirty ? FileChange.Adopt : FileChange.Reload;
+            if (known == current)
+                return FileChange.None;
             return dirty ? FileChange.Conflict : FileChange.Reload;
         }
 
@@ -97,13 +120,13 @@ namespace MyPlugin
 
         public static string CheckStoppedMessage(string root)
         {
-            return root + " 이(가) " + DriveCheckCounter.MaxFailures + "번 연속 응답하지 않아 이 창을 다시 열 때까지 바뀐 파일 확인을 멈춥니다"
+            return root + " 이(가) " + DriveCheckCounter.MaxFailures + "번 연속 응답하지 않거나 접근할 수 없어 이 창을 다시 열 때까지 바뀐 파일 확인을 멈춥니다"
                 + "(그 드라이브의 파일을 열거나 저장하면 다시 확인합니다).";
         }
     }
 
     /// <summary>
-    /// 드라이브(Z:\ · \\server\share)마다 파일 상태 읽기가 제한 시간 안에 끝나지 않은 횟수. MaxFailures번 연속이면 포커스 확인을 멈춘다.
+    /// 드라이브(Z:\ · \\server\share)마다 파일 상태 읽기가 제한 시간 안에 끝나지 않았거나 드라이브에 닿지 않은 횟수. MaxFailures번 연속이면 포커스 확인을 멈춘다.
     /// 그 드라이브에서 무엇이든 성공하면(확인·열기·저장·다시 읽기) 되돌린다. 창마다 하나 — 창을 다시 열면 처음부터 센다.
     /// </summary>
     internal sealed class DriveCheckCounter

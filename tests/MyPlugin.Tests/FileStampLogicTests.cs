@@ -82,11 +82,43 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
-        public void Detect_Unknown_IsNone()
+        public void Detect_CurrentUnknownOrUnreachable_IsNone()
         {
-            // 기준을 모르거나(이전 임시 저장) 지금 상태를 못 읽으면(접근 오류·응답 없음) 묻지 않는다
-            Assert.Equal(FileChange.None, FileStampLogic.Detect(null, new SqlFileStamp(DateTime.UtcNow, 1), true));
+            // 지금 상태를 못 읽거나(경로 오류) 드라이브에 접근할 수 없으면 묻지 않고 기준도 그대로 둔다
             Assert.Equal(FileChange.None, FileStampLogic.Detect(Known, null, true));
+            Assert.Equal(FileChange.None, FileStampLogic.Detect(Known, SqlFileStamp.Unreachable, false));
+            Assert.Equal(FileChange.None, FileStampLogic.Detect(null, SqlFileStamp.Unreachable, true));
+        }
+
+        /// <summary>기준을 모르는 탭(이전 버전 임시 저장, 창을 열며 파일을 읽지 않고 되살린 탭): 고친 탭은 기준만 잡고, 안 고친 탭은 다시 읽는다.</summary>
+        [Fact]
+        public void Detect_KnownUnknown_AdoptsOrReloads()
+        {
+            var current = new SqlFileStamp(DateTime.UtcNow, 1);
+            Assert.Equal(FileChange.Adopt, FileStampLogic.Detect(null, current, true));
+            Assert.Equal(FileChange.Reload, FileStampLogic.Detect(null, current, false));
+            Assert.Equal(FileChange.Missing, FileStampLogic.Detect(null, SqlFileStamp.Missing, true));
+            // 접근 불가가 기준으로 남아 있어도 모름과 같다
+            Assert.Equal(FileChange.Adopt, FileStampLogic.Detect(SqlFileStamp.Unreachable, current, true));
+        }
+
+        /// <summary>재현: 네트워크 드라이브가 끊겨 경로가 바로 "없음"으로 답하면 파일이 지워진 것이 아니라 접근 불가다.</summary>
+        [Fact]
+        public void Of_RootNotReachable_IsUnreachable_NotMissing()
+        {
+            var path = Path.Combine(_folder, "none.sql");
+
+            var stamp = FileStampLogic.Of(path, _ => false);
+
+            Assert.True(stamp.IsUnreachable);
+            Assert.False(stamp.IsMissing);
+            Assert.Equal(FileChange.None, FileStampLogic.Detect(Known, stamp, false));
+        }
+
+        [Fact]
+        public void Of_RootReachable_FileGone_IsMissing()
+        {
+            Assert.True(FileStampLogic.Of(Path.Combine(_folder, "none.sql"), _ => true).IsMissing);
         }
 
         [Fact]
