@@ -96,6 +96,8 @@ namespace MyPlugin
         private static readonly TimeSpan FileStampTimeout = TimeSpan.FromSeconds(1);
         private Window _window;
         private Task<SqlFileStamp> _stampRead;
+        // 응답 없는 드라이브는 3번 연속이면 이 창에서 포커스 확인을 멈춘다(창을 다시 열면 처음부터)
+        private readonly DriveCheckCounter _driveChecks = new DriveCheckCounter();
 
         private Grid _strip;
         private StackPanel _tabPanel;
@@ -1663,6 +1665,7 @@ namespace MyPlugin
             tab.FileEncoding = content.Encoding;
             tab.FileNewline = content.Newline;
             tab.KnownStamp = stamp;
+            _driveChecks.Succeed(tab.FilePath);
             tab.SavedText = tab.Editor.Text;
             tab.ShownDirty = false;
             tab.Editor.CaretOffset = 0;
@@ -1737,6 +1740,7 @@ namespace MyPlugin
             }
             tab.FilePath = FullPath(path);
             tab.KnownStamp = FileStampLogic.Of(tab.FilePath);
+            _driveChecks.Succeed(tab.FilePath);
             tab.FileEncoding = used;
             tab.FileNewline = newline;
             tab.SavedText = tab.Editor.Text;
@@ -1812,10 +1816,17 @@ namespace MyPlugin
                 if (_stampRead != null && !_stampRead.IsCompleted)
                     return;
                 var path = tab.FilePath;
+                if (_driveChecks.IsStopped(path))
+                    return;
                 var read = Task.Run(() => FileStampLogic.Of(path));
                 _stampRead = read;
                 if (await Task.WhenAny(read, Task.Delay(FileStampTimeout)) != read)
+                {
+                    if (_driveChecks.Fail(path))
+                        AddMessage(null, FileStampLogic.CheckStoppedMessage(DriveCheckCounter.RootOf(path)), MessageKind.Info);
                     return;
+                }
+                _driveChecks.Succeed(path);
                 // 기다리는 사이 탭·파일·창이 바뀌었으면 다음 확인에 맡긴다
                 if (tab != _active || !_tabs.Contains(tab) || !string.Equals(tab.FilePath, path, StringComparison.Ordinal) || _window == null || !_window.IsActive)
                     return;
@@ -1868,6 +1879,7 @@ namespace MyPlugin
                 AddMessage(null, SqlFileLogic.OpenFailedMessage(path, ex.Message), MessageKind.Error);
                 return;
             }
+            _driveChecks.Succeed(path);
             var text = WorkspaceLogic.NormalizeNewlines(content.Text, Environment.NewLine);
             if (!string.Equals(tab.Editor.Text, text, StringComparison.Ordinal))
             {

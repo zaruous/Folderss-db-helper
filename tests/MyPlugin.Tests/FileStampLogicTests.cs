@@ -129,3 +129,80 @@ namespace MyPlugin.Tests
         }
     }
 }
+
+namespace MyPlugin.Tests
+{
+    /// <summary>DriveCheckCounter: 드라이브마다 응답 없음을 세어 3번 연속이면 확인을 멈추고, 성공하면 되돌린다.</summary>
+    public class DriveCheckCounterTests
+    {
+        [Theory]
+        [InlineData(@"Z:\sql\a.sql", @"Z:\")]
+        [InlineData(@"z:\sql\a.sql", @"Z:\")]
+        [InlineData(@"\\server\share\sql\a.sql", @"\\server\share")]
+        [InlineData(@"\\SERVER\Share", @"\\server\share")]
+        [InlineData(@"\\server", @"\\server")]
+        [InlineData("", "")]
+        [InlineData(null, "")]
+        public void RootOf(string path, string expected)
+        {
+            Assert.Equal(expected, DriveCheckCounter.RootOf(path), ignoreCase: true);
+        }
+
+        /// <summary>재현: 응답 없는 드라이브를 포커스마다 끝없이 다시 읽지 않는다 — 3번째에 멈추고 그때 한 번만 알린다.</summary>
+        [Fact]
+        public void StopsAfterThreeTimeouts_ReportsOnce()
+        {
+            var counter = new DriveCheckCounter();
+            const string path = @"Z:\sql\a.sql";
+
+            Assert.False(counter.Fail(path));
+            Assert.False(counter.IsStopped(path));
+            Assert.False(counter.Fail(path));
+            Assert.False(counter.IsStopped(path));
+            Assert.True(counter.Fail(path));
+            Assert.True(counter.IsStopped(path));
+            // 멈춘 뒤 더 세어도 다시 알리지 않는다
+            Assert.False(counter.Fail(path));
+        }
+
+        [Fact]
+        public void SameDrive_SharesCount_OtherDriveIndependent()
+        {
+            var counter = new DriveCheckCounter();
+            counter.Fail(@"\\srv\share\a.sql");
+            counter.Fail(@"\\SRV\share\b\c.sql");
+            counter.Fail(@"\\srv\SHARE\d.sql");
+
+            Assert.True(counter.IsStopped(@"\\srv\share\other.sql"));
+            Assert.False(counter.IsStopped(@"Z:\a.sql"));
+            Assert.False(counter.IsStopped(@"\\srv\other\a.sql"));
+        }
+
+        [Fact]
+        public void Success_Resets()
+        {
+            var counter = new DriveCheckCounter();
+            const string path = @"Z:\a.sql";
+            counter.Fail(path);
+            counter.Fail(path);
+            counter.Succeed(@"Z:\b.sql");
+            counter.Fail(path);
+            counter.Fail(path);
+            Assert.False(counter.IsStopped(path));
+
+            counter.Fail(path);
+            Assert.True(counter.IsStopped(path));
+            counter.Succeed(path);
+            Assert.False(counter.IsStopped(path));
+        }
+
+        [Fact]
+        public void EmptyPath_NeverStops()
+        {
+            var counter = new DriveCheckCounter();
+            for (var i = 0; i < 5; i++)
+                Assert.False(counter.Fail(null));
+            Assert.False(counter.IsStopped(null));
+        }
+    }
+}

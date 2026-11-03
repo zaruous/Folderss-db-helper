@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace MyPlugin
@@ -92,6 +93,62 @@ namespace MyPlugin
         public static string ReloadedMessage(string path)
         {
             return "다른 곳에서 바뀐 파일을 다시 읽었습니다: " + path;
+        }
+
+        public static string CheckStoppedMessage(string root)
+        {
+            return root + " 이(가) " + DriveCheckCounter.MaxFailures + "번 연속 응답하지 않아 이 창을 다시 열 때까지 바뀐 파일 확인을 멈춥니다"
+                + "(그 드라이브의 파일을 열거나 저장하면 다시 확인합니다).";
+        }
+    }
+
+    /// <summary>
+    /// 드라이브(Z:\ · \\server\share)마다 파일 상태 읽기가 제한 시간 안에 끝나지 않은 횟수. MaxFailures번 연속이면 포커스 확인을 멈춘다.
+    /// 그 드라이브에서 무엇이든 성공하면(확인·열기·저장·다시 읽기) 되돌린다. 창마다 하나 — 창을 다시 열면 처음부터 센다.
+    /// </summary>
+    internal sealed class DriveCheckCounter
+    {
+        public const int MaxFailures = 3;
+
+        private readonly Dictionary<string, int> _failures = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>경로의 드라이브: "Z:\" 또는 "\\server\share"(UNC). Windows 경로를 글자로만 본다(시험이 Linux에서도 돌게). 모르면 "".</summary>
+        public static string RootOf(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return "";
+            if (path.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                var parts = path.Substring(2).Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                return parts.Length >= 2 ? @"\\" + parts[0] + @"\" + parts[1] : parts.Length == 1 ? @"\\" + parts[0] : "";
+            }
+            if (path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0]))
+                return char.ToUpperInvariant(path[0]) + @":\";
+            return "";
+        }
+
+        public bool IsStopped(string path)
+        {
+            int count;
+            var root = RootOf(path);
+            return root.Length > 0 && _failures.TryGetValue(root, out count) && count >= MaxFailures;
+        }
+
+        /// <summary>응답 없음 한 번. 이번에 막 멈췄으면 true(그때 한 번만 알린다).</summary>
+        public bool Fail(string path)
+        {
+            var root = RootOf(path);
+            if (root.Length == 0)
+                return false;
+            int count;
+            _failures.TryGetValue(root, out count);
+            _failures[root] = count + 1;
+            return count + 1 == MaxFailures;
+        }
+
+        public void Succeed(string path)
+        {
+            _failures.Remove(RootOf(path));
         }
     }
 }
