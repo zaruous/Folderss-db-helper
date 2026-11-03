@@ -93,7 +93,7 @@ namespace MyPlugin
         private bool _draftBroken;
 
         // 밖에서 바뀐 파일 확인: 창 활성화를 받는 창, 파일 상태 읽기(네트워크 드라이브가 응답하지 않으면 끝날 때까지 다음 확인을 건너뜀)
-        private static readonly TimeSpan FileStampTimeout = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan FileStampTimeout = TimeSpan.FromSeconds(1);
         private Window _window;
         private Task<SqlFileStamp> _stampRead;
 
