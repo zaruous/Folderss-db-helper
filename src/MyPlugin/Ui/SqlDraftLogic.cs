@@ -30,6 +30,12 @@ namespace MyPlugin
 
         /// <summary>파일 탭이 저장하지 않은 변경을 가졌음. false면 되살릴 때 파일을 다시 읽는다(그 사이 바뀌었을 수 있음).</summary>
         public bool Dirty { get; set; }
+
+        /// <summary>탭이 아는 파일 수정 시각(UTC, FileStampLogic 기준). 이전 버전 임시 저장이면 null.</summary>
+        public DateTime? FileWriteUtc { get; set; }
+
+        /// <summary>탭이 아는 파일 크기(없어졌으면 -1). 이전 버전 임시 저장이면 null.</summary>
+        public long? FileLength { get; set; }
     }
 
     /// <summary>DB Helper 창 하나의 임시 저장 내용.</summary>

@@ -125,6 +125,35 @@ namespace MyPlugin.Tests
             Assert.False(back.Tabs[1].Dirty);
         }
 
+        /// <summary>파일 수정 시각·크기(밖에서 바뀐 파일 확인의 기준)를 틱 단위까지 그대로 되살린다.</summary>
+        [Fact]
+        public void SerializeDeserialize_KeepsFileStamp()
+        {
+            var when = new DateTime(2026, 11, 3, 9, 30, 15, DateTimeKind.Utc).AddTicks(1234567);
+            var set = new SqlDraftSet
+            {
+                Tabs = new List<SqlDraft>
+                {
+                    new SqlDraft { Text = "SELECT 1", FilePath = @"D:\sql\q.sql", FileWriteUtc = when, FileLength = 42, Dirty = true }
+                }
+            };
+
+            var back = SqlDraftLogic.Deserialize(SqlDraftLogic.Serialize(set));
+
+            Assert.Equal(when, back.Tabs[0].FileWriteUtc);
+            Assert.Equal(42, back.Tabs[0].FileLength);
+        }
+
+        /// <summary>이전 버전 임시 저장(수정 시각 없음)은 null — 기준을 모름으로 읽는다.</summary>
+        [Fact]
+        public void Deserialize_OldDraftWithoutFileStamp_IsNull()
+        {
+            var back = SqlDraftLogic.Deserialize("{\"tabs\":[{\"text\":\"SELECT 1\",\"filePath\":\"D:\\\\q.sql\",\"dirty\":true}]}");
+
+            Assert.Null(back.Tabs[0].FileWriteUtc);
+            Assert.Null(back.Tabs[0].FileLength);
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("{ 깨진")]

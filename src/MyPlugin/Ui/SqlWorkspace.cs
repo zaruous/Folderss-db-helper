@@ -92,6 +92,11 @@ namespace MyPlugin
         // 열 때 풀지 못한 임시 저장 파일이 있었음 — 메시지 칸을 먼저 보인다
         private bool _draftBroken;
 
+        // 밖에서 바뀐 파일 확인: 창 활성화를 받는 창, 파일 상태 읽기(네트워크 드라이브가 응답하지 않으면 끝날 때까지 다음 확인을 건너뜀)
+        private static readonly TimeSpan FileStampTimeout = TimeSpan.FromSeconds(2);
+        private Window _window;
+        private Task<SqlFileStamp> _stampRead;
+
         private Grid _strip;
         private StackPanel _tabPanel;
         private ScrollViewer _tabScroll;
@@ -679,7 +684,10 @@ namespace MyPlugin
             if (focusEditor)
                 FocusActiveEditor();
             if (changed)
+            {
                 RaiseActiveTabChanged();
+                ScheduleFileCheck();
+            }
         }
 
         /// <summary>탭을 닫는다. 닫았으면 true(실행 중·마지막 탭·저장 묻기에서 취소면 false).</summary>
@@ -1137,10 +1145,12 @@ namespace MyPlugin
             // 그 사이 지운 접속이면 대상 없이 되살린다
             var dbId = Profile(draft.DbId) != null ? draft.DbId : null;
             SqlFileContent fresh = null;
+            SqlFileStamp freshStamp = null;
             if (!string.IsNullOrEmpty(draft.FilePath) && !draft.Dirty)
             {
                 try
                 {
+                    freshStamp = FileStampLogic.Of(draft.FilePath);
                     fresh = SqlFileLogic.Read(draft.FilePath);
                 }
                 catch (Exception ex)
@@ -1157,6 +1167,10 @@ namespace MyPlugin
                 tab.FileEncoding = fresh != null ? fresh.Encoding
                     : Enum.TryParse(draft.FileEncoding, out encoding) ? encoding : SqlFileEncoding.Utf8;
                 tab.FileNewline = fresh != null ? fresh.Newline : draft.Newline;
+                // 다시 읽었으면 그때 상태, 아니면 임시 저장한 기준(창을 닫아 둔 사이 바뀐 것도 알아챈다).
+                // 이전 버전 임시 저장이라 기준이 없으면 지금 상태를 기준으로 삼는다(그 사이 바뀐 것은 알 수 없음)
+                tab.KnownStamp = fresh != null ? freshStamp
+                    : FileStampLogic.FromDraft(draft.FileWriteUtc, draft.FileLength) ?? FileStampLogic.Of(draft.FilePath);
                 // 다시 읽었으면 저장된 상태, 아니면(변경이 있었거나 읽지 못함) 변경됨
                 tab.SavedText = fresh != null ? tab.Editor.Text : null;
                 tab.ShownDirty = tab.Dirty;
@@ -1201,7 +1215,9 @@ namespace MyPlugin
                     FilePath = tab.FilePath,
                     FileEncoding = tab.FilePath != null ? tab.FileEncoding.ToString() : null,
                     Newline = tab.FileNewline,
-                    Dirty = tab.Dirty
+                    Dirty = tab.Dirty,
+                    FileWriteUtc = tab.FilePath != null ? tab.KnownStamp?.WriteUtc : null,
+                    FileLength = tab.FilePath != null ? tab.KnownStamp?.Length : null
                 });
             }
             try
@@ -1623,6 +1639,8 @@ namespace MyPlugin
                 AddMessage(null, SqlFileLogic.AlreadyOpenMessage(path), MessageKind.Info);
                 return;
             }
+            // 읽기 전에 파일 상태를 잡는다(읽는 사이 바뀌면 다음 확인에서 다시 읽게 — 놓치는 것보다 낫다)
+            var stamp = FileStampLogic.Of(path);
             SqlFileContent content;
             try
             {
@@ -1644,6 +1662,7 @@ namespace MyPlugin
             tab.FilePath = FullPath(path);
             tab.FileEncoding = content.Encoding;
             tab.FileNewline = content.Newline;
+            tab.KnownStamp = stamp;
             tab.SavedText = tab.Editor.Text;
             tab.ShownDirty = false;
             tab.Editor.CaretOffset = 0;
@@ -1689,6 +1708,19 @@ namespace MyPlugin
                     return false;
                 }
             }
+            // 연 뒤 다른 곳에서 바뀐 파일에 저장하면 덮어쓰기 전에 묻는다. 알린 변경은 기준으로 삼아 다시 묻지 않는다
+            // (대화상자를 닫으며 창이 다시 활성화될 때 또 묻지 않게 — [취소] 뒤 다시 저장하면 덮어쓴다)
+            if (tab.FilePath != null && SqlFileLogic.SamePath(path, tab.FilePath))
+            {
+                var current = FileStampLogic.Of(path);
+                if (FileStampLogic.Detect(tab.KnownStamp, current, true) == FileChange.Conflict)
+                {
+                    tab.KnownStamp = current;
+                    ScheduleDraftSave();
+                    if (!Dialogs.Confirm(owner, "파일이 밖에서 바뀌었습니다", FileStampLogic.OverwriteQuestion(path), "덮어쓰기", false))
+                        return false;
+                }
+            }
             var newline = tab.FileNewline ?? "\r\n";
             var encoding = tab.FilePath != null ? tab.FileEncoding : SqlFileEncoding.Utf8;
             SqlFileEncoding used;
@@ -1704,6 +1736,7 @@ namespace MyPlugin
                 return false;
             }
             tab.FilePath = FullPath(path);
+            tab.KnownStamp = FileStampLogic.Of(tab.FilePath);
             tab.FileEncoding = used;
             tab.FileNewline = newline;
             tab.SavedText = tab.Editor.Text;
@@ -1754,6 +1787,102 @@ namespace MyPlugin
             tab.ShownDirty = dirty;
             RenderTabs();
             RaiseCommandStateChanged();
+        }
+
+        // ================= 밖에서 바뀐 파일 =================
+        // 감시(FileSystemWatcher) 없이 탭이 바뀔 때·창이 활성화될 때 지금 탭만 확인한다. 저장 직전 확인은 SaveTab.
+
+        /// <summary>지금 탭의 파일을 확인하도록 미룬다(지금 처리 중인 일이 끝난 뒤).</summary>
+        private void ScheduleFileCheck()
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(CheckActiveFile));
+        }
+
+        /// <summary>
+        /// 창이 활성일 때만(대화상자가 떠 있으면 창이 비활성 — 대화상자 위에 또 띄우지 않는다) 지금 탭의 파일 상태를 백그라운드에서 읽어 비교한다.
+        /// 응답이 늦으면(네트워크 드라이브) 이번에는 넘어가고, 앞 읽기가 끝나기 전에는 새로 읽지 않는다.
+        /// </summary>
+        private async void CheckActiveFile()
+        {
+            try
+            {
+                var tab = _active;
+                if (tab == null || tab.FilePath == null || tab.KnownStamp == null || _window == null || !_window.IsActive)
+                    return;
+                if (_stampRead != null && !_stampRead.IsCompleted)
+                    return;
+                var path = tab.FilePath;
+                var read = Task.Run(() => FileStampLogic.Of(path));
+                _stampRead = read;
+                if (await Task.WhenAny(read, Task.Delay(FileStampTimeout)) != read)
+                    return;
+                // 기다리는 사이 탭·파일·창이 바뀌었으면 다음 확인에 맡긴다
+                if (tab != _active || !_tabs.Contains(tab) || !string.Equals(tab.FilePath, path, StringComparison.Ordinal) || _window == null || !_window.IsActive)
+                    return;
+                HandleFileChange(tab, read.Result);
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected(ex);
+            }
+        }
+
+        /// <summary>
+        /// 바뀌었으면: 저장하지 않은 변경이 없는 탭은 조용히 다시 읽고, 있으면 [다시 읽기]·[취소]를 묻고, 파일이 없어졌으면 알린다.
+        /// 묻기 전에 기준을 지금 상태로 옮긴다 — 같은 변경으로 다시 묻지 않는다(대화상자를 닫으며 창이 다시 활성화될 때 포함). 그 뒤 또 바뀌면 다시 묻는다.
+        /// </summary>
+        private void HandleFileChange(SqlTabState tab, SqlFileStamp current)
+        {
+            var change = FileStampLogic.Detect(tab.KnownStamp, current, tab.Dirty);
+            if (change == FileChange.None)
+                return;
+            tab.KnownStamp = current;
+            ScheduleDraftSave();
+            switch (change)
+            {
+                case FileChange.Reload:
+                    ReloadTab(tab);
+                    break;
+                case FileChange.Conflict:
+                    if (Dialogs.Confirm(_window, "파일이 밖에서 바뀌었습니다", FileStampLogic.ConflictQuestion(tab.FilePath), "다시 읽기", false))
+                        ReloadTab(tab);
+                    break;
+                case FileChange.Missing:
+                    Dialogs.Show(_window, "파일이 없습니다", FileStampLogic.MissingNotice(tab.FilePath), false);
+                    break;
+            }
+        }
+
+        /// <summary>파일을 다시 읽어 탭 내용을 바꾼다(되돌리기 한 번으로 돌아감). 읽지 못하면 탭 내용은 그대로 두고 알린다.</summary>
+        private void ReloadTab(SqlTabState tab)
+        {
+            var path = tab.FilePath;
+            var stamp = FileStampLogic.Of(path);
+            SqlFileContent content;
+            try
+            {
+                content = SqlFileLogic.Read(path);
+            }
+            catch (Exception ex)
+            {
+                AddMessage(null, SqlFileLogic.OpenFailedMessage(path, ex.Message), MessageKind.Error);
+                return;
+            }
+            var text = WorkspaceLogic.NormalizeNewlines(content.Text, Environment.NewLine);
+            if (!string.Equals(tab.Editor.Text, text, StringComparison.Ordinal))
+            {
+                var caret = tab.Editor.CaretOffset;
+                tab.Editor.Replace(0, tab.Editor.TextLength, text);
+                tab.Editor.CaretOffset = Math.Min(caret, tab.Editor.TextLength);
+            }
+            tab.FileEncoding = content.Encoding;
+            tab.FileNewline = content.Newline;
+            tab.SavedText = tab.Editor.Text;
+            if (stamp != null)
+                tab.KnownStamp = stamp;
+            UpdateDirty(tab, true);
+            AddMessage(tab.DbId, FileStampLogic.ReloadedMessage(path), MessageKind.Info);
+            ScheduleDraftSave();
         }
 
         private void RememberFile(string path)
@@ -2885,7 +3014,20 @@ namespace MyPlugin
                 // 설정 창에서 SQL 편집기 설정을 저장하면 열린 탭 모두 바로 따른다(정적 이벤트라 내릴 때 뗀다)
                 SqlEditorSettings.Changed -= OnEditorSettingsChanged;
                 SqlEditorSettings.Changed += OnEditorSettingsChanged;
+                // 다른 프로그램에서 파일을 고치고 돌아오면 탭이 바뀌지 않으므로 창 활성화에서도 지금 탭을 확인한다
+                if (_window != null)
+                    _window.Activated -= Window_Activated;
+                _window = Window.GetWindow(this);
+                if (_window != null)
+                    _window.Activated += Window_Activated;
+                // 창을 처음 보일 때는 Activated가 Loaded보다 먼저 온다 — 되살린 탭을 여기서 한 번 확인한다
+                ScheduleFileCheck();
             });
+        }
+
+        private void Window_Activated(object sender, EventArgs e)
+        {
+            ScheduleFileCheck();
         }
 
         private void Workspace_Unloaded(object sender, RoutedEventArgs e)
@@ -2894,6 +3036,9 @@ namespace MyPlugin
             _stateTimer.Stop();
             _elapsedTimer.Stop();
             SqlEditorSettings.Changed -= OnEditorSettingsChanged;
+            if (_window != null)
+                _window.Activated -= Window_Activated;
+            _window = null;
             // 창을 닫음: 마지막 내용을 저장하고, 다음에 여는 창이 넘겨받을 수 있게 열린 창 목록에서 뺀다
             Safe(() => SaveDrafts());
             lock (LiveDraftOwners)

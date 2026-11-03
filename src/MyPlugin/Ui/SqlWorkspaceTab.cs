@@ -43,6 +43,11 @@ namespace MyPlugin
         /// <summary>파일의 줄바꿈("\r\n"·"\n"). 편집기는 늘 Environment.NewLine이므로 저장할 때 되돌린다. 모르면 null.</summary>
         public string FileNewline { get; set; }
 
+        /// <summary>
+        /// 탭이 아는 파일 상태(열었거나 저장했거나 마지막으로 알린 때의 수정 시각·크기). 밖에서 바뀐 파일 확인의 기준. 모르면 null(묻지 않음).
+        /// </summary>
+        public SqlFileStamp KnownStamp { get; set; }
+
         /// <summary>파일에서 읽었거나 마지막으로 저장한 때의 편집기 글. null이면 아직 저장하지 않은 내용(파일 탭이면 변경됨).</summary>
         public string SavedText { get; set; }
 
