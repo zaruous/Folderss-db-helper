@@ -10,6 +10,7 @@ source:
   - src/MyPlugin/Ui/EditorLogic.cs
   - src/MyPlugin/Ui/SqlFileLogic.cs
   - src/MyPlugin/Ui/SqlDraftLogic.cs
+  - src/MyPlugin/Ui/FileStampLogic.cs
 base: System.Windows.Controls.Grid
 used_by: [db-helper-view]
 summary: >-
@@ -62,6 +63,15 @@ features:
       이전 버전의 평문 파일(*.json)은 넘겨받아 잠가 다시 저장한 뒤 지운다. 풀지 못한 파일(다른 Windows 사용자·PC, 손상)은
       sql-drafts\broken으로 옮겨 보관하고 메시지 칸(창을 열 때 먼저 보임)에 경로와 함께 알린다.
       설정 › SQL 편집기에서 "임시 저장 안 함"으로 고른 접속 대상 탭은 저장하지 않는다(설정을 저장하면 바로 파일에서 뺀다 — 창을 닫으면 남지 않음).
+  - name: 밖에서 바뀐 파일
+    description: >-
+      감시(FileSystemWatcher) 없이 탭이 바뀔 때와 창이 활성화될 때 지금 파일 탭만, 탭이 아는 수정 시각·크기(열기·저장·다시 읽기 때)와 비교한다.
+      파일 상태는 백그라운드에서 읽고 1초 안에 답이 없거나 드라이브 루트에 닿지 않으면(끊긴 네트워크 드라이브 — 파일 없음과 구분) 묻지 않고 넘어가고, 같은 드라이브(Z:\ · \\server\share)에서 3번 연속이면 메시지 칸에 한 번 알리고 이 창을 다시 열 때까지 그 드라이브의 포커스 확인을 멈춘다(그 드라이브에서 확인·열기·저장·다시 읽기가 성공하면 다시 센다). 창이 비활성(대화상자가 떠 있음)이면 확인하지 않는다.
+      저장하지 않은 변경이 없는 탭은 조용히 다시 읽고(글이 바뀌었으면 메시지 칸에 알림, Ctrl+Z로 되돌림), 있으면 [다시 읽기]·[취소] 확인 창, 파일이 없어졌으면 안내 창.
+      묻기 전에 기준을 지금 상태로 옮겨 같은 변경으로는 다시 묻지 않는다(그 뒤 또 바뀌면 다시 묻는다).
+      같은 파일에 저장할 때도 기준과 다르면 [덮어쓰기]·[취소]를 묻는다([취소] 뒤 다시 저장하면 덮어씀).
+      기준은 임시 저장에도 남는다. 창을 열 때는 파일에 손대지 않고 임시 저장한 글로 되살리고(끊긴 드라이브로 창 열기가 멈추지 않게),
+      창을 닫아 둔 사이 바뀐 것은 탭을 볼 때의 확인이 알아챈다. 이전 버전 임시 저장처럼 기준이 없으면 첫 확인에서 안 고친 탭은 다시 읽고 고친 탭은 기준만 잡는다.
   - name: 상태줄
     description: >-
       행 수·걸린 시간·더 있음, 실행 중 경과 시간, 오류 안내와 동작 버튼([연결]·[다시 연결]·[다음 행 가져오기]).
@@ -102,11 +112,13 @@ states:
 limits:
   - 같은 DB에서는 한 번에 한 문장만 실행한다(DB마다 세션 1개).
   - 정렬은 가져온 행 안에서만 한다.
+  - 밖에서 바뀐 파일은 탭 전환·창 활성화·저장 때만 알아챈다(창을 보는 동안 바뀐 것은 다음 전환·저장 때). 수정 시각·크기가 모두 같은 변경은 알아채지 못한다.
   - 작업 영역은 SQL 탭을 하나 이상 둔다(탭이 하나면 닫기 메뉴는 모두 꺼짐, "모두 닫기"는 두지 않음).
 tests:
   - tests/MyPlugin.Tests/WorkspaceLogicTests.cs
   - tests/MyPlugin.Tests/EditorLogicTests.cs
   - tests/MyPlugin.Tests/SqlFileLogicTests.cs
   - tests/MyPlugin.Tests/SqlDraftLogicTests.cs
+  - tests/MyPlugin.Tests/FileStampLogicTests.cs
   - tests/MyPlugin.Tests/SqlScriptTests.cs
 related: [sql-editor, find-bar, result-grid, result-edit-bar, result-message-list, result-history-list, dialogs]
