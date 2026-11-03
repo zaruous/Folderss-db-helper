@@ -135,6 +135,11 @@ namespace MyPlugin
         SqlQuery SearchSchemas(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit);
         SqlQuery SearchObjects(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit);
         SearchHit ReadObjectHit(IDataRecord record);
+
+        /// <summary>
+        /// SQL 편집기 Ctrl+Space: 현재 스키마의 테이블만 이름 LIKE 검색. 열은 <see cref="SearchObjects"/>와 같다(ReadObjectHit로 읽음). 이름 순, limit+1행까지.
+        /// </summary>
+        SqlQuery SearchTables(string pattern, int limit);
         SqlQuery SearchColumns(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit);
         SearchHit ReadColumnHit(IDataRecord record);
 

@@ -452,6 +452,21 @@ namespace MyPlugin
             return Limit(query, limit);
         }
 
+        /// <summary>현재 스키마(SYS_CONTEXT CURRENT_SCHEMA)의 테이블 이름 검색. 열은 <see cref="SearchObjects"/>와 같다. OBJECT_NAME 순, limit+1행까지.</summary>
+        public static SqlQuery SearchTables(string pattern, int limit)
+        {
+            var query = new SqlQuery
+            {
+                Sql = "SELECT OWNER, OBJECT_TYPE, OBJECT_NAME FROM ALL_OBJECTS"
+                    + " WHERE OWNER = SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AND OBJECT_TYPE = 'TABLE'"
+                    + " AND UPPER(OBJECT_NAME) LIKE :pattern ESCAPE '\\'"
+                    + " AND OBJECT_NAME" + NotRecycleBin
+                    + " ORDER BY OBJECT_NAME"
+            };
+            Bind(query, "pattern", pattern);
+            return Limit(query, limit);
+        }
+
         /// <summary>
         /// 열 이름 검색(ALL_TAB_COLUMNS, 테이블·뷰). OWNER, TABLE_NAME, COLUMN_ID 순. 결과의 ObjectType은 TABLE 또는 VIEW. limit+1행까지.
         /// 열: OWNER, OBJECT_TYPE, OBJECT_NAME, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, CHAR_USED, CHAR_LENGTH.

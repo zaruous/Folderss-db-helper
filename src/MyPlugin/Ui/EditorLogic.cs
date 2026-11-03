@@ -97,6 +97,19 @@ namespace MyPlugin
             return null;
         }
 
+        /// <summary>
+        /// Ctrl+Space(테이블 찾기)가 바꿀 낱말의 시작: 캐럿 바로 앞에 이어진 글자·숫자·_ $ #의 시작 위치(없으면 caret).
+        /// "scott.em|"이면 "em"만 — 스키마 부분과 따옴표는 넣지 않는다. caret은 0~글 길이로 맞춘다.
+        /// </summary>
+        public static int CompletionWordStart(string text, int caret)
+        {
+            text = text ?? "";
+            var start = Clamp(caret, 0, text.Length);
+            while (start > 0 && IsNameChar(text[start - 1]) && text[start - 1] != '.' && text[start - 1] != '"')
+                start--;
+            return start;
+        }
+
         private static bool IsNameChar(char c)
         {
             return char.IsLetterOrDigit(c) || c == '_' || c == '$' || c == '#' || c == '.' || c == '"';

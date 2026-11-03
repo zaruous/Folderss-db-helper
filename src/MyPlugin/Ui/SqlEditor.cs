@@ -1,10 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.CodeCompletion;
 using ICSharpCode.AvalonEdit.Document;
+using ICSharpCode.AvalonEdit.Editing;
 
 namespace MyPlugin
 {
@@ -25,6 +28,7 @@ namespace MyPlugin
 
         private readonly TextEditor _editor;
         private readonly SqlEditorHighlighting _highlighting;
+        private CompletionWindow _completion;
 
         public SqlEditor(string text, SqlLexRules rules, SqlEditorSettings settings)
         {
@@ -173,6 +177,55 @@ namespace MyPlugin
             settings = settings ?? new SqlEditorSettings();
             SqlEditorSetup.ApplyFont(_editor, Theme.Mono, FontSizeDefault, settings.LineHeight);
             _highlighting.Settings = settings;
+        }
+
+        /// <summary>
+        /// Ctrl+Space(테이블 찾기) 결과를 캐럿 아래 목록으로 띄운다. 고르면(Enter·Tab·두 번 누르기) [start, 캐럿)을 그 이름으로 바꾼다(되돌리기 한 번).
+        /// 이어 입력하면 목록이 좁혀지고, Esc·캐럿이 낱말 밖으로 나가면 닫힌다. 이미 떠 있던 목록은 닫는다.
+        /// </summary>
+        public void ShowCompletion(int start, IEnumerable<string> names)
+        {
+            CloseCompletion();
+            var caret = CaretOffset;
+            start = Math.Max(0, Math.Min(start, caret));
+            var window = new CompletionWindow(_editor.TextArea) { StartOffset = start, EndOffset = caret };
+            window.SetResourceReference(Control.BackgroundProperty, Theme.PanelBackground);
+            window.SetResourceReference(Control.ForegroundProperty, Theme.PrimaryText);
+            window.CompletionList.FontFamily = Theme.Mono;
+            foreach (var name in names)
+                window.CompletionList.CompletionData.Add(new NameCompletion(name));
+            window.Closed += (s, e) => { if (ReferenceEquals(_completion, window)) _completion = null; };
+            _completion = window;
+            window.Show();
+            // 이미 친 낱말로 처음부터 좁혀 둔다(목록은 이름에 낱말이 들어 있는 것 — 앞부분 일치가 위로)
+            if (caret > start)
+                window.CompletionList.SelectItem(_editor.Document.GetText(start, caret - start));
+        }
+
+        public void CloseCompletion()
+        {
+            if (_completion != null)
+                _completion.Close();
+        }
+
+        /// <summary>목록 한 줄: 보이는 글과 넣는 글이 같은 이름.</summary>
+        private sealed class NameCompletion : ICompletionData
+        {
+            public NameCompletion(string text)
+            {
+                Text = text ?? "";
+            }
+
+            public System.Windows.Media.ImageSource Image { get { return null; } }
+            public string Text { get; private set; }
+            public object Content { get { return Text; } }
+            public object Description { get { return null; } }
+            public double Priority { get { return 0; } }
+
+            public void Complete(TextArea textArea, ISegment completionSegment, EventArgs insertionRequestEventArgs)
+            {
+                textArea.Document.Replace(completionSegment, Text);
+            }
         }
 
         private void OnThemeChanged()

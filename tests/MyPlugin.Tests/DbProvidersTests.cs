@@ -232,6 +232,12 @@ namespace MyPlugin.Tests
             Assert.Contains("UPPER(o.name) LIKE @pattern ESCAPE '\\'", search.Sql);
             Assert.Contains("AND NOT (s.name IN ('sys'", search.Sql);
             Assert.DoesNotContain("AND NOT", m.SearchSchemas("%A%", true, false, 0).Sql);
+            var tablesLike = m.SearchTables("%ORD%", 500);
+            Assert.StartsWith("SELECT TOP (501) ", tablesLike.Sql);
+            Assert.Contains("o.type = 'U'", tablesLike.Sql);
+            Assert.Contains("s.name = SCHEMA_NAME()", tablesLike.Sql);
+            Assert.Contains("UPPER(o.name) LIKE @pattern ESCAPE '\\'", tablesLike.Sql);
+            Assert.Equal("%ORD%", Param(tablesLike, "pattern"));
             Assert.Contains("UPPER(c.name) LIKE @pattern", m.SearchColumns("%ID%", false, false, 10).Sql);
             Assert.Equal("SELECT @@VERSION", m.ServerVersion().Sql);
             var record = new FakeRecord(new Dictionary<string, object> { { "v", "Microsoft SQL Server 2019 (RTM-CU18) (KB5017593) - 15.0.4261.1 (X64) \n\tDeveloper Edition (64-bit)" } });
@@ -507,6 +513,14 @@ namespace MyPlugin.Tests
             Assert.Contains("UPPER(c.relname) LIKE :pattern ESCAPE '\\'", objects.Sql);
             Assert.Contains("UPPER(p.proname) LIKE :pattern ESCAPE '\\'", objects.Sql);
             Assert.Contains("UNION", objects.Sql);
+
+            var tables = Pg.SearchTables("%ORD%", 500);
+            Assert.Contains("n.nspname = current_schema()", tables.Sql);
+            Assert.Contains("c.relkind IN ('r', 'p', 'f')", tables.Sql);
+            Assert.Contains("UPPER(c.relname) LIKE :pattern ESCAPE '\\'", tables.Sql);
+            Assert.EndsWith(" LIMIT :limit", tables.Sql);
+            Assert.Equal("%ORD%", Param(tables, "pattern"));
+            Assert.Equal(501, Param(tables, "limit"));
 
             var columns = Pg.SearchColumns("%ID%", false, false, 500);
             Assert.Contains("UPPER(a.attname) LIKE :pattern ESCAPE '\\'", columns.Sql);
