@@ -51,6 +51,10 @@ keyboard:
     action: 테이블·뷰 빠른 조회(앞 100행, 결과 편집 가능).
   - keys: F4
     action: 테이블·뷰 정보 창(Oracle). 시퀀스·프로시저·함수·패키지는 소스 창(Oracle·PostgreSQL·SQL Server).
+  - keys: Ctrl+C
+    action: >-
+      고른 행의 이름을 클립보드에 복사(DB는 접속 이름, 스키마·테이블·뷰·열은 그 이름). 여러 줄을 골랐으면 화면 순서대로 한 줄에 하나씩.
+      묶음("테이블" 등)·안내 행은 빼고, 클립보드를 쓸 수 없으면 알린다.
   - keys: Shift+F10 또는 메뉴 키
     action: 고른 행의 오른쪽 메뉴.
   - keys: Esc

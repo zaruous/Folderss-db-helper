@@ -23,6 +23,35 @@ namespace MyPlugin.Tests
             return new SearchHit { Owner = owner, ObjectType = type, ObjectName = name };
         }
 
+        // ---------- CopyName · CopyText ----------
+
+        [Fact]
+        public void CopyName_UsesNameOfEachKind()
+        {
+            Assert.Equal("개발", TreePanelLogic.CopyName(new TreeRow { Kind = TreeRowKind.Database, Text = "개발" }));
+            Assert.Equal("public", TreePanelLogic.CopyName(new TreeRow { Kind = TreeRowKind.Schema, Text = "public", Owner = "public" }));
+            Assert.Equal("orders", TreePanelLogic.CopyName(new TreeRow { Kind = TreeRowKind.Object, Text = "orders", Owner = "public", ObjectName = "orders" }));
+            Assert.Equal("order_id", TreePanelLogic.CopyName(new TreeRow { Kind = TreeRowKind.Column, Text = "order_id", ObjectName = "orders", ColumnName = "order_id" }));
+            Assert.Null(TreePanelLogic.CopyName(new TreeRow { Kind = TreeRowKind.Group, Text = "테이블" }));
+            Assert.Null(TreePanelLogic.CopyName(new TreeRow { Kind = TreeRowKind.Note, Text = "더 보기" }));
+            Assert.Null(TreePanelLogic.CopyName(null));
+        }
+
+        [Fact]
+        public void CopyText_JoinsNamesInOrderSkippingGroupsAndNotes()
+        {
+            var rows = new[]
+            {
+                new TreeRow { Kind = TreeRowKind.Object, ObjectName = "EMP" },
+                new TreeRow { Kind = TreeRowKind.Group, Text = "테이블" },
+                new TreeRow { Kind = TreeRowKind.Object, ObjectName = "DEPT" },
+            };
+
+            Assert.Equal("EMP\r\nDEPT", TreePanelLogic.CopyText(rows));
+            Assert.Null(TreePanelLogic.CopyText(new[] { new TreeRow { Kind = TreeRowKind.Group, Text = "테이블" } }));
+            Assert.Null(TreePanelLogic.CopyText(null));
+        }
+
         // ---------- Signature ----------
 
         [Fact]

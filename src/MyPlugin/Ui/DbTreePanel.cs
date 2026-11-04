@@ -989,6 +989,13 @@ namespace MyPlugin
                     }
                     return;
                 }
+                // Ctrl+C: 고른 행(화면 순서)의 DB·스키마·테이블·열 이름을 줄마다 복사
+                if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+                {
+                    e.Handled = true;
+                    CopySelectedNames();
+                    return;
+                }
                 var entry = CurrentEntry();
                 // F1 빠른 조회(앞 100행) · F4 테이블 정보: 테이블·뷰 행에서. F4는 코드 객체(프로시저·함수·패키지)·시퀀스에서 소스 보기
                 if ((e.Key == Key.F1 || e.Key == Key.F4) && Keyboard.Modifiers == ModifierKeys.None)
@@ -1042,6 +1049,15 @@ namespace MyPlugin
             {
                 Report(ex, null);
             }
+        }
+
+        private void CopySelectedNames()
+        {
+            var selected = new HashSet<TreeEntry>(_list.SelectedItems.OfType<TreeEntry>());
+            var rows = _list.Items.OfType<TreeEntry>().Where(selected.Contains).Select(en => en.Row);
+            var text = TreePanelLogic.CopyText(rows);
+            if (text != null && !Dialogs.TryCopy(text))
+                Dialogs.Show(Window.GetWindow(this), "이름 복사", "클립보드를 다른 프로그램이 쓰고 있어 복사하지 못했습니다. 잠시 뒤 다시 누르세요.", false);
         }
 
         /// <summary>지금 행: 고른 키의 행이 골라져 있으면 그 행, 아니면 목록이 고른 첫 행.</summary>

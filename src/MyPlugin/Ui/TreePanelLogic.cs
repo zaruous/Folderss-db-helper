@@ -248,6 +248,33 @@ namespace MyPlugin
             return ancestors.Count == 0 ? null : ancestors[ancestors.Count - 1];
         }
 
+        /// <summary>Ctrl+C로 복사할 행 이름: DB는 접속 이름, 스키마·객체·열은 그 이름. 묶음·안내 행은 null.</summary>
+        public static string CopyName(TreeRow row)
+        {
+            if (row == null)
+                return null;
+            switch (row.Kind)
+            {
+                case TreeRowKind.Database:
+                    return row.Text;
+                case TreeRowKind.Schema:
+                    return string.IsNullOrEmpty(row.Owner) ? row.Text : row.Owner;
+                case TreeRowKind.Object:
+                    return string.IsNullOrEmpty(row.ObjectName) ? row.Text : row.ObjectName;
+                case TreeRowKind.Column:
+                    return string.IsNullOrEmpty(row.ColumnName) ? row.Text : row.ColumnName;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>고른 행들(화면 순서)의 이름을 줄마다 하나씩. 복사할 이름이 없으면 null.</summary>
+        public static string CopyText(IEnumerable<TreeRow> rows)
+        {
+            var names = (rows ?? Enumerable.Empty<TreeRow>()).Select(CopyName).Where(n => !string.IsNullOrEmpty(n)).ToList();
+            return names.Count == 0 ? null : string.Join("\r\n", names);
+        }
+
         private static string Flags(params bool[] values)
         {
             var chars = new char[values.Length];
