@@ -14,6 +14,10 @@
   <ItemGroup>
     <!-- 도움말(HTML)은 플러그인 폴더의 help\로 함께 배포한다 (도움말 메뉴·팝업의 [도움말]이 연다) -->
     <None Include="help\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 서드파티 라이선스(저장소 루트 licenses\)는 플러그인 폴더의 licenses\로 함께 배포한다 (Oracle 등은 배포물에 라이선스 사본을 넣어야 함) -->
+    <None Include="..\..\licenses\**\*" Link="licenses\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 이 플러그인 자체의 라이선스(MIT)도 zip 루트에 넣는다 -->
+    <None Include="..\..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
