@@ -1056,7 +1056,7 @@ namespace MyPlugin
             var selected = new HashSet<TreeEntry>(_list.SelectedItems.OfType<TreeEntry>());
             var rows = _list.Items.OfType<TreeEntry>().Where(selected.Contains).Select(en => en.Row);
             var text = TreePanelLogic.CopyText(rows);
-            if (text != null && !Dialogs.TryCopy(text))
+            if (text != null && !DialogKit.TryCopy(text))
                 Dialogs.Show(Window.GetWindow(this), "이름 복사", "클립보드를 다른 프로그램이 쓰고 있어 복사하지 못했습니다. 잠시 뒤 다시 누르세요.", false);
         }
 
