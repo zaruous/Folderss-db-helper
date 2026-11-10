@@ -98,6 +98,7 @@ namespace MyPlugin
         {
             public bool HasMaintainedFlagFallback { get { return true; } }
             public bool SupportsTableInfo { get { return true; } }
+            public SqlQuery TableSpecCandidates(string owner) { return TableSpecQueries.Candidates(owner, true); }
 
             public SqlQuery CurrentSchema() { return OracleMetadata.CurrentSchema(); }
             public SqlQuery Schemas(bool hasMaintainedFlag) { return OracleMetadata.Schemas(hasMaintainedFlag); }

@@ -20,7 +20,24 @@ namespace MyPlugin
         private const string ViewKinds = "('v', 'm')";
 
         public bool HasMaintainedFlagFallback { get { return false; } }
-        public bool SupportsTableInfo { get { return false; } }
+        public bool SupportsTableInfo { get { return true; } }
+
+        /// <summary>트리와 같은 분류: 테이블 r·p·f, 뷰 v·m. 행 수는 통계(reltuples, 없으면 NULL), 주석은 obj_description.</summary>
+        public SqlQuery TableSpecCandidates(string owner)
+        {
+            var query = new SqlQuery
+            {
+                Sql = "SELECT n.nspname AS \"OWNER\", c.relname AS \"OBJECT_NAME\","
+                    + " CASE WHEN c.relkind IN " + TableKinds + " THEN 'TABLE' ELSE 'VIEW' END AS \"OBJECT_TYPE\","
+                    + " CASE WHEN c.relkind IN ('r', 'p') AND c.reltuples >= 0 THEN CAST(c.reltuples AS BIGINT) END AS \"NUM_ROWS\","
+                    + " pg_catalog.obj_description(c.oid, 'pg_class') AS \"COMMENTS\""
+                    + " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
+                    + " WHERE n.nspname = :owner AND (c.relkind IN " + TableKinds + " OR c.relkind IN " + ViewKinds + ")"
+                    + " ORDER BY c.relname"
+            };
+            Bind(query, "owner", owner);
+            return query;
+        }
 
         public SqlQuery CurrentSchema()
         {

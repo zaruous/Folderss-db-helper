@@ -132,5 +132,21 @@ namespace MyPlugin.Tests
             Assert.Contains("SCHEMA_NAME()", SqlServerTableSchema.Resolve(null, "EMP").Sql);
             Assert.Contains("sys.synonyms", SqlServerTableSchema.Resolve("dbo", "EMP").Sql);
         }
+
+        [Fact]
+        public void BatchQueries_BindNameListOnce()
+        {
+            // 정의서 일괄 조회: 이름 목록은 t0, t1, …로 한 번만 바인드(SQL Server 제약 조회는 같은 목록을 세 번 참조)
+            var pg = PostgresTableSchema.ConstraintColumns("hr", new[] { "emp", "dept" });
+            Assert.Contains("t.relname IN (:t0, :t1)", pg.Sql);
+            Assert.Equal(new[] { "owner", "t0", "t1" }, pg.Parameters.Select(p => p.Key));
+            var ms = SqlServerTableSchema.ConstraintColumns("dbo", new[] { "EMP", "DEPT" });
+            Assert.Equal(3, ms.Sql.Split(new[] { "o.name IN (@t0, @t1)" }, StringSplitOptions.None).Length - 1);
+            Assert.Equal(new[] { "owner", "t0", "t1" }, ms.Parameters.Select(p => p.Key));
+            // F4(이름 하나)도 같은 SQL
+            Assert.Contains("c.relname IN (:t0)", PostgresTableSchema.Summary("hr", "emp").Sql);
+            Assert.Throws<ArgumentException>(() => PostgresTableSchema.Columns("hr", new string[0]));
+            Assert.Throws<ArgumentException>(() => SqlServerTableSchema.Columns("dbo", Enumerable.Range(0, TableSpecQueries.ChunkSize + 1).Select(i => "T" + i).ToList()));
+        }
     }
 }

@@ -477,17 +477,18 @@ namespace MyPlugin
             }
         }
 
-        // 트리가 스키마를 아직 불러오지 않았을 때: ALL_USERS(ORACLE_MAINTAINED가 없는 11g면 알려진 내장 스키마 목록으로 거른다)
+        // 트리가 스키마를 아직 불러오지 않았을 때: 공급자의 스키마 목록(Oracle ALL_USERS — ORACLE_MAINTAINED가 없는 11g면 알려진 내장 스키마 목록으로 거른다)
         private async Task<List<string>> LoadSchemas()
         {
+            var metadata = _session.Provider.Metadata;
             List<SchemaInfo> list;
             try
             {
-                list = await _session.QueryAsync(OracleMetadata.Schemas(true), r => OracleMetadata.ReadSchema(r, true), _closing.Token);
+                list = await _session.QueryAsync(metadata.Schemas(true), r => metadata.ReadSchema(r, true), _closing.Token);
             }
-            catch (Exception ex) when (OracleMetadata.IsInvalidIdentifier(ex))
+            catch (Exception ex) when (metadata.HasMaintainedFlagFallback && OracleMetadata.IsInvalidIdentifier(ex))
             {
-                list = await _session.QueryAsync(OracleMetadata.Schemas(false), r => OracleMetadata.ReadSchema(r, false), _closing.Token);
+                list = await _session.QueryAsync(metadata.Schemas(false), r => metadata.ReadSchema(r, false), _closing.Token);
             }
             return list.Where(s => !s.OracleMaintained || s.Name == _request.MySchema).Select(s => s.Name).ToList();
         }
@@ -510,7 +511,7 @@ namespace MyPlugin
             try
             {
                 SetStatus(owner + " 테이블 목록을 불러오는 중…", false);
-                var candidates = await _session.QueryAsync(TableSpecQueries.Candidates(owner, true), TableSpecQueries.ReadCandidate, _closing.Token);
+                var candidates = await _session.QueryAsync(_session.Provider.Metadata.TableSpecCandidates(owner), TableSpecQueries.ReadCandidate, _closing.Token);
                 var tablesAll = _request.CheckAllTables.Contains(owner);
                 var viewsAll = _request.CheckAllViews.Contains(owner);
                 var items = new List<TableSpecItem>(candidates.Count);

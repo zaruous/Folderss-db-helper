@@ -111,7 +111,7 @@ namespace MyPlugin
             new TemplateVariable("$con.columns", "열(쉼표로 이음)", "DEPTNO"),
             new TemplateVariable("$con.reference / $con.referenceColumns", "외래 키가 가리키는 테이블 / 열", "SCOTT.DEPT / DEPTNO"),
             new TemplateVariable("$con.target", "외래 키 참조 대상(테이블.열, 열이 여럿이면 테이블(열, 열))", "SCOTT.DEPT.DEPTNO"),
-            new TemplateVariable("$con.deleteRule / $con.updateRule", "외래 키 삭제 시 / 갱신 시(Oracle은 늘 NO ACTION)", "CASCADE / NO ACTION"),
+            new TemplateVariable("$con.deleteRule / $con.updateRule", "외래 키 삭제 시 / 갱신 시(Oracle 갱신 시는 늘 NO ACTION)", "CASCADE / NO ACTION"),
             new TemplateVariable("$con.condition", "검사 조건", "SAL > 0"),
             new TemplateVariable("$con.status", "상태(ENABLED·DISABLED)", "ENABLED"),
             new TemplateVariable("$code.group / $code.code / $code.meaning", "코드 그룹(열 이름) / 코드 값 / 의미(빈 칸 — 직접 적는다)", "STATUS / A / "),
@@ -274,8 +274,8 @@ namespace MyPlugin
                 "referenceColumns", string.Join(", ", constraint.ReferenceColumns),
                 "target", isForeign ? Target(constraint) : "",
                 "deleteRule", isForeign ? Text(constraint.DeleteRule ?? "NO ACTION") : "",
-                // Oracle 외래 키에는 ON UPDATE가 없다 — 부모 키를 바꾸면 늘 막힌다(NO ACTION)
-                "updateRule", isForeign ? "NO ACTION" : "",
+                // Oracle 외래 키에는 ON UPDATE가 없다 — 부모 키를 바꾸면 늘 막힌다(NO ACTION, UpdateRule null)
+                "updateRule", isForeign ? Text(constraint.UpdateRule ?? "NO ACTION") : "",
                 "condition", Text(constraint.Condition),
                 "indexName", Text(constraint.IndexName),
                 "status", Text(constraint.Status));

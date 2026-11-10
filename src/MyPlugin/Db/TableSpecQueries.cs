@@ -53,7 +53,8 @@ namespace MyPlugin
     }
 
     /// <summary>
-    /// 테이블 정의서용 데이터 사전 조회(순수 SQL·읽기는 테스트 대상, LoadAsync는 실제 DB).
+    /// 테이블 정의서용 데이터 사전 조회(순수 SQL·읽기는 테스트 대상, LoadAsync는 실제 DB). 아래 일괄 조회는 Oracle 전용이고,
+    /// PostgreSQL·SQL Server는 LoadAsync가 테이블 정보(F4)와 같은 SQL을 이름 목록으로 묶어 부른다(대상 후보는 <see cref="IMetadataProvider.TableSpecCandidates"/>).
     /// F4(TableInfo)는 테이블 하나씩 여러 번 묻지만, 정의서는 스키마마다 이름을 ChunkSize개씩 묶어 4번(요약·열·인덱스·제약 조건)만 묻는다.
     /// 열 목록은 CHR(31)로 이어 받아 나눈다(이름에 ", "가 들어 있어도 섞이지 않게). LONG 열(DATA_DEFAULT·SEARCH_CONDITION)도 읽는다.
     /// ALL_* 뷰만 쓴다(권한 있는 객체만 보인다). 휴지통(BIN$…) 객체는 뺀다.
@@ -281,6 +282,8 @@ namespace MyPlugin
         /// </summary>
         public static async Task<List<TableDescription>> LoadAsync(DbSession session, IReadOnlyList<TableKey> targets, IProgress<string> progress, CancellationToken token)
         {
+            if (session.Provider != DbProviders.Oracle)
+                return await LoadEachAsync(session, targets, progress, token).ConfigureAwait(true);
             var found = new Dictionary<TableKey, TableDescription>();
             var chunks = Chunks(targets);
             for (var c = 0; c < chunks.Count; c++)
@@ -335,6 +338,37 @@ namespace MyPlugin
             }
             var result = new List<TableDescription>();
             foreach (var key in targets.Distinct())
+            {
+                TableDescription info;
+                if (found.TryGetValue(key, out info))
+                    result.Add(info);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Oracle 밖(PostgreSQL·SQL Server): 스키마마다 이름을 ChunkSize개씩 묶어 <see cref="ITableSchemaProvider.DescribeManyAsync"/>로 읽는다
+        /// (묶음마다 요약·컬럼·인덱스·제약 4회). 찾지 못한 대상(그 사이 지웠거나 권한이 없음)은 빠진다. 결과는 targets 순서.
+        /// </summary>
+        private static async Task<List<TableDescription>> LoadEachAsync(DbSession session, IReadOnlyList<TableKey> targets, IProgress<string> progress, CancellationToken token)
+        {
+            var schema = session.Provider.TableSchema;
+            if (schema == null)
+                throw new NotSupportedException(session.Provider.DisplayName + " 접속에서는 테이블 정의서를 지원하지 않습니다.");
+            var found = new Dictionary<TableKey, TableDescription>();
+            var chunks = Chunks(targets);
+            for (var c = 0; c < chunks.Count; c++)
+            {
+                token.ThrowIfCancellationRequested();
+                var owner = chunks[c].Key;
+                var names = chunks[c].Value;
+                var step = chunks.Count > 1 ? " (" + (c + 1).ToString(CultureInfo.InvariantCulture) + "/" + chunks.Count.ToString(CultureInfo.InvariantCulture) + ")" : "";
+                Report(progress, owner + " 테이블 " + names.Count.ToString(CultureInfo.InvariantCulture) + "개 읽는 중" + step);
+                foreach (var info in await schema.DescribeManyAsync(session, owner, names, token).ConfigureAwait(true))
+                    found[new TableKey(owner, info.Name)] = info;
+            }
+            var result = new List<TableDescription>();
+            foreach (var key in (targets ?? new TableKey[0]).Distinct())
             {
                 TableDescription info;
                 if (found.TryGetValue(key, out info))

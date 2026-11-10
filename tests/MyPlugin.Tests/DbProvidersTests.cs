@@ -57,7 +57,7 @@ namespace MyPlugin.Tests
             Assert.Equal(5432, DbProviders.Postgres.DefaultPort);
             Assert.Equal("데이터베이스", DbProviders.Postgres.ServiceLabel);
             Assert.Same(SqlDialects.Generic, DbProviders.Postgres.Dialect);
-            Assert.False(DbProviders.Postgres.Metadata.SupportsTableInfo);
+            Assert.True(DbProviders.Postgres.Metadata.SupportsTableInfo);
             Assert.False(DbProviders.Postgres.Metadata.HasMaintainedFlagFallback);
 
             Assert.Throws<NotSupportedException>(() => DbProviders.Generic.Metadata);
@@ -181,7 +181,7 @@ namespace MyPlugin.Tests
             Assert.Equal("SQL Server", p.DisplayName);
             Assert.Equal(1433, p.DefaultPort);
             Assert.Equal("데이터베이스", p.ServiceLabel);
-            Assert.False(p.Metadata.SupportsTableInfo);
+            Assert.True(p.Metadata.SupportsTableInfo);
             Assert.False(p.Metadata.HasMaintainedFlagFallback);
 
             var profile = Profile("mssql");

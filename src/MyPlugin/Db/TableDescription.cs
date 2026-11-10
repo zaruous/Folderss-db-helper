@@ -78,6 +78,8 @@ namespace MyPlugin
         public string Condition { get; set; }
         /// <summary>외래 키의 삭제 규칙(NO ACTION·CASCADE·SET NULL). 정의서만 읽는다.</summary>
         public string DeleteRule { get; set; }
+        /// <summary>외래 키 갱신 시 동작(PostgreSQL·SQL Server). Oracle에는 ON UPDATE가 없어 null.</summary>
+        public string UpdateRule { get; set; }
         /// <summary>기본 키·고유 제약이 쓰는 인덱스 이름(ALL_CONSTRAINTS.INDEX_NAME). 정의서만 읽는다.</summary>
         public string IndexName { get; set; }
     }

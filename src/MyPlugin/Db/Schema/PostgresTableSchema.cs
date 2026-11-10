@@ -21,7 +21,12 @@ namespace MyPlugin
         const string Visible = "n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'";
 
         public Task<TableDescription> DescribeAsync(DbSession session, string owner, string name, CancellationToken token, Action<string> error)
-            => SchemaRead.DescribeAsync(session, owner, name, token, error, Resolve, Summary, Columns, ReadColumn, IndexesAsync, ConstraintsAsync);
+            => SchemaRead.DescribeAsync(session, owner, name, token, error, Resolve, Summary, Columns, ReadColumn,
+                async (s, o, n, t) => (await IndexesAsync(s, o, new[] { n }, t).ConfigureAwait(true))[n].ToList(),
+                async (s, o, n, t) => (await ConstraintsAsync(s, o, new[] { n }, t).ConfigureAwait(true))[n].ToList());
+
+        public Task<List<TableDescription>> DescribeManyAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
+            => SchemaRead.DescribeManyAsync(session, owner, names, token, Summary, Columns, ReadColumn, IndexesAsync, ConstraintsAsync);
 
         /// <summary>
         /// 후보: PRI 1 지정·현재 스키마의 같은 이름, 2 그 스키마의 대소문자만 다른 이름, 4 다른 스키마의 같은 이름, 5 다른 스키마의 대소문자만 다른 이름.
@@ -41,39 +46,42 @@ namespace MyPlugin
             return query;
         }
 
-        public static SqlQuery Summary(string owner, string name)
+        public static SqlQuery Summary(string owner, string name) => Summary(owner, new[] { name });
+
+        /// <summary>요약(이름 목록). 열 OBJECT_NAME으로 어느 테이블인지 가린다.</summary>
+        public static SqlQuery Summary(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT " + ObjectType + " AS \"OBJECT_TYPE\", CAST(NULL AS text) AS \"STATUS\", CAST(NULL AS timestamp) AS \"CREATED\", CAST(NULL AS timestamp) AS \"LAST_DDL_TIME\","
-                    + " CASE WHEN c.relkind IN ('r','p') AND c.reltuples >= 0 THEN CAST(c.reltuples AS bigint) END AS \"NUM_ROWS\","
-                    + " CAST(GREATEST(s.last_analyze, s.last_autoanalyze) AS timestamp) AS \"LAST_ANALYZED\","
-                    + " pg_catalog.obj_description(c.oid, 'pg_class') AS \"COMMENTS\""
-                    + " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-                    + " LEFT JOIN pg_catalog.pg_stat_all_tables s ON s.relid = c.oid"
-                    + " WHERE n.nspname = :owner AND c.relname = :name"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, ":", names);
+            query.Sql = "SELECT c.relname AS \"OBJECT_NAME\", " + ObjectType + " AS \"OBJECT_TYPE\", CAST(NULL AS text) AS \"STATUS\", CAST(NULL AS timestamp) AS \"CREATED\", CAST(NULL AS timestamp) AS \"LAST_DDL_TIME\","
+                + " CASE WHEN c.relkind IN ('r','p') AND c.reltuples >= 0 THEN CAST(c.reltuples AS bigint) END AS \"NUM_ROWS\","
+                + " CAST(GREATEST(s.last_analyze, s.last_autoanalyze) AS timestamp) AS \"LAST_ANALYZED\","
+                + " pg_catalog.obj_description(c.oid, 'pg_class') AS \"COMMENTS\""
+                + " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
+                + " LEFT JOIN pg_catalog.pg_stat_all_tables s ON s.relid = c.oid"
+                + " WHERE n.nspname = :owner AND c.relname IN " + list;
             return query;
         }
 
-        public static SqlQuery Columns(string owner, string name)
+        public static SqlQuery Columns(string owner, string name) => Columns(owner, new[] { name });
+
+        public static SqlQuery Columns(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT n.nspname AS \"OWNER\", c.relname AS \"TABLE_NAME\", a.attname AS \"COLUMN_NAME\","
-                    + " pg_catalog.format_type(a.atttypid, a.atttypmod) AS \"TYPE_LABEL\","
-                    + " CASE WHEN a.attnotnull THEN 'N' ELSE 'Y' END AS \"NULLABLE\", a.attnum AS \"COLUMN_ID\","
-                    + " CASE WHEN EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p' AND a.attnum = ANY (k.conkey)) THEN 1 ELSE 0 END AS \"IS_PK\","
-                    + " pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS \"DATA_DEFAULT\", pg_catalog.col_description(c.oid, a.attnum) AS \"COMMENTS\""
-                    + " FROM pg_catalog.pg_attribute a"
-                    + " JOIN pg_catalog.pg_class c ON c.oid = a.attrelid"
-                    + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
-                    + " LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
-                    + " WHERE n.nspname = :owner AND c.relname = :name AND a.attnum > 0 AND NOT a.attisdropped"
-                    + " ORDER BY a.attnum"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, ":", names);
+            query.Sql = "SELECT n.nspname AS \"OWNER\", c.relname AS \"TABLE_NAME\", a.attname AS \"COLUMN_NAME\","
+                + " pg_catalog.format_type(a.atttypid, a.atttypmod) AS \"TYPE_LABEL\","
+                + " CASE WHEN a.attnotnull THEN 'N' ELSE 'Y' END AS \"NULLABLE\", a.attnum AS \"COLUMN_ID\","
+                + " CASE WHEN EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p' AND a.attnum = ANY (k.conkey)) THEN 1 ELSE 0 END AS \"IS_PK\","
+                + " pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS \"DATA_DEFAULT\", pg_catalog.col_description(c.oid, a.attnum) AS \"COMMENTS\""
+                + " FROM pg_catalog.pg_attribute a"
+                + " JOIN pg_catalog.pg_class c ON c.oid = a.attrelid"
+                + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
+                + " LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
+                + " WHERE n.nspname = :owner AND c.relname IN " + list + " AND a.attnum > 0 AND NOT a.attisdropped"
+                + " ORDER BY c.relname, a.attnum";
             return query;
         }
 
@@ -97,36 +105,38 @@ namespace MyPlugin
         }
 
         /// <summary>인덱스 컬럼 한 줄씩(인덱스 이름·순서). 식 컬럼은 EXPR, INCLUDE 컬럼은 IS_INCLUDE.</summary>
-        public static SqlQuery IndexColumns(string owner, string name)
+        public static SqlQuery IndexColumns(string owner, string name) => IndexColumns(owner, new[] { name });
+
+        public static SqlQuery IndexColumns(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT i.relname AS \"INDEX_NAME\", x.indisunique AS \"IS_UNIQUE\", am.amname AS \"INDEX_TYPE\", x.indisvalid AS \"IS_VALID\","
-                    + " (x.indpred IS NOT NULL) AS \"IS_PARTIAL\", (SELECT ct.conname FROM pg_catalog.pg_constraint ct WHERE ct.conindid = x.indexrelid AND ct.conrelid = x.indrelid AND ct.contype IN ('p','u','x') LIMIT 1) AS \"BY_CONSTRAINT\","
-                    + " k.ord AS \"POSITION\", a.attname AS \"COLUMN_NAME\", pg_catalog.pg_get_indexdef(x.indexrelid, CAST(k.ord AS int), true) AS \"EXPR\","
-                    + " (k.ord > x.indnkeyatts) AS \"IS_INCLUDE\", ((x.indoption[k.ord - 1] & 1) = 1) AS \"IS_DESC\""
-                    + " FROM pg_catalog.pg_index x"
-                    + " JOIN pg_catalog.pg_class t ON t.oid = x.indrelid JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace"
-                    + " JOIN pg_catalog.pg_class i ON i.oid = x.indexrelid JOIN pg_catalog.pg_am am ON am.oid = i.relam"
-                    + " CROSS JOIN LATERAL unnest(CAST(x.indkey AS int2[])) WITH ORDINALITY AS k(attnum, ord)"
-                    + " LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum AND k.attnum > 0"
-                    + " WHERE n.nspname = :owner AND t.relname = :name"
-                    + " ORDER BY i.relname, k.ord"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, ":", names);
+            query.Sql = "SELECT t.relname AS \"TABLE_NAME\", i.relname AS \"INDEX_NAME\", x.indisunique AS \"IS_UNIQUE\", am.amname AS \"INDEX_TYPE\", x.indisvalid AS \"IS_VALID\","
+                + " (x.indpred IS NOT NULL) AS \"IS_PARTIAL\", (SELECT ct.conname FROM pg_catalog.pg_constraint ct WHERE ct.conindid = x.indexrelid AND ct.conrelid = x.indrelid AND ct.contype IN ('p','u','x') LIMIT 1) AS \"BY_CONSTRAINT\","
+                + " k.ord AS \"POSITION\", a.attname AS \"COLUMN_NAME\", pg_catalog.pg_get_indexdef(x.indexrelid, CAST(k.ord AS int), true) AS \"EXPR\","
+                + " (k.ord > x.indnkeyatts) AS \"IS_INCLUDE\", ((x.indoption[k.ord - 1] & 1) = 1) AS \"IS_DESC\""
+                + " FROM pg_catalog.pg_index x"
+                + " JOIN pg_catalog.pg_class t ON t.oid = x.indrelid JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace"
+                + " JOIN pg_catalog.pg_class i ON i.oid = x.indexrelid JOIN pg_catalog.pg_am am ON am.oid = i.relam"
+                + " CROSS JOIN LATERAL unnest(CAST(x.indkey AS int2[])) WITH ORDINALITY AS k(attnum, ord)"
+                + " LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum AND k.attnum > 0"
+                + " WHERE n.nspname = :owner AND t.relname IN " + list
+                + " ORDER BY t.relname, i.relname, k.ord";
             return query;
         }
 
-        static async Task<List<IndexDescription>> IndexesAsync(DbSession session, string owner, string name, CancellationToken token)
+        /// <summary>인덱스(테이블 이름별).</summary>
+        static async Task<ILookup<string, IndexDescription>> IndexesAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
         {
-            var rows = await session.QueryAsync(IndexColumns(owner, name), r => new
+            var rows = await session.QueryAsync(IndexColumns(owner, names), r => new
             {
-                Name = SchemaRead.Text(r, "INDEX_NAME"), Unique = SchemaRead.Flag(r, "IS_UNIQUE"), Type = SchemaRead.Text(r, "INDEX_TYPE"),
+                Table = SchemaRead.Text(r, "TABLE_NAME"), Name = SchemaRead.Text(r, "INDEX_NAME"), Unique = SchemaRead.Flag(r, "IS_UNIQUE"), Type = SchemaRead.Text(r, "INDEX_TYPE"),
                 Valid = SchemaRead.Flag(r, "IS_VALID"), Partial = SchemaRead.Flag(r, "IS_PARTIAL"), Owner = SchemaRead.Text(r, "BY_CONSTRAINT"),
                 Column = SchemaRead.Text(r, "COLUMN_NAME"), Expression = SchemaRead.Text(r, "EXPR"),
                 Include = SchemaRead.Flag(r, "IS_INCLUDE"), Descending = SchemaRead.Flag(r, "IS_DESC")
             }, token).ConfigureAwait(true);
-            return rows.GroupBy(r => r.Name).Select(g =>
+            return rows.GroupBy(r => new { r.Table, r.Name }).Select(g =>
             {
                 var first = g.First();
                 var keys = g.Where(r => !r.Include).ToList();
@@ -140,40 +150,44 @@ namespace MyPlugin
                     Columns = string.Join(", ", keys.Select(r => r.Column != null ? TableSchemaLogic.QuoteName(r.Column) + (r.Descending ? " DESC" : "") : r.Expression))
                 };
                 index.ColumnNames.AddRange(keys.Select(r => r.Column ?? r.Expression));
-                return index;
-            }).ToList();
+                return new { first.Table, Index = index };
+            }).ToLookup(x => x.Table, x => x.Index, StringComparer.Ordinal);
         }
 
         /// <summary>제약 컬럼 한 줄씩. 종류 p·u·f·c(NOT NULL은 컬럼의 NULL 허용에 이미 보인다).</summary>
-        public static SqlQuery ConstraintColumns(string owner, string name)
+        public static SqlQuery ConstraintColumns(string owner, string name) => ConstraintColumns(owner, new[] { name });
+
+        public static SqlQuery ConstraintColumns(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT ct.conname AS \"CONSTRAINT_NAME\", ct.contype AS \"CONTYPE\", k.ord AS \"POSITION\", a.attname AS \"COLUMN_NAME\","
-                    + " rn.nspname AS \"R_OWNER\", rt.relname AS \"R_TABLE\", ra.attname AS \"R_COLUMN\","
-                    + " CASE WHEN ct.contype = 'c' THEN pg_catalog.pg_get_constraintdef(ct.oid, true) END AS \"DEFINITION\""
-                    + " FROM pg_catalog.pg_constraint ct"
-                    + " JOIN pg_catalog.pg_class t ON t.oid = ct.conrelid JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace"
-                    + " LEFT JOIN LATERAL unnest(ct.conkey) WITH ORDINALITY AS k(attnum, ord) ON true"
-                    + " LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = ct.conrelid AND a.attnum = k.attnum"
-                    + " LEFT JOIN pg_catalog.pg_class rt ON rt.oid = ct.confrelid LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rt.relnamespace"
-                    + " LEFT JOIN pg_catalog.pg_attribute ra ON ra.attrelid = ct.confrelid AND ra.attnum = ct.confkey[k.ord]"
-                    + " WHERE n.nspname = :owner AND t.relname = :name AND ct.contype IN ('p','u','f','c')"
-                    + " ORDER BY CASE ct.contype WHEN 'p' THEN 1 WHEN 'u' THEN 2 WHEN 'f' THEN 3 ELSE 4 END, ct.conname, k.ord"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, ":", names);
+            query.Sql = "SELECT t.relname AS \"TABLE_NAME\", ct.conname AS \"CONSTRAINT_NAME\", ct.contype AS \"CONTYPE\", k.ord AS \"POSITION\", a.attname AS \"COLUMN_NAME\","
+                + " rn.nspname AS \"R_OWNER\", rt.relname AS \"R_TABLE\", ra.attname AS \"R_COLUMN\","
+                + " CASE WHEN ct.contype = 'c' THEN pg_catalog.pg_get_constraintdef(ct.oid, true) END AS \"DEFINITION\","
+                + " CASE ct.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS \"DELETE_RULE\", CASE ct.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS \"UPDATE_RULE\""
+                + " FROM pg_catalog.pg_constraint ct"
+                + " JOIN pg_catalog.pg_class t ON t.oid = ct.conrelid JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace"
+                + " LEFT JOIN LATERAL unnest(ct.conkey) WITH ORDINALITY AS k(attnum, ord) ON true"
+                + " LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = ct.conrelid AND a.attnum = k.attnum"
+                + " LEFT JOIN pg_catalog.pg_class rt ON rt.oid = ct.confrelid LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rt.relnamespace"
+                + " LEFT JOIN pg_catalog.pg_attribute ra ON ra.attrelid = ct.confrelid AND ra.attnum = ct.confkey[k.ord]"
+                + " WHERE n.nspname = :owner AND t.relname IN " + list + " AND ct.contype IN ('p','u','f','c')"
+                + " ORDER BY t.relname, CASE ct.contype WHEN 'p' THEN 1 WHEN 'u' THEN 2 WHEN 'f' THEN 3 ELSE 4 END, ct.conname, k.ord";
             return query;
         }
 
-        static async Task<List<ConstraintDescription>> ConstraintsAsync(DbSession session, string owner, string name, CancellationToken token)
+        /// <summary>제약(테이블 이름별).</summary>
+        static async Task<ILookup<string, ConstraintDescription>> ConstraintsAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
         {
-            var rows = await session.QueryAsync(ConstraintColumns(owner, name), r => new
+            var rows = await session.QueryAsync(ConstraintColumns(owner, names), r => new
             {
-                Name = SchemaRead.Text(r, "CONSTRAINT_NAME"), Type = SchemaRead.Text(r, "CONTYPE"), Column = SchemaRead.Text(r, "COLUMN_NAME"),
+                Table = SchemaRead.Text(r, "TABLE_NAME"), Name = SchemaRead.Text(r, "CONSTRAINT_NAME"), Type = SchemaRead.Text(r, "CONTYPE"), Column = SchemaRead.Text(r, "COLUMN_NAME"),
                 RefOwner = SchemaRead.Text(r, "R_OWNER"), RefTable = SchemaRead.Text(r, "R_TABLE"), RefColumn = SchemaRead.Text(r, "R_COLUMN"),
-                Definition = SchemaRead.Text(r, "DEFINITION")
+                Definition = SchemaRead.Text(r, "DEFINITION"),
+                DeleteRule = SchemaRead.Text(r, "DELETE_RULE"), UpdateRule = SchemaRead.Text(r, "UPDATE_RULE")
             }, token).ConfigureAwait(true);
-            return rows.GroupBy(r => r.Name).Select(g =>
+            return rows.GroupBy(r => new { r.Table, r.Name }).Select(g =>
             {
                 var first = g.First();
                 var type = first.Type == "p" ? "P" : first.Type == "u" ? "U" : first.Type == "f" ? "R" : "C";
@@ -182,12 +196,14 @@ namespace MyPlugin
                     Name = first.Name, Type = type, Status = "ENABLED",
                     Columns = string.Join(", ", g.Where(r => r.Column != null).Select(r => TableSchemaLogic.QuoteName(r.Column))),
                     Reference = first.RefTable == null ? null : TableSchemaLogic.QuoteName(first.RefOwner) + "." + TableSchemaLogic.QuoteName(first.RefTable),
-                    Condition = type == "C" ? CheckCondition(first.Definition) : null
+                    Condition = type == "C" ? CheckCondition(first.Definition) : null,
+                    DeleteRule = type == "R" ? first.DeleteRule : null,
+                    UpdateRule = type == "R" ? first.UpdateRule : null
                 };
                 result.ColumnNames.AddRange(g.Where(r => r.Column != null).Select(r => r.Column));
                 result.ReferenceColumns.AddRange(g.Where(r => r.RefColumn != null).Select(r => TableSchemaLogic.QuoteName(r.RefColumn)));
-                return result;
-            }).ToList();
+                return new { first.Table, Constraint = result };
+            }).ToLookup(x => x.Table, x => x.Constraint, StringComparer.Ordinal);
         }
 
         /// <summary>"CHECK ((amount >= 0)) NOT VALID" → "amount >= 0".</summary>
@@ -197,12 +213,6 @@ namespace MyPlugin
             if (text.EndsWith(" NOT VALID", StringComparison.OrdinalIgnoreCase)) text = text.Substring(0, text.Length - 10).TrimEnd();
             if (text.StartsWith("CHECK", StringComparison.OrdinalIgnoreCase)) text = text.Substring(5);
             return SchemaRead.Unwrap(text);
-        }
-
-        static void Bind(SqlQuery query, string owner, string name)
-        {
-            SchemaRead.Bind(query, "owner", owner);
-            SchemaRead.Bind(query, "name", name);
         }
     }
 
