@@ -9,7 +9,7 @@ namespace MyPlugin
     /// <summary>
     /// PostgreSQL 공급자(Npgsql). 접속 프로필의 ServiceName은 데이터베이스 이름이다.
     /// 지원: 접속, 트리(스키마·테이블·뷰·시퀀스·함수/프로시저·열), 검색, SQL 실행(세션의 일반 경로), GCM 정의서.
-    /// 테이블 정보(F4)·구조 편집은 <see cref="PostgresTableSchema"/>. 아직 아님: 테이블 정의서(ALL_* 기반) — <see cref="IMetadataProvider.SupportsTableInfo"/> false.
+    /// 테이블 정보(F4)·구조 편집은 <see cref="PostgresTableSchema"/>. 테이블 정의서도 이것으로 테이블마다 읽는다(<see cref="TableSpecQueries.LoadAsync"/>).
     /// </summary>
     internal sealed class PostgresProvider : IDbProvider
     {

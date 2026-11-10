@@ -150,16 +150,17 @@ namespace MyPlugin
         {
             var query = new SqlQuery
             {
-                Sql = "SELECT CONSTRAINT_NAME, CTYPE, IS_DISABLED, POSITION, COLUMN_NAME, R_OWNER, R_TABLE, R_COLUMN, DEFINITION FROM ("
+                Sql = "SELECT CONSTRAINT_NAME, CTYPE, IS_DISABLED, POSITION, COLUMN_NAME, R_OWNER, R_TABLE, R_COLUMN, DEFINITION, DELETE_RULE, UPDATE_RULE FROM ("
                     + "SELECT kc.name AS CONSTRAINT_NAME, CASE kc.type WHEN 'PK' THEN 'P' ELSE 'U' END AS CTYPE, CAST(0 AS bit) AS IS_DISABLED,"
                     + " ic.key_ordinal AS POSITION, c.name AS COLUMN_NAME, CAST(NULL AS sysname) AS R_OWNER, CAST(NULL AS sysname) AS R_TABLE, CAST(NULL AS sysname) AS R_COLUMN,"
-                    + " CAST(NULL AS nvarchar(max)) AS DEFINITION"
+                    + " CAST(NULL AS nvarchar(max)) AS DEFINITION, CAST(NULL AS nvarchar(60)) AS DELETE_RULE, CAST(NULL AS nvarchar(60)) AS UPDATE_RULE"
                     + " FROM sys.key_constraints kc"
                     + " JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id"
                     + " JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id"
                     + " WHERE kc.parent_object_id = " + TargetId
                     + " UNION ALL "
-                    + "SELECT fk.name, 'R', fk.is_disabled, fkc.constraint_column_id, pc.name, rs.name, ro.name, rc.name, NULL"
+                    + "SELECT fk.name, 'R', fk.is_disabled, fkc.constraint_column_id, pc.name, rs.name, ro.name, rc.name, NULL,"
+                    + " REPLACE(fk.delete_referential_action_desc, '_', ' '), REPLACE(fk.update_referential_action_desc, '_', ' ')"
                     + " FROM sys.foreign_keys fk"
                     + " JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id"
                     + " JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id"
@@ -167,7 +168,7 @@ namespace MyPlugin
                     + " JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id"
                     + " WHERE fk.parent_object_id = " + TargetId
                     + " UNION ALL "
-                    + "SELECT cc.name, 'C', cc.is_disabled, 1, col.name, NULL, NULL, NULL, cc.definition"
+                    + "SELECT cc.name, 'C', cc.is_disabled, 1, col.name, NULL, NULL, NULL, cc.definition, NULL, NULL"
                     + " FROM sys.check_constraints cc LEFT JOIN sys.columns col ON col.object_id = cc.parent_object_id AND col.column_id = cc.parent_column_id"
                     + " WHERE cc.parent_object_id = " + TargetId
                     + ") q ORDER BY CASE CTYPE WHEN 'P' THEN 1 WHEN 'U' THEN 2 WHEN 'R' THEN 3 ELSE 4 END, CONSTRAINT_NAME, POSITION"
@@ -182,7 +183,8 @@ namespace MyPlugin
             {
                 Name = SchemaRead.Text(r, "CONSTRAINT_NAME"), Type = SchemaRead.Text(r, "CTYPE"), Disabled = SchemaRead.Flag(r, "IS_DISABLED"),
                 Column = SchemaRead.Text(r, "COLUMN_NAME"), RefOwner = SchemaRead.Text(r, "R_OWNER"), RefTable = SchemaRead.Text(r, "R_TABLE"),
-                RefColumn = SchemaRead.Text(r, "R_COLUMN"), Definition = SchemaRead.Text(r, "DEFINITION")
+                RefColumn = SchemaRead.Text(r, "R_COLUMN"), Definition = SchemaRead.Text(r, "DEFINITION"),
+                DeleteRule = SchemaRead.Text(r, "DELETE_RULE"), UpdateRule = SchemaRead.Text(r, "UPDATE_RULE")
             }, token).ConfigureAwait(true);
             var ddl = (SqlServerSchemaDdl)Instance.Ddl;
             return rows.GroupBy(r => r.Name).Select(g =>
@@ -194,7 +196,9 @@ namespace MyPlugin
                     // 검사 조건이 한 컬럼에 걸려도 그 컬럼은 정의의 일부일 뿐 — 키 컬럼으로 보이지 않는다.
                     Columns = first.Type == "C" ? "" : string.Join(", ", g.Where(r => r.Column != null).Select(r => TableSchemaLogic.QuoteName(r.Column))),
                     Reference = first.RefTable == null ? null : ddl.Quote(first.RefOwner) + "." + ddl.Quote(first.RefTable),
-                    Condition = first.Type == "C" ? SchemaRead.Unwrap(first.Definition) : null
+                    Condition = first.Type == "C" ? SchemaRead.Unwrap(first.Definition) : null,
+                    DeleteRule = first.Type == "R" ? first.DeleteRule : null,
+                    UpdateRule = first.Type == "R" ? first.UpdateRule : null
                 };
                 if (first.Type != "C") result.ColumnNames.AddRange(g.Where(r => r.Column != null).Select(r => r.Column));
                 result.ReferenceColumns.AddRange(g.Where(r => r.RefColumn != null).Select(r => ddl.Quote(r.RefColumn)));

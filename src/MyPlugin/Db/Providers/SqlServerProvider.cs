@@ -141,7 +141,24 @@ namespace MyPlugin
         private const string ProcedureTypes = "('P', 'PC')";
 
         public bool HasMaintainedFlagFallback { get { return false; } }
-        public bool SupportsTableInfo { get { return false; } }
+        public bool SupportsTableInfo { get { return true; } }
+
+        /// <summary>사용자 테이블(U)·뷰(V), 이름 순. 행 수는 sys.partitions(힙·클러스터형), 주석은 확장 속성 MS_Description.</summary>
+        public SqlQuery TableSpecCandidates(string owner)
+        {
+            var query = new SqlQuery
+            {
+                Sql = "SELECT s.name AS OWNER, o.name AS OBJECT_NAME, CASE o.type WHEN 'U' THEN 'TABLE' ELSE 'VIEW' END AS OBJECT_TYPE,"
+                    + " CASE WHEN o.type = 'U' THEN (SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = o.object_id AND p.index_id IN (0, 1)) END AS NUM_ROWS,"
+                    + " CAST(ep.value AS nvarchar(4000)) AS COMMENTS"
+                    + " FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id"
+                    + " LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'"
+                    + " WHERE s.name = @owner AND o.type IN ('U', 'V') AND o.is_ms_shipped = 0"
+                    + " ORDER BY o.name"
+            };
+            Bind(query, "owner", owner);
+            return query;
+        }
 
         public SqlQuery CurrentSchema()
         {

@@ -151,7 +151,8 @@ namespace MyPlugin
             {
                 Sql = "SELECT ct.conname AS \"CONSTRAINT_NAME\", ct.contype AS \"CONTYPE\", k.ord AS \"POSITION\", a.attname AS \"COLUMN_NAME\","
                     + " rn.nspname AS \"R_OWNER\", rt.relname AS \"R_TABLE\", ra.attname AS \"R_COLUMN\","
-                    + " CASE WHEN ct.contype = 'c' THEN pg_catalog.pg_get_constraintdef(ct.oid, true) END AS \"DEFINITION\""
+                    + " CASE WHEN ct.contype = 'c' THEN pg_catalog.pg_get_constraintdef(ct.oid, true) END AS \"DEFINITION\","
+                    + " CASE ct.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS \"DELETE_RULE\", CASE ct.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS \"UPDATE_RULE\""
                     + " FROM pg_catalog.pg_constraint ct"
                     + " JOIN pg_catalog.pg_class t ON t.oid = ct.conrelid JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace"
                     + " LEFT JOIN LATERAL unnest(ct.conkey) WITH ORDINALITY AS k(attnum, ord) ON true"
@@ -171,7 +172,8 @@ namespace MyPlugin
             {
                 Name = SchemaRead.Text(r, "CONSTRAINT_NAME"), Type = SchemaRead.Text(r, "CONTYPE"), Column = SchemaRead.Text(r, "COLUMN_NAME"),
                 RefOwner = SchemaRead.Text(r, "R_OWNER"), RefTable = SchemaRead.Text(r, "R_TABLE"), RefColumn = SchemaRead.Text(r, "R_COLUMN"),
-                Definition = SchemaRead.Text(r, "DEFINITION")
+                Definition = SchemaRead.Text(r, "DEFINITION"),
+                DeleteRule = SchemaRead.Text(r, "DELETE_RULE"), UpdateRule = SchemaRead.Text(r, "UPDATE_RULE")
             }, token).ConfigureAwait(true);
             return rows.GroupBy(r => r.Name).Select(g =>
             {
@@ -182,7 +184,9 @@ namespace MyPlugin
                     Name = first.Name, Type = type, Status = "ENABLED",
                     Columns = string.Join(", ", g.Where(r => r.Column != null).Select(r => TableSchemaLogic.QuoteName(r.Column))),
                     Reference = first.RefTable == null ? null : TableSchemaLogic.QuoteName(first.RefOwner) + "." + TableSchemaLogic.QuoteName(first.RefTable),
-                    Condition = type == "C" ? CheckCondition(first.Definition) : null
+                    Condition = type == "C" ? CheckCondition(first.Definition) : null,
+                    DeleteRule = type == "R" ? first.DeleteRule : null,
+                    UpdateRule = type == "R" ? first.UpdateRule : null
                 };
                 result.ColumnNames.AddRange(g.Where(r => r.Column != null).Select(r => r.Column));
                 result.ReferenceColumns.AddRange(g.Where(r => r.RefColumn != null).Select(r => TableSchemaLogic.QuoteName(r.RefColumn)));

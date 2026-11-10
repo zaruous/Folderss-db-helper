@@ -9,7 +9,7 @@ namespace MyPlugin
     /// DBMS 공급자: 접속(연결 문자열·연결 객체·프로세스 설정), 방언, 데이터 사전, 오류 판정을 한 곳에 모은다.
     /// 화면과 세션은 중립 모델(OracleConnectionProfile·SchemaInfo·DbObjectInfo·ColumnInfo·QueryTable …)만 알고, DBMS 고유 코드는 공급자 안에만 둔다.
     /// 새 DBMS는 이 인터페이스를 구현해 <see cref="DbProviders"/>에 등록하면 접속 관리·트리·SQL 실행·GCM 정의서가 그대로 동작한다.
-    /// 테이블 정보(F4)·구조 편집은 <see cref="TableSchema"/>(Oracle·PostgreSQL·SQL Server). 테이블 정의서는 <see cref="IMetadataProvider.SupportsTableInfo"/>가 true인 공급자만 — 아직 Oracle뿐.
+    /// 테이블 정보(F4)·구조 편집은 <see cref="TableSchema"/>(Oracle·PostgreSQL·SQL Server). 테이블 정의서는 <see cref="IMetadataProvider.SupportsTableInfo"/>가 true인 공급자만(Oracle은 ALL_* 일괄 조회, PostgreSQL·SQL Server는 TableSchema로 테이블마다).
     /// 성능 모니터 창은 <see cref="Monitor"/>의 섹션(조회 SQL)만 보고 그린다 — 섹션이 없는 공급자(Generic)는 모니터를 열지 않는다.
     /// </summary>
     internal interface IDbProvider
@@ -100,8 +100,17 @@ namespace MyPlugin
         /// </summary>
         bool HasMaintainedFlagFallback { get; }
 
-        /// <summary>테이블 정의서(ALL_* 기반 일괄 조회)를 지원하는지. 테이블 정보(F4)는 <see cref="IDbProvider.TableSchema"/>.</summary>
+        /// <summary>
+        /// 테이블 정의서를 지원하는지. Oracle은 ALL_* 일괄 조회(<see cref="TableSpecQueries"/>), 그 밖은 <see cref="IDbProvider.TableSchema"/>로 테이블마다 읽는다.
+        /// true면 <see cref="TableSpecCandidates"/>도 구현해야 한다.
+        /// </summary>
         bool SupportsTableInfo { get; }
+
+        /// <summary>
+        /// 테이블 정의서 대상 후보: 스키마 하나의 테이블과 뷰, 이름 순. 열 OWNER, OBJECT_NAME, OBJECT_TYPE(TABLE·VIEW), NUM_ROWS, COMMENTS
+        /// (<see cref="TableSpecQueries.ReadCandidate"/>로 읽는다). 정의서를 지원하지 않으면 NotSupportedException.
+        /// </summary>
+        SqlQuery TableSpecCandidates(string owner);
 
         /// <summary>현재 스키마 한 값(첫 열).</summary>
         SqlQuery CurrentSchema();
