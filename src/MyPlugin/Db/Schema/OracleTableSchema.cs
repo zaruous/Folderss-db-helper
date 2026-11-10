@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,6 +14,10 @@ namespace MyPlugin
 
         public Task<TableDescription> DescribeAsync(DbSession session, string owner, string name, CancellationToken token, Action<string> error)
             => TableInfo.DescribeAsync(session, owner, name, token, error);
+
+        /// <summary>Oracle은 정의서 일괄 조회(ALL_*, <see cref="TableSpecQueries.LoadAsync"/>)를 그대로 쓴다.</summary>
+        public Task<List<TableDescription>> DescribeManyAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
+            => TableSpecQueries.LoadAsync(session, names.Select(n => new TableKey(owner, n)).ToList(), null, token);
     }
 
     /// <summary>

@@ -17,11 +17,16 @@ namespace MyPlugin
         public ISchemaDdl Ddl { get; } = new SqlServerSchemaDdl();
 
         const string ObjectType = "CASE o.type WHEN 'U' THEN 'TABLE' ELSE 'VIEW' END";
-        /// <summary>대상 테이블의 object_id(스키마·이름 바인드).</summary>
-        const string TargetId = "(SELECT o.object_id FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE s.name = @owner AND o.name = @name)";
+        /// <summary>대상 테이블들의 object_id 목록(스키마 @owner, 이름 IN 목록).</summary>
+        static string TargetIds(string list) => "(SELECT o.object_id FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE s.name = @owner AND o.name IN " + list + ")";
 
         public Task<TableDescription> DescribeAsync(DbSession session, string owner, string name, CancellationToken token, Action<string> error)
-            => SchemaRead.DescribeAsync(session, owner, name, token, error, Resolve, Summary, Columns, ReadColumn, IndexesAsync, ConstraintsAsync);
+            => SchemaRead.DescribeAsync(session, owner, name, token, error, Resolve, Summary, Columns, ReadColumn,
+                async (s, o, n, t) => (await IndexesAsync(s, o, new[] { n }, t).ConfigureAwait(true))[n].ToList(),
+                async (s, o, n, t) => (await ConstraintsAsync(s, o, new[] { n }, t).ConfigureAwait(true))[n].ToList());
+
+        public Task<List<TableDescription>> DescribeManyAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
+            => SchemaRead.DescribeManyAsync(session, owner, names, token, Summary, Columns, ReadColumn, IndexesAsync, ConstraintsAsync);
 
         /// <summary>후보: PRI 1 지정·기본 스키마의 테이블·뷰, 2 그 스키마 동의어가 가리키는 테이블·뷰, 4 다른 스키마.</summary>
         public static SqlQuery Resolve(string owner, string name)
@@ -44,41 +49,44 @@ namespace MyPlugin
             return query;
         }
 
-        public static SqlQuery Summary(string owner, string name)
+        public static SqlQuery Summary(string owner, string name) => Summary(owner, new[] { name });
+
+        /// <summary>요약(이름 목록). 열 OBJECT_NAME으로 어느 테이블인지 가린다.</summary>
+        public static SqlQuery Summary(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT " + ObjectType + " AS OBJECT_TYPE, CAST(NULL AS nvarchar(10)) AS STATUS, o.create_date AS CREATED, o.modify_date AS LAST_DDL_TIME,"
-                    + " (SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = o.object_id AND p.index_id IN (0, 1)) AS NUM_ROWS,"
-                    + " (SELECT MAX(STATS_DATE(st.object_id, st.stats_id)) FROM sys.stats st WHERE st.object_id = o.object_id) AS LAST_ANALYZED,"
-                    + " CAST(ep.value AS nvarchar(4000)) AS COMMENTS"
-                    + " FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id"
-                    + " LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'"
-                    + " WHERE s.name = @owner AND o.name = @name"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, "@", names);
+            query.Sql = "SELECT o.name AS OBJECT_NAME, " + ObjectType + " AS OBJECT_TYPE, CAST(NULL AS nvarchar(10)) AS STATUS, o.create_date AS CREATED, o.modify_date AS LAST_DDL_TIME,"
+                + " (SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = o.object_id AND p.index_id IN (0, 1)) AS NUM_ROWS,"
+                + " (SELECT MAX(STATS_DATE(st.object_id, st.stats_id)) FROM sys.stats st WHERE st.object_id = o.object_id) AS LAST_ANALYZED,"
+                + " CAST(ep.value AS nvarchar(4000)) AS COMMENTS"
+                + " FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id"
+                + " LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'"
+                + " WHERE s.name = @owner AND o.name IN " + list + " AND o.type IN ('U', 'V')";
             return query;
         }
 
-        public static SqlQuery Columns(string owner, string name)
+        public static SqlQuery Columns(string owner, string name) => Columns(owner, new[] { name });
+
+        public static SqlQuery Columns(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT s.name AS OWNER, o.name AS TABLE_NAME, c.name AS COLUMN_NAME, " + SqlServerMetadata.TypeLabel("c", "t") + " AS TYPE_LABEL,"
-                    + " CASE WHEN c.is_nullable = 1 THEN 'Y' ELSE 'N' END AS NULLABLE, c.column_id AS COLUMN_ID,"
-                    + " CASE WHEN EXISTS (SELECT 1 FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id"
-                    + " WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS IS_PK,"
-                    + " dc.definition AS DATA_DEFAULT, CAST(ep.value AS nvarchar(4000)) AS COMMENTS"
-                    + " FROM sys.columns c"
-                    + " JOIN sys.objects o ON o.object_id = c.object_id"
-                    + " JOIN sys.schemas s ON s.schema_id = o.schema_id"
-                    + " JOIN sys.types t ON t.user_type_id = c.user_type_id"
-                    + " LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id"
-                    + " LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'"
-                    + " WHERE s.name = @owner AND o.name = @name"
-                    + " ORDER BY c.column_id"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, "@", names);
+            query.Sql = "SELECT s.name AS OWNER, o.name AS TABLE_NAME, c.name AS COLUMN_NAME, " + SqlServerMetadata.TypeLabel("c", "t") + " AS TYPE_LABEL,"
+                + " CASE WHEN c.is_nullable = 1 THEN 'Y' ELSE 'N' END AS NULLABLE, c.column_id AS COLUMN_ID,"
+                + " CASE WHEN EXISTS (SELECT 1 FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id"
+                + " WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS IS_PK,"
+                + " dc.definition AS DATA_DEFAULT, CAST(ep.value AS nvarchar(4000)) AS COMMENTS"
+                + " FROM sys.columns c"
+                + " JOIN sys.objects o ON o.object_id = c.object_id"
+                + " JOIN sys.schemas s ON s.schema_id = o.schema_id"
+                + " JOIN sys.types t ON t.user_type_id = c.user_type_id"
+                + " LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id"
+                + " LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'"
+                + " WHERE s.name = @owner AND o.name IN " + list
+                + " ORDER BY o.name, c.column_id";
             return query;
         }
 
@@ -103,32 +111,34 @@ namespace MyPlugin
         }
 
         /// <summary>인덱스 컬럼 한 줄씩(힙 제외). INCLUDE 컬럼은 IS_INCLUDE.</summary>
-        public static SqlQuery IndexColumns(string owner, string name)
+        public static SqlQuery IndexColumns(string owner, string name) => IndexColumns(owner, new[] { name });
+
+        public static SqlQuery IndexColumns(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT i.name AS INDEX_NAME, i.is_unique AS IS_UNIQUE, i.type_desc AS INDEX_TYPE, i.is_disabled AS IS_DISABLED,"
-                    + " CASE WHEN i.is_primary_key = 1 OR i.is_unique_constraint = 1 THEN 1 ELSE 0 END AS BY_CONSTRAINT, i.has_filter AS HAS_FILTER,"
-                    + " ic.key_ordinal AS POSITION, ic.is_included_column AS IS_INCLUDE, ic.is_descending_key AS IS_DESC, c.name AS COLUMN_NAME"
-                    + " FROM sys.indexes i"
-                    + " LEFT JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id"
-                    + " LEFT JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id"
-                    + " WHERE i.object_id = " + TargetId + " AND i.type > 0 AND i.is_hypothetical = 0"
-                    + " ORDER BY i.name, ic.is_included_column, ic.key_ordinal"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var list = SchemaRead.BindNames(query, "@", names);
+            query.Sql = "SELECT OBJECT_NAME(i.object_id) AS TABLE_NAME, i.name AS INDEX_NAME, i.is_unique AS IS_UNIQUE, i.type_desc AS INDEX_TYPE, i.is_disabled AS IS_DISABLED,"
+                + " CASE WHEN i.is_primary_key = 1 OR i.is_unique_constraint = 1 THEN 1 ELSE 0 END AS BY_CONSTRAINT, i.has_filter AS HAS_FILTER,"
+                + " ic.key_ordinal AS POSITION, ic.is_included_column AS IS_INCLUDE, ic.is_descending_key AS IS_DESC, c.name AS COLUMN_NAME"
+                + " FROM sys.indexes i"
+                + " LEFT JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id"
+                + " LEFT JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id"
+                + " WHERE i.object_id IN " + TargetIds(list) + " AND i.type > 0 AND i.is_hypothetical = 0"
+                + " ORDER BY TABLE_NAME, i.name, ic.is_included_column, ic.key_ordinal";
             return query;
         }
 
-        static async Task<List<IndexDescription>> IndexesAsync(DbSession session, string owner, string name, CancellationToken token)
+        /// <summary>인덱스(테이블 이름별).</summary>
+        static async Task<ILookup<string, IndexDescription>> IndexesAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
         {
-            var rows = await session.QueryAsync(IndexColumns(owner, name), r => new
+            var rows = await session.QueryAsync(IndexColumns(owner, names), r => new
             {
-                Name = SchemaRead.Text(r, "INDEX_NAME"), Unique = SchemaRead.Flag(r, "IS_UNIQUE"), Type = SchemaRead.Text(r, "INDEX_TYPE"),
+                Table = SchemaRead.Text(r, "TABLE_NAME"), Name = SchemaRead.Text(r, "INDEX_NAME"), Unique = SchemaRead.Flag(r, "IS_UNIQUE"), Type = SchemaRead.Text(r, "INDEX_TYPE"),
                 Disabled = SchemaRead.Flag(r, "IS_DISABLED"), Owned = SchemaRead.Flag(r, "BY_CONSTRAINT"), Filtered = SchemaRead.Flag(r, "HAS_FILTER"),
                 Include = SchemaRead.Flag(r, "IS_INCLUDE"), Descending = SchemaRead.Flag(r, "IS_DESC"), Column = SchemaRead.Text(r, "COLUMN_NAME")
             }, token).ConfigureAwait(true);
-            return rows.GroupBy(r => r.Name).Select(g =>
+            return rows.GroupBy(r => new { r.Table, r.Name }).Select(g =>
             {
                 var first = g.First();
                 var keys = g.Where(r => !r.Include && r.Column != null).ToList();
@@ -141,53 +151,55 @@ namespace MyPlugin
                     Columns = string.Join(", ", keys.Select(r => TableSchemaLogic.QuoteName(r.Column) + (r.Descending ? " DESC" : "")))
                 };
                 index.ColumnNames.AddRange(keys.Select(r => r.Column));
-                return index;
-            }).ToList();
+                return new { first.Table, Index = index };
+            }).ToLookup(x => x.Table, x => x.Index, StringComparer.Ordinal);
         }
 
         /// <summary>제약 컬럼 한 줄씩: 기본 키·고유(sys.key_constraints)·외래 키·검사.</summary>
-        public static SqlQuery ConstraintColumns(string owner, string name)
+        public static SqlQuery ConstraintColumns(string owner, string name) => ConstraintColumns(owner, new[] { name });
+
+        public static SqlQuery ConstraintColumns(string owner, IReadOnlyList<string> names)
         {
-            var query = new SqlQuery
-            {
-                Sql = "SELECT CONSTRAINT_NAME, CTYPE, IS_DISABLED, POSITION, COLUMN_NAME, R_OWNER, R_TABLE, R_COLUMN, DEFINITION, DELETE_RULE, UPDATE_RULE FROM ("
-                    + "SELECT kc.name AS CONSTRAINT_NAME, CASE kc.type WHEN 'PK' THEN 'P' ELSE 'U' END AS CTYPE, CAST(0 AS bit) AS IS_DISABLED,"
-                    + " ic.key_ordinal AS POSITION, c.name AS COLUMN_NAME, CAST(NULL AS sysname) AS R_OWNER, CAST(NULL AS sysname) AS R_TABLE, CAST(NULL AS sysname) AS R_COLUMN,"
-                    + " CAST(NULL AS nvarchar(max)) AS DEFINITION, CAST(NULL AS nvarchar(60)) AS DELETE_RULE, CAST(NULL AS nvarchar(60)) AS UPDATE_RULE"
-                    + " FROM sys.key_constraints kc"
-                    + " JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id"
-                    + " JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id"
-                    + " WHERE kc.parent_object_id = " + TargetId
-                    + " UNION ALL "
-                    + "SELECT fk.name, 'R', fk.is_disabled, fkc.constraint_column_id, pc.name, rs.name, ro.name, rc.name, NULL,"
-                    + " REPLACE(fk.delete_referential_action_desc, '_', ' '), REPLACE(fk.update_referential_action_desc, '_', ' ')"
-                    + " FROM sys.foreign_keys fk"
-                    + " JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id"
-                    + " JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id"
-                    + " JOIN sys.objects ro ON ro.object_id = fk.referenced_object_id JOIN sys.schemas rs ON rs.schema_id = ro.schema_id"
-                    + " JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id"
-                    + " WHERE fk.parent_object_id = " + TargetId
-                    + " UNION ALL "
-                    + "SELECT cc.name, 'C', cc.is_disabled, 1, col.name, NULL, NULL, NULL, cc.definition, NULL, NULL"
-                    + " FROM sys.check_constraints cc LEFT JOIN sys.columns col ON col.object_id = cc.parent_object_id AND col.column_id = cc.parent_column_id"
-                    + " WHERE cc.parent_object_id = " + TargetId
-                    + ") q ORDER BY CASE CTYPE WHEN 'P' THEN 1 WHEN 'U' THEN 2 WHEN 'R' THEN 3 ELSE 4 END, CONSTRAINT_NAME, POSITION"
-            };
-            Bind(query, owner, name);
+            var query = new SqlQuery();
+            SchemaRead.Bind(query, "owner", owner);
+            var targets = TargetIds(SchemaRead.BindNames(query, "@", names));
+            query.Sql = "SELECT TABLE_NAME, CONSTRAINT_NAME, CTYPE, IS_DISABLED, POSITION, COLUMN_NAME, R_OWNER, R_TABLE, R_COLUMN, DEFINITION, DELETE_RULE, UPDATE_RULE FROM ("
+                + "SELECT OBJECT_NAME(kc.parent_object_id) AS TABLE_NAME, kc.name AS CONSTRAINT_NAME, CASE kc.type WHEN 'PK' THEN 'P' ELSE 'U' END AS CTYPE, CAST(0 AS bit) AS IS_DISABLED,"
+                + " ic.key_ordinal AS POSITION, c.name AS COLUMN_NAME, CAST(NULL AS sysname) AS R_OWNER, CAST(NULL AS sysname) AS R_TABLE, CAST(NULL AS sysname) AS R_COLUMN,"
+                + " CAST(NULL AS nvarchar(max)) AS DEFINITION, CAST(NULL AS nvarchar(60)) AS DELETE_RULE, CAST(NULL AS nvarchar(60)) AS UPDATE_RULE"
+                + " FROM sys.key_constraints kc"
+                + " JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id"
+                + " JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id"
+                + " WHERE kc.parent_object_id IN " + targets
+                + " UNION ALL "
+                + "SELECT OBJECT_NAME(fk.parent_object_id), fk.name, 'R', fk.is_disabled, fkc.constraint_column_id, pc.name, rs.name, ro.name, rc.name, NULL,"
+                + " REPLACE(fk.delete_referential_action_desc, '_', ' '), REPLACE(fk.update_referential_action_desc, '_', ' ')"
+                + " FROM sys.foreign_keys fk"
+                + " JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id"
+                + " JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id"
+                + " JOIN sys.objects ro ON ro.object_id = fk.referenced_object_id JOIN sys.schemas rs ON rs.schema_id = ro.schema_id"
+                + " JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id"
+                + " WHERE fk.parent_object_id IN " + targets
+                + " UNION ALL "
+                + "SELECT OBJECT_NAME(cc.parent_object_id), cc.name, 'C', cc.is_disabled, 1, col.name, NULL, NULL, NULL, cc.definition, NULL, NULL"
+                + " FROM sys.check_constraints cc LEFT JOIN sys.columns col ON col.object_id = cc.parent_object_id AND col.column_id = cc.parent_column_id"
+                + " WHERE cc.parent_object_id IN " + targets
+                + ") q ORDER BY TABLE_NAME, CASE CTYPE WHEN 'P' THEN 1 WHEN 'U' THEN 2 WHEN 'R' THEN 3 ELSE 4 END, CONSTRAINT_NAME, POSITION";
             return query;
         }
 
-        static async Task<List<ConstraintDescription>> ConstraintsAsync(DbSession session, string owner, string name, CancellationToken token)
+        /// <summary>제약(테이블 이름별).</summary>
+        static async Task<ILookup<string, ConstraintDescription>> ConstraintsAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token)
         {
-            var rows = await session.QueryAsync(ConstraintColumns(owner, name), r => new
+            var rows = await session.QueryAsync(ConstraintColumns(owner, names), r => new
             {
-                Name = SchemaRead.Text(r, "CONSTRAINT_NAME"), Type = SchemaRead.Text(r, "CTYPE"), Disabled = SchemaRead.Flag(r, "IS_DISABLED"),
+                Table = SchemaRead.Text(r, "TABLE_NAME"), Name = SchemaRead.Text(r, "CONSTRAINT_NAME"), Type = SchemaRead.Text(r, "CTYPE"), Disabled = SchemaRead.Flag(r, "IS_DISABLED"),
                 Column = SchemaRead.Text(r, "COLUMN_NAME"), RefOwner = SchemaRead.Text(r, "R_OWNER"), RefTable = SchemaRead.Text(r, "R_TABLE"),
                 RefColumn = SchemaRead.Text(r, "R_COLUMN"), Definition = SchemaRead.Text(r, "DEFINITION"),
                 DeleteRule = SchemaRead.Text(r, "DELETE_RULE"), UpdateRule = SchemaRead.Text(r, "UPDATE_RULE")
             }, token).ConfigureAwait(true);
             var ddl = (SqlServerSchemaDdl)Instance.Ddl;
-            return rows.GroupBy(r => r.Name).Select(g =>
+            return rows.GroupBy(r => new { r.Table, r.Name }).Select(g =>
             {
                 var first = g.First();
                 var result = new ConstraintDescription
@@ -202,14 +214,8 @@ namespace MyPlugin
                 };
                 if (first.Type != "C") result.ColumnNames.AddRange(g.Where(r => r.Column != null).Select(r => r.Column));
                 result.ReferenceColumns.AddRange(g.Where(r => r.RefColumn != null).Select(r => ddl.Quote(r.RefColumn)));
-                return result;
-            }).ToList();
-        }
-
-        static void Bind(SqlQuery query, string owner, string name)
-        {
-            SchemaRead.Bind(query, "owner", owner);
-            SchemaRead.Bind(query, "name", name);
+                return new { first.Table, Constraint = result };
+            }).ToLookup(x => x.Table, x => x.Constraint, StringComparer.Ordinal);
         }
     }
 

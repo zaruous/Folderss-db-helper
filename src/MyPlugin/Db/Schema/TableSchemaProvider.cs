@@ -20,6 +20,12 @@ namespace MyPlugin
         /// </summary>
         Task<TableDescription> DescribeAsync(DbSession session, string owner, string name, CancellationToken token, Action<string> error);
 
+        /// <summary>
+        /// 테이블 정의서용: 스키마 하나의 테이블·뷰 여럿을 이름 목록(IN)으로 한 번에 읽는다(요약·컬럼·인덱스·제약 각 1회).
+        /// 이름은 정확히 같아야 하고(대상 찾기·동의어 없음), 찾지 못한 이름은 빠진다. 결과는 names 순서. 이름 수는 <see cref="TableSpecQueries.ChunkSize"/> 이하.
+        /// </summary>
+        Task<List<TableDescription>> DescribeManyAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token);
+
         /// <summary>구조 편집 DDL 방언. 편집을 지원하지 않으면 null(정보 창은 읽기 전용).</summary>
         ISchemaDdl Ddl { get; }
     }
@@ -187,6 +193,62 @@ namespace MyPlugin
 
         public static void Bind(SqlQuery query, string name, object value)
             => query.Parameters.Add(new KeyValuePair<string, object>(name, value ?? DBNull.Value));
+
+        /// <summary>이름 목록을 t0, t1, …로 바인드하고 "(:t0, :t1)"(prefix가 ':') 꼴 IN 목록을 돌려준다. 1~ChunkSize개.</summary>
+        public static string BindNames(SqlQuery query, string prefix, IReadOnlyList<string> names)
+        {
+            if (names == null || names.Count == 0 || names.Count > TableSpecQueries.ChunkSize)
+                throw new ArgumentException("이름은 1~" + TableSpecQueries.ChunkSize + "개여야 합니다.", nameof(names));
+            var binds = new List<string>(names.Count);
+            for (var i = 0; i < names.Count; i++)
+            {
+                var key = "t" + i.ToString(CultureInfo.InvariantCulture);
+                Bind(query, key, names[i]);
+                binds.Add(prefix + key);
+            }
+            return "(" + string.Join(", ", binds) + ")";
+        }
+
+        /// <summary>
+        /// 정의서용 일괄 조회 공통 순서: 요약(OBJECT_NAME·OBJECT_TYPE) → 컬럼(TABLE_NAME) → 테이블만 인덱스·제약(테이블 이름별).
+        /// </summary>
+        public static async Task<List<TableDescription>> DescribeManyAsync(DbSession session, string owner, IReadOnlyList<string> names, CancellationToken token,
+            Func<string, IReadOnlyList<string>, SqlQuery> summary,
+            Func<string, IReadOnlyList<string>, SqlQuery> columns, Func<IDataRecord, DescribedColumn> readColumn,
+            Func<DbSession, string, IReadOnlyList<string>, CancellationToken, Task<ILookup<string, IndexDescription>>> indexes,
+            Func<DbSession, string, IReadOnlyList<string>, CancellationToken, Task<ILookup<string, ConstraintDescription>>> constraints)
+        {
+            var tables = new Dictionary<string, TableDescription>(StringComparer.Ordinal);
+            await session.QueryAsync(summary(owner, names), r =>
+            {
+                var info = new TableDescription { Owner = owner, Name = Text(r, "OBJECT_NAME"), Type = Text(r, "OBJECT_TYPE") };
+                TableInfo.ReadSummary(r, info);
+                if (info.Name != null && !tables.ContainsKey(info.Name))
+                    tables.Add(info.Name, info);
+                return true;
+            }, token).ConfigureAwait(true);
+            var found = names.Where(tables.ContainsKey).Distinct(StringComparer.Ordinal).ToList();
+            if (found.Count == 0)
+                return new List<TableDescription>();
+            foreach (var column in await session.QueryAsync(columns(owner, found), readColumn, token).ConfigureAwait(true))
+            {
+                TableDescription info;
+                if (tables.TryGetValue(column.Column.ObjectName ?? "", out info))
+                    info.Columns.Add(column);
+            }
+            var tableNames = found.Where(n => string.Equals(tables[n].Type, "TABLE", StringComparison.Ordinal)).ToList();
+            if (tableNames.Count > 0)
+            {
+                var byIndex = await indexes(session, owner, tableNames, token).ConfigureAwait(true);
+                var byConstraint = await constraints(session, owner, tableNames, token).ConfigureAwait(true);
+                foreach (var name in tableNames)
+                {
+                    tables[name].Indexes.AddRange(byIndex[name]);
+                    tables[name].Constraints.AddRange(byConstraint[name]);
+                }
+            }
+            return found.Select(n => tables[n]).ToList();
+        }
 
         /// <summary>식 전체를 감싼 괄호를 벗긴다: "((0))" → "0", "(getdate())" → "getdate()", "(a) + (b)"는 그대로.</summary>
         public static string Unwrap(string expression)
