@@ -1,6 +1,6 @@
 # SQLite 지원 계획 (초안)
 
-작성일 2026-11-16. 상태: **결정 대기**(9절의 질문에 답이 오기 전에는 구현하지 않는다).
+작성일 2026-11-16. 상태: **결정 완료**(9절). 구현은 S1부터.
 
 결정(2026-11-16): **SQLite만 진행한다. PGlite는 제외**(3절에 검토 기록만 남김).
 
@@ -78,6 +78,7 @@
 - SQLite에는 `COMMENT ON`도, 열 정의 안의 `COMMENT '…'`도 없다. 주석을 저장하는 메타데이터 자체가 없다.
 - 남는 것은 `CREATE TABLE` 안에 적은 `-- 설명` 주석뿐이다. SQLite는 이 글을 `sqlite_schema.sql`에 그대로 보존하므로 **파싱하면 읽을 수는 있다**. 다만 표준이 아니고(도구마다 다르게 씀), `ALTER TABLE ADD/DROP COLUMN`이 이 글을 고쳐 쓰며 주석이 바뀌거나 사라질 수 있다.
 - DBeaver도 SQLite 주석 저장·편집을 하는 코드를 찾지 못함(일반 `COMMENT ON` 경로만 있음, 미확정).
+- 결정(2026-11-16): `SupportsTableInfo = true`, 설명(COMMENTS) 칸은 언제나 빈 값. `--` 주석 파싱은 하지 않는다.
 
 ## 3. PGlite — 검토 후 제외
 
@@ -98,6 +99,7 @@ PGlite는 WASM으로 빌드한 Postgres라 JS(Node·브라우저) 안에서만 �
 | S4 | 비밀번호 흐름 `UsesPassword` | 비밀번호 없는 SQLite 프로필 연결 시 프롬프트가 안 뜸(헤드리스 UI 시험) |
 | S5 | 접속 관리 화면 분기 + 파일 찾아보기 | `ConnectionManagerHeadlessTests`에 SQLite 칸 표시/숨김, `docs/controls/connection-manager.yml` 갱신, `check_controls_docs.py` 통과 |
 | S6 | F4 정보 보기(편집 방언 null) / 결과 편집 키 | F4 창에 열·인덱스·제약이 보이고 편집 버튼이 비활성(헤드리스 시험), 혼합 형식 열·WITHOUT ROWID·rowid 테이블 편집 시험 |
+| S6b | 테이블 정의서(`TableSpecCandidates` + `DescribeManyAsync`) | 임시 파일 DB로 정의서 모델 생성 시험: 테이블·뷰 목록, 열·형식·PK/FK, 설명 칸은 빈 값 |
 | S7 | 도움말·README·plugin.json 버전 | `HelpTests` 통과 |
 
 S1~S5만으로 "SQLite 파일 열고 조회·실행·트리 보기"가 된다. S6 이후는 선택.
@@ -110,5 +112,5 @@ S1~S5만으로 "SQLite 파일 열고 조회·실행·트리 보기"가 된다. S
 ## 9. 결정이 필요한 질문
 1. ~~PGlite 방식~~ → 제외로 결정(2026-11-16).
 2. ~~파일이 없을 때~~ → 만들지 묻기로 결정(2026-11-16, 2.1).
-3. SQLite 테이블 정의서(2.8): 설명 칸을 비워 둘지 / `CREATE TABLE`의 `--` 주석을 파싱해 채울지 / 이번엔 끌지.
+3. ~~테이블 정의서~~ → 켜되 설명 칸은 비워 둔다(2026-11-16, 2.8). `--` 주석 파싱은 하지 않는다.
 4. ~~F4 범위~~ → 정보 보기만, 구조 편집 비활성으로 결정(2026-11-16, 2.7).
