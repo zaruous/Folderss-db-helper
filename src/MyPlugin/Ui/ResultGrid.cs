@@ -185,10 +185,10 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 오른쪽 메뉴 [팝업으로 보기]의 [전체 보기]: (행, 결과 열 위치) → DB에서 그 칸의 한 쪽(시작 위치)을 다시 읽는 작업, 못 읽으면 Load = null과 이유.
+        /// 오른쪽 메뉴 [팝업으로 보기]의 [전체 보기]: (행, 결과 열 위치) → DB에서 그 칸을 다시 읽는 작업, 못 읽으면 Load = null과 이유.
         /// 정하지 않으면 잘린 값에 "다시 읽을 수 없음"만 보인다.
         /// </summary>
-        public Func<ResultGridRow, int, (Func<long, CancellationToken, Task<ValuePage>> Load, string Reason)> FullValue { get; set; }
+        public Func<ResultGridRow, int, (Func<CancellationToken, Task<string>> Load, string Reason)> FullValue { get; set; }
 
         /// <param name="copy">복사 요청. true = 전체(머리글 포함), false = 선택한 행.</param>
         /// <param name="copyText">오른쪽 메뉴 [셀 복사]로 칸 값 하나를 복사할 때. null이면 그 메뉴를 두지 않는다.</param>

@@ -16,18 +16,6 @@ namespace MyPlugin
         public bool IsNumeric { get; set; }
     }
 
-    /// <summary>값의 한 쪽(<see cref="ValueFormatter.Page"/>). 위치·길이는 글이면 글자(UTF-16) 수, 이진이면 바이트 수.</summary>
-    public sealed class ValuePage
-    {
-        /// <summary>이 쪽의 표시 글. 이진은 대문자 16진수(첫 쪽만 "0x").</summary>
-        public string Text { get; set; }
-        public long Offset { get; set; }
-        /// <summary>다음 쪽의 시작 위치. Total과 같으면 마지막 쪽.</summary>
-        public long Next { get; set; }
-        public long Total { get; set; }
-        public bool Binary { get; set; }
-    }
-
     /// <summary>
     /// 조회 값 → 표시 문자열(순수 로직, 테스트 대상). null·DBNull·Oracle 형식의 IsNull은 null(그리드에서 NULL로 표시).
     /// - 숫자: 문화권과 무관하게(InvariantCulture), 정밀도를 잃지 않게. OracleDecimal은 ToString() 그대로(38자리).
@@ -41,8 +29,8 @@ namespace MyPlugin
     {
         public const int MaxTextLength = 4000;
         public const int MaxBinaryBytes = 2000;
-        /// <summary>결과 그리드 [팝업으로 보기]의 [전체 보기]가 한 번에 읽는 쪽 크기(글은 글자 수, 이진은 바이트 수).</summary>
-        public const int PageLength = 10_000_000;
+        /// <summary>결과 그리드 [팝업으로 보기]의 [전체 보기]가 다시 읽는 상한(글은 글자 수, 이진은 바이트 수).</summary>
+        public const int MaxFullLength = 10_000_000;
 
         private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -67,6 +55,12 @@ namespace MyPlugin
 
         public static string Format(object value)
         {
+            return Format(value, MaxTextLength, MaxBinaryBytes);
+        }
+
+        /// <summary>Format과 같되 글·이진의 상한을 정한다(maxText자, maxBinary바이트).</summary>
+        public static string Format(object value, int maxText, int maxBinary)
+        {
             if (value == null || value is DBNull)
                 return null;
             if (value is INullable oracleNullable && oracleNullable.IsNull)
@@ -77,9 +71,9 @@ namespace MyPlugin
             switch (value)
             {
                 case string text:
-                    return Text(text);
+                    return Text(text, maxText);
                 case byte[] bytes:
-                    return Hex(bytes, bytes.Length, bytes.Length);
+                    return Hex(bytes, bytes.Length, bytes.Length, maxBinary);
                 case DateTime dateTime:
                     return DateTimeText(dateTime);
                 case DateTimeOffset offsetTime:
@@ -87,7 +81,7 @@ namespace MyPlugin
                 case OracleDecimal number:
                     return number.ToString();
                 case OracleString oracleString:
-                    return Text(oracleString.Value);
+                    return Text(oracleString.Value, maxText);
                 case OracleDate date:
                     return DateText(date.Year, date.Month, date.Day, date.Hour, date.Minute, date.Second, 0);
                 case OracleTimeStamp stamp:
@@ -103,13 +97,13 @@ namespace MyPlugin
                     return IntervalText(yearMonth);
                 case OracleBinary binary:
                     var binaryBytes = binary.Value;
-                    return Hex(binaryBytes, binaryBytes.Length, binaryBytes.Length);
+                    return Hex(binaryBytes, binaryBytes.Length, binaryBytes.Length, maxBinary);
                 case OracleBoolean flag:
                     return flag.IsTrue ? "TRUE" : "FALSE";
                 case OracleClob clob:
-                    return ClobText(clob);
+                    return ClobText(clob, maxText);
                 case OracleBlob blob:
-                    return BlobText(blob);
+                    return BlobText(blob, maxBinary);
                 case OracleBFile _:
                     // 파일 내용은 서버의 디렉터리 권한이 있어야 읽을 수 있어 자리만 표시한다
                     return "(BFILE)";
@@ -117,128 +111,10 @@ namespace MyPlugin
                     // CURSOR(…) 식 결과. ToString()은 형식 이름뿐이다
                     return "(CURSOR)";
                 case OracleXmlType xml:
-                    return Text(xml.Value);
+                    return Text(xml.Value, maxText);
                 default:
                     return Convert.ToString(value, Invariant);
             }
-        }
-
-        /// <summary>
-        /// 결과 그리드 [전체 보기]: 값의 offset부터 length만큼(글자·바이트) 한 쪽. NULL이면 null.
-        /// OracleClob·OracleBlob는 그 쪽만 읽는다. 글은 서로게이트 쌍의 앞 절반에서 끊지 않는다(그 글자는 다음 쪽으로).
-        /// 나눠 읽지 않는 형식(숫자·날짜 등)은 Format 결과를 한 쪽으로.
-        /// </summary>
-        public static ValuePage Page(object value, long offset, int length)
-        {
-            if (value == null || value is DBNull)
-                return null;
-            if (value is INullable oracleNullable && oracleNullable.IsNull)
-                return null;
-            if (value is System.Data.SqlTypes.INullable sqlNullable && sqlNullable.IsNull)
-                return null;
-            if (offset < 0)
-                offset = 0;
-            switch (value)
-            {
-                case string text:
-                    return TextPage(text, offset, length);
-                case OracleString oracleString:
-                    return TextPage(oracleString.Value, offset, length);
-                case OracleXmlType xml:
-                    return TextPage(xml.Value, offset, length);
-                case byte[] bytes:
-                    return BytesPage(bytes, offset, length);
-                case OracleBinary binary:
-                    return BytesPage(binary.Value, offset, length);
-                case OracleClob clob:
-                    return ClobPage(clob, offset, length);
-                case OracleBlob blob:
-                    return BlobPage(blob, offset, length);
-                default:
-                    var formatted = Format(value) ?? "";
-                    return new ValuePage { Text = formatted, Offset = 0, Next = formatted.Length, Total = formatted.Length };
-            }
-        }
-
-        private static ValuePage TextPage(string text, long offset, int length)
-        {
-            var start = (int)Math.Min(offset, text.Length);
-            var count = (int)Math.Min(length, text.Length - start);
-            var part = TrimSplitSurrogate(text.Substring(start, count), start + count < text.Length);
-            return new ValuePage { Text = part, Offset = start, Next = start + part.Length, Total = text.Length };
-        }
-
-        // 다음 글자가 남았는데 서로게이트 쌍의 앞 절반에서 끝나면 그 절반을 다음 쪽으로 넘긴다
-        private static string TrimSplitSurrogate(string part, bool more)
-        {
-            if (more && part.Length > 1 && char.IsHighSurrogate(part[part.Length - 1]))
-                return part.Substring(0, part.Length - 1);
-            return part;
-        }
-
-        private static ValuePage BytesPage(byte[] bytes, long offset, int length)
-        {
-            var start = (int)Math.Min(offset, bytes.Length);
-            var count = (int)Math.Min(length, bytes.Length - start);
-            return new ValuePage
-            {
-                Text = (start == 0 ? "0x" : "") + Convert.ToHexString(bytes, start, count),
-                Offset = start,
-                Next = start + count,
-                Total = bytes.Length,
-                Binary = true
-            };
-        }
-
-        private static ValuePage ClobPage(OracleClob clob, long offset, int length)
-        {
-            // Length·Position은 바이트(UCS-2) 단위라 글자 수는 절반이다
-            var total = clob.Length / 2;
-            var start = Math.Min(offset, total);
-            var want = (int)Math.Min(length, total - start);
-            var buffer = new char[want];
-            var read = 0;
-            if (want > 0)
-            {
-                clob.Position = start * 2;
-                while (read < want)
-                {
-                    var n = clob.Read(buffer, read, want - read);
-                    if (n <= 0)
-                        break;
-                    read += n;
-                }
-            }
-            var part = TrimSplitSurrogate(new string(buffer, 0, read), start + read < total);
-            return new ValuePage { Text = part, Offset = start, Next = start + part.Length, Total = total };
-        }
-
-        private static ValuePage BlobPage(OracleBlob blob, long offset, int length)
-        {
-            var total = blob.Length;
-            var start = Math.Min(offset, total);
-            var want = (int)Math.Min(length, total - start);
-            var buffer = new byte[want];
-            var read = 0;
-            if (want > 0)
-            {
-                blob.Position = start;
-                while (read < want)
-                {
-                    var n = blob.Read(buffer, read, want - read);
-                    if (n <= 0)
-                        break;
-                    read += n;
-                }
-            }
-            return new ValuePage
-            {
-                Text = (start == 0 ? "0x" : "") + Convert.ToHexString(buffer, 0, read),
-                Offset = start,
-                Next = start + read,
-                Total = total,
-                Binary = true
-            };
         }
 
         /// <summary>NUMBER, FLOAT, BINARY_FLOAT, BINARY_DOUBLE, INTEGER, DECIMAL 등(대소문자 무시)과 .NET 숫자 형식 이름(INT32, DECIMAL …)이면 true.</summary>
@@ -320,11 +196,11 @@ namespace MyPlugin
             }
         }
 
-        private static string Text(string text)
+        private static string Text(string text, int max)
         {
-            if (text.Length <= MaxTextLength)
+            if (text.Length <= max)
                 return text;
-            return Truncate(text, MaxTextLength) + TextSuffix(text.Length);
+            return Truncate(text, max) + TextSuffix(text.Length);
         }
 
         private static string Truncate(string text, int length)
@@ -342,20 +218,20 @@ namespace MyPlugin
             return "…(전체 " + totalChars.ToString(Invariant) + "자)";
         }
 
-        private static string Hex(byte[] bytes, int available, long total)
+        private static string Hex(byte[] bytes, int available, long total, int max)
         {
-            var count = Math.Min(available, MaxBinaryBytes);
+            var count = Math.Min(available, max);
             var text = "0x" + Convert.ToHexString(bytes, 0, count);
-            if (total > MaxBinaryBytes)
+            if (total > max)
                 text += "…(전체 " + total.ToString(Invariant) + "바이트)";
             return text;
         }
 
-        private static string ClobText(OracleClob clob)
+        private static string ClobText(OracleClob clob, int max)
         {
             // Length는 바이트(UCS-2) 단위라 글자 수는 절반이다
             var totalChars = clob.Length / 2;
-            var want = (int)Math.Min(totalChars, MaxTextLength);
+            var want = (int)Math.Min(totalChars, max);
             var buffer = new char[want];
             var read = 0;
             while (read < want)
@@ -366,15 +242,15 @@ namespace MyPlugin
                 read += n;
             }
             var text = new string(buffer, 0, read);
-            if (totalChars <= MaxTextLength)
+            if (totalChars <= max)
                 return text;
             return Truncate(text, read) + TextSuffix(totalChars);
         }
 
-        private static string BlobText(OracleBlob blob)
+        private static string BlobText(OracleBlob blob, int max)
         {
             var total = blob.Length;
-            var want = (int)Math.Min(total, MaxBinaryBytes);
+            var want = (int)Math.Min(total, max);
             var buffer = new byte[want];
             var read = 0;
             while (read < want)
@@ -384,7 +260,7 @@ namespace MyPlugin
                     break;
                 read += n;
             }
-            return Hex(buffer, read, total);
+            return Hex(buffer, read, total, max);
         }
 
         private static string DateTimeText(DateTime value)

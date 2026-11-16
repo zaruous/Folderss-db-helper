@@ -10,16 +10,15 @@ namespace MyPlugin
 {
     /// <summary>
     /// 결과 그리드 오른쪽 메뉴 [팝업으로 보기]: 칸 값 하나를 줄바꿈·스크롤로 보이는 창(모달 아님, Esc로 닫음).
-    /// 그리드 값은 조회 때 잘린 것(글 4,000자·이진 2,000바이트)이라, 잘린 값이면 [전체 보기]로 DB에서 그 칸을 쪽(ValueFormatter.PageLength) 단위로 다시 읽고
-    /// [이전]·[다음]으로 쪽을 바꿔 보인다(화면에는 늘 한 쪽만 — 메모리가 쌓이지 않게). 쪽마다 다시 SELECT하므로 그 사이 전체 길이가 바뀌면 경고한다.
+    /// 그리드 값은 조회 때 잘린 것(글 4,000자·이진 2,000바이트)이라, 잘린 값이면 [전체 보기]로 DB에서 그 칸을 다시 읽는다(상한 ValueFormatter.MaxFullLength).
     /// 다시 읽을 수 없으면(직접 쓴 SQL 결과 등) 버튼을 끄고 이유를 보인다. 창을 닫으면 읽기를 취소한다.
     /// </summary>
     internal static class CellValueWindow
     {
-        /// <param name="load">[전체 보기]로 DB에서 시작 위치부터 한 쪽 다시 읽기(null이면 못 읽음). 결과 null = NULL. 실패는 예외(메시지를 보임).</param>
+        /// <param name="load">[전체 보기]로 DB에서 다시 읽기(null이면 못 읽음). 결과 null = NULL. 실패는 예외(메시지를 보임).</param>
         /// <param name="blockReason">load가 null일 때 보일 이유.</param>
         public static Window Show(Window owner, string columnName, string typeLabel, int rowNumber, string value,
-            Func<long, CancellationToken, Task<ValuePage>> load, string blockReason)
+            Func<CancellationToken, Task<string>> load, string blockReason)
         {
             var window = new Window
             {
@@ -84,17 +83,13 @@ namespace MyPlugin
                 Margin = new Thickness(0, 0, 6, 0),
                 Visibility = truncated ? Visibility.Visible : Visibility.Collapsed,
                 IsEnabled = load != null,
-                ToolTip = load != null ? "DB에서 이 칸을 다시 읽습니다(한 번에 " + Number(ValueFormatter.PageLength) + "자·바이트씩)" : blockReason
+                ToolTip = load != null ? "DB에서 이 칸을 다시 읽습니다(최대 " + ValueFormatter.MaxFullLength.ToString("N0", CultureInfo.CurrentCulture) + "자·바이트)" : blockReason
             };
             ToolTipService.SetShowOnDisabled(full, true);
-            var previous = new Button { Content = "◀ 이전", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 0, 6, 0), Visibility = Visibility.Collapsed };
-            var next = new Button { Content = "다음 ▶", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 0, 6, 0), Visibility = Visibility.Collapsed };
             var close = new Button { Content = "닫기", Padding = new Thickness(16, 3, 16, 3), IsCancel = true };
             close.Click += (s, e) => window.Close();
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
             buttons.Children.Add(full);
-            buttons.Children.Add(previous);
-            buttons.Children.Add(next);
             buttons.Children.Add(close);
             DockPanel.SetDock(buttons, Dock.Bottom);
             root.Children.Add(buttons);
@@ -106,64 +101,27 @@ namespace MyPlugin
                 : null);
 
             var cancel = new CancellationTokenSource();
-            // 읽은 쪽들의 시작 위치([이전]용)와 처음 읽은 전체 길이(쪽 사이에 값이 바뀌었는지)
-            var starts = new System.Collections.Generic.List<long>();
-            long? firstTotal = null;
-            ValuePage shown = null;
-            async Task LoadPage(long offset, bool back)
+            full.Click += async (s, e) =>
             {
-                full.IsEnabled = previous.IsEnabled = next.IsEnabled = false;
+                full.IsEnabled = false;
                 note.Text = "DB에서 읽는 중…";
-                note.Visibility = Visibility.Visible;
                 try
                 {
-                    var page = await load(offset, cancel.Token);
+                    var loaded = await load(cancel.Token);
                     if (cancel.IsCancellationRequested)
                         return;
+                    var stillTruncated = RowEditLogic.IsTruncated(loaded);
+                    SetValue(text, note, loaded, "DB에서 다시 읽은 값입니다(조회한 뒤 바뀌었을 수 있음)."
+                        + (stillTruncated ? " 상한(" + ValueFormatter.MaxFullLength.ToString("N0", CultureInfo.CurrentCulture) + "자·바이트)까지만 보입니다." : ""));
                     full.Visibility = Visibility.Collapsed;
-                    if (page == null)
-                    {
-                        shown = null;
-                        starts.Clear();
-                        previous.Visibility = next.Visibility = Visibility.Collapsed;
-                        SetValue(text, note, null, "DB에서 다시 읽은 값입니다(조회한 뒤 바뀌었을 수 있음).");
-                        return;
-                    }
-                    if (back)
-                        starts.RemoveAt(starts.Count - 1);
-                    else if (shown != null)
-                        starts.Add(shown.Offset);
-                    shown = page;
-                    firstTotal = firstTotal ?? page.Total;
-                    var changed = firstTotal != page.Total;
-                    SetValue(text, note, page.Text, PageNote(page) + (changed ? " ⚠ 쪽을 넘기는 사이 값의 길이가 바뀌었습니다 — 앞 쪽과 이어지지 않을 수 있습니다." : ""));
-                    text.CaretIndex = 0;
-                    text.ScrollToHome();
-                    previous.Visibility = starts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-                    next.Visibility = page.Next < page.Total ? Visibility.Visible : Visibility.Collapsed;
                 }
                 catch (Exception ex)
                 {
                     if (cancel.IsCancellationRequested)
                         return;
                     note.Text = ex is OperationCanceledException ? "읽기를 취소했습니다." : "읽지 못했습니다: " + ex.Message;
+                    full.IsEnabled = true;
                 }
-                finally
-                {
-                    if (!cancel.IsCancellationRequested)
-                        full.IsEnabled = previous.IsEnabled = next.IsEnabled = true;
-                }
-            }
-            full.Click += async (s, e) => await LoadPage(0, false);
-            next.Click += async (s, e) =>
-            {
-                if (shown != null)
-                    await LoadPage(shown.Next, false);
-            };
-            previous.Click += async (s, e) =>
-            {
-                if (starts.Count > 0)
-                    await LoadPage(starts[starts.Count - 1], true);
             };
             window.Closed += (s, e) => cancel.Cancel();
             window.PreviewKeyDown += (s, e) =>
@@ -181,21 +139,6 @@ namespace MyPlugin
             };
             window.Show();
             return window;
-        }
-
-        // "DB에서 다시 읽은 값 · 10,000,001–20,000,000 / 전체 25,000,000자"
-        private static string PageNote(ValuePage page)
-        {
-            var unit = page.Binary ? "바이트" : "자";
-            var range = page.Total <= page.Next - page.Offset
-                ? "전체 " + Number(page.Total) + unit
-                : Number(Math.Min(page.Offset + 1, page.Total)) + "–" + Number(page.Next) + " / 전체 " + Number(page.Total) + unit;
-            return "DB에서 다시 읽은 값 · " + range + (page.Binary ? " (16진수)" : "") + ". 조회한 뒤 바뀌었을 수 있습니다.";
-        }
-
-        private static string Number(long value)
-        {
-            return value.ToString("N0", CultureInfo.CurrentCulture);
         }
 
         // NULL은 빈 글 + 안내

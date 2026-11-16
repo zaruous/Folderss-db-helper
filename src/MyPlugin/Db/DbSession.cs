@@ -1528,17 +1528,17 @@ namespace MyPlugin
         }
 
         /// <summary>
-        /// 결과 그리드 [전체 보기]: QueryAsync의 read에서 칸 하나를 조회와 같은 방법으로 읽어 offset부터 length(글자·바이트)만큼 한 쪽을 만든다.
-        /// Oracle LOB는 그 쪽만 읽는다. 다른 DBMS는 공급자가 값을 통째로 읽은 뒤 자른다(메모리 상한이 아님). NULL이면 null.
+        /// 결과 그리드 [전체 보기]: QueryAsync의 read에서 칸 하나를 조회와 같은 방법으로 읽되, 글·이진은 maxLength(글자·바이트)까지 형식화한다.
+        /// Oracle LOB는 maxLength까지만 읽는다. 다른 DBMS는 공급자가 값을 통째로 읽은 뒤 자른다(메모리 상한이 아님).
         /// </summary>
-        internal static ValuePage ReadValuePage(IDataRecord record, int ordinal, long offset, int length)
+        internal static string ReadFullValue(IDataRecord record, int ordinal, int maxLength)
         {
             var reader = (DbDataReader)record;
             var mode = reader is OracleDataReader ? OracleReadMode(reader.GetDataTypeName(ordinal)) : ColumnRead.Value;
             var value = ReadValue(reader, ordinal, mode);
             try
             {
-                return ValueFormatter.Page(value, offset, length);
+                return ValueFormatter.Format(value, maxLength, maxLength);
             }
             finally
             {

@@ -233,66 +233,30 @@ namespace MyPlugin.Tests
             Assert.Equal("0x" + Repeat("5C", ValueFormatter.MaxBinaryBytes) + "…(전체 2001바이트)", ValueFormatter.Format(bytes));
         }
 
-        // 팝업 [전체 보기]: 그리드 상한을 넘는 값을 조각(쪽)으로 나눠 읽는다
+        // 팝업 [전체 보기]: 그리드 상한(4,000자·2,000바이트)을 넘는 값을 정한 상한까지 보인다
         [Fact]
-        public void Page_Text_SplitsByOffsetAndLength()
+        public void Format_WithLimit_TextKeepsUpToLimit()
         {
-            var text = "abcdefghij";
-            var first = ValueFormatter.Page(text, 0, 4);
-            Assert.Equal("abcd", first.Text);
-            Assert.Equal(0, first.Offset);
-            Assert.Equal(4, first.Next);
-            Assert.Equal(10, first.Total);
-            Assert.False(first.Binary);
-
-            var last = ValueFormatter.Page(new OracleString(text), 8, 4);
-            Assert.Equal("ij", last.Text);
-            Assert.Equal(10, last.Next);
-            Assert.Equal(10, last.Total);
-
-            var beyond = ValueFormatter.Page(text, 20, 4);
-            Assert.Equal("", beyond.Text);
-            Assert.Equal(10, beyond.Next);
+            var text = new string('a', ValueFormatter.MaxTextLength + 1000);
+            Assert.Equal(text, ValueFormatter.Format(text, ValueFormatter.MaxFullLength, ValueFormatter.MaxFullLength));
+            Assert.Equal(new string('a', 10) + "…(전체 5000자)", ValueFormatter.Format(text, 10, 10));
+            Assert.Equal(new string('z', 7) + "…(전체 8자)", ValueFormatter.Format(new OracleString("zzzzzzzz"), 7, 7));
         }
 
         [Fact]
-        public void Page_Text_DoesNotSplitSurrogatePair()
+        public void Format_WithLimit_BytesKeepUpToLimit()
         {
-            var text = "ab😀cd";
-            var first = ValueFormatter.Page(text, 0, 3);
-            // 서로게이트 쌍의 앞 절반에서 끊지 않고 다음 쪽으로 넘긴다
-            Assert.Equal("ab", first.Text);
-            Assert.Equal(2, first.Next);
-            var second = ValueFormatter.Page(text, first.Next, 3);
-            Assert.Equal("😀c", second.Text);
-            Assert.Equal(5, second.Next);
+            var bytes = Filled(ValueFormatter.MaxBinaryBytes + 1, 0x5C);
+            Assert.Equal("0x" + Repeat("5C", ValueFormatter.MaxBinaryBytes + 1), ValueFormatter.Format(bytes, ValueFormatter.MaxFullLength, ValueFormatter.MaxFullLength));
+            Assert.Equal("0x5C5C…(전체 2001바이트)", ValueFormatter.Format(bytes, 2, 2));
         }
 
         [Fact]
-        public void Page_Bytes_HexWithPrefixOnlyOnFirstPage()
+        public void Format_WithoutLimit_IsGridLimit()
         {
-            var bytes = new byte[] { 0x01, 0x02, 0x03, 0xFF, 0x10 };
-            var first = ValueFormatter.Page(bytes, 0, 2);
-            Assert.Equal("0x0102", first.Text);
-            Assert.True(first.Binary);
-            Assert.Equal(2, first.Next);
-            Assert.Equal(5, first.Total);
-            Assert.Equal("03FF", ValueFormatter.Page(bytes, 2, 2).Text);
-            Assert.Equal("10", ValueFormatter.Page(new OracleBinary(bytes), 4, 2).Text);
-        }
-
-        [Fact]
-        public void Page_NullAndOtherValues()
-        {
-            Assert.Null(ValueFormatter.Page(null, 0, 10));
-            Assert.Null(ValueFormatter.Page(DBNull.Value, 0, 10));
-            Assert.Null(ValueFormatter.Page(OracleClob.Null, 0, 10));
-            // 나눠 읽지 않는 형식은 표시 글 그대로 한 쪽
-            var number = ValueFormatter.Page(12345, 0, 2);
-            Assert.Equal("12345", number.Text);
-            Assert.Equal(5, number.Next);
-            Assert.Equal(5, number.Total);
-            Assert.Equal(10_000_000, ValueFormatter.PageLength);
+            var text = new string('a', ValueFormatter.MaxTextLength + 1);
+            Assert.Equal(ValueFormatter.Format(text), ValueFormatter.Format(text, ValueFormatter.MaxTextLength, ValueFormatter.MaxBinaryBytes));
+            Assert.Equal(10_000_000, ValueFormatter.MaxFullLength);
         }
 
         [Fact]
