@@ -29,7 +29,7 @@ namespace MyPlugin.Tests
             Assert.Same(DbProviders.Oracle, DbProviders.For("db2"));
             Assert.Same(DbProviders.Oracle, DbProviders.For((OracleConnectionProfile)null));
             Assert.Same(DbProviders.Postgres, DbProviders.For(Profile("postgres")));
-            Assert.Equal(new[] { "oracle", "postgres", "mssql" }, DbProviders.All.Select(p => p.Kind).ToArray());
+            Assert.Equal(new[] { "oracle", "postgres", "mssql", "sqlite" }, DbProviders.All.Select(p => p.Kind).ToArray());
             Assert.Same(DbProviders.SqlServer, DbProviders.For("MSSQL"));
         }
 

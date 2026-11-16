@@ -72,6 +72,29 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>
+        /// SQLite: VACUUM(트랜잭션 안에서 실패), ATTACH·DETACH(트랜잭션 안에서 실패), PRAGMA journal_mode·foreign_keys(트랜잭션 안에서는 바뀌지 않거나 실패).
+        /// </summary>
+        public static bool SqliteNoTransaction(SqlStatement statement)
+        {
+            var w = LeadingWords(statement, 4);
+            if (w.Count == 0)
+                return false;
+            switch (w[0])
+            {
+                case "VACUUM":
+                case "ATTACH":
+                case "DETACH":
+                    return true;
+                case "PRAGMA":
+                    // PRAGMA [schema.]name: 스키마가 붙으면 두 번째 낱말이 스키마
+                    var text = statement.Text ?? "";
+                    return Regex.IsMatch(text, @"^\s*PRAGMA\s+(\w+\s*\.\s*)?(journal_mode|foreign_keys)\s*=", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                default:
+                    return false;
+            }
+        }
+
         /// <summary>문장 앞의 단어(영문자·숫자·'_') 최대 count개, 대문자. 주석·공백은 건너뛰고 단어가 아닌 글자에서 멈춘다.</summary>
         internal static List<string> LeadingWords(SqlStatement statement, int count)
         {

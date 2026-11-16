@@ -392,6 +392,9 @@ namespace MyPlugin
 
         private bool HasStoredPassword(OracleConnectionProfile profile)
         {
+            // 비밀번호를 쓰지 않는 공급자(SQLite)는 묻지 않고 연결할 수 있다
+            if (!DbProviders.For(profile).UsesPassword)
+                return true;
             try
             {
                 return !string.IsNullOrEmpty(ConnectionRepository.StoredPassword(SavedProfile(profile.Id) ?? profile));
@@ -872,15 +875,17 @@ namespace MyPlugin
                 return null;
             string password = null;
             string reason = null;
+            var usesPassword = DbProviders.For(profile).UsesPassword;
             try
             {
-                password = ConnectionRepository.StoredPassword(profile);
+                if (usesPassword)
+                    password = ConnectionRepository.StoredPassword(profile);
             }
             catch (Exception ex)
             {
                 reason = ex.Message;
             }
-            if (string.IsNullOrEmpty(password))
+            if (usesPassword && string.IsNullOrEmpty(password))
             {
                 password = PasswordPrompt.Ask(OwnerWindow(), profile, reason ?? ShellLogic.NoStoredPasswordReason);
                 if (string.IsNullOrEmpty(password) || _closed)
@@ -1226,18 +1231,45 @@ namespace MyPlugin
                     return false;
             }
 
+            // SQLite: 파일이 없으면 만들지 묻는다(경로 오타가 빈 DB를 조용히 만들지 않게). 읽기 전용 접속은 만들지 않는다
+            if (DbProviders.For(profile) is SqliteProvider && SqliteProvider.NeedsCreate(profile))
+            {
+                var path = SqliteProvider.PathOf(profile);
+                if (profile.ReadOnly)
+                {
+                    AddMessage(dbId, "DB 파일이 없습니다: " + path + " (읽기 전용 접속은 새 파일을 만들지 않습니다)", MessageKind.Error);
+                    return false;
+                }
+                if (!Dialogs.Confirm(OwnerWindow(), "새 SQLite DB", "DB 파일이 없습니다.\n" + path + "\n\n이 경로에 빈 SQLite DB 파일을 새로 만들까요?", "만들기", false))
+                    return false;
+                try
+                {
+                    SqliteProvider.CreateDatabaseFile(path);
+                }
+                catch (Exception ex)
+                {
+                    AddMessage(dbId, "DB 파일을 만들지 못했습니다: " + ex.Message, MessageKind.Error);
+                    return false;
+                }
+                if (_closed || _closingFlow)
+                    return false;
+            }
+
             string password = null;
             string reason = null;
+            var usesPassword = DbProviders.For(profile).UsesPassword;
             try
             {
-                password = ConnectionRepository.StoredPassword(profile);
+                if (usesPassword)
+                    password = ConnectionRepository.StoredPassword(profile);
             }
             catch (Exception ex)
             {
                 // 다른 PC·다른 Windows 사용자가 저장한 비밀번호 등 — 이번 연결에만 쓸 비밀번호를 묻는다
                 reason = ex.Message;
             }
-            if (string.IsNullOrEmpty(password))
+            // 비밀번호를 쓰지 않는 공급자(SQLite)는 묻지 않는다
+            if (usesPassword && string.IsNullOrEmpty(password))
             {
                 password = PasswordPrompt.Ask(OwnerWindow(), profile, reason ?? ShellLogic.NoStoredPasswordReason);
                 if (string.IsNullOrEmpty(password) || _closed || _closingFlow)

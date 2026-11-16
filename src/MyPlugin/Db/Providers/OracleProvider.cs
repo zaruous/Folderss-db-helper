@@ -27,6 +27,7 @@ namespace MyPlugin
         public IMetadataProvider Metadata { get { return _metadata; } }
         public IMonitorProvider Monitor { get { return _monitor; } }
         public ITableSchemaProvider TableSchema { get { return OracleTableSchema.Instance; } }
+        public bool UsesPassword { get { return true; } }
 
         public List<string> Validate(OracleConnectionProfile profile, string label)
         {
@@ -165,6 +166,7 @@ namespace MyPlugin
         public IMetadataProvider Metadata { get { throw new NotSupportedException("이 연결에는 데이터 사전 조회가 없습니다."); } }
         public IMonitorProvider Monitor { get { return NoMonitor.Instance; } }
         public ITableSchemaProvider TableSchema { get { return null; } }
+        public bool UsesPassword { get { return true; } }
         public List<string> Validate(OracleConnectionProfile profile, string label) { return new List<string>(); }
         public string BuildConnectionString(OracleConnectionProfile profile, string password, int timeoutSeconds) { throw new NotSupportedException(); }
         public DbConnection CreateConnection(string connectionString) { throw new NotSupportedException(); }

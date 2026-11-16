@@ -52,6 +52,20 @@ namespace MyPlugin
             Types = SqlKeywords.Of(SqlKeywords.CommonTypes, SqlKeywords.SqlServerTypes)
         };
 
+        /// <summary>
+        /// [식별자]·`식별자`(]]·``는 한 글자), '/' 줄·GO 줄 구분자 없음. BEGIN은 트랜잭션 문장이다(블록 아님).
+        /// CREATE [TEMP] TRIGGER … BEGIN … END는 본문의 ';'·빈 줄로 끝나지 않고, 본문을 닫는 END(CASE … END 제외) 뒤 ';'에서 끝난다.
+        /// </summary>
+        public static readonly SqlLexRules Sqlite = new SqlLexRules
+        {
+            Name = "SQLite",
+            BracketIdentifier = true,
+            BacktickIdentifier = true,
+            TriggerBlocks = true,
+            Keywords = SqlKeywords.Of(SqlKeywords.Common, SqlKeywords.Sqlite),
+            Types = SqlKeywords.Of(SqlKeywords.CommonTypes, SqlKeywords.SqliteTypes)
+        };
+
         private SqlLexRules() { }
 
         public string Name { get; private set; }
@@ -70,6 +84,12 @@ namespace MyPlugin
 
         /// <summary>SQL Server [식별자].</summary>
         public bool BracketIdentifier { get; private set; }
+
+        /// <summary>MySQL·SQLite `식별자`.</summary>
+        public bool BacktickIdentifier { get; private set; }
+
+        /// <summary>SQLite CREATE [TEMP|TEMPORARY] TRIGGER … BEGIN … END: 본문을 닫는 END 뒤 ';'까지 한 문장(<see cref="Blocks"/>와 따로).</summary>
+        public bool TriggerBlocks { get; private set; }
 
         /// <summary>BEGIN·DECLARE·CREATE PROCEDURE 등을 블록으로 보고 안의 ';'·빈 줄로 끝내지 않는다(<see cref="BlockEndLine"/> 줄까지).</summary>
         public bool Blocks { get; private set; }

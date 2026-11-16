@@ -27,6 +27,7 @@ namespace MyPlugin
         public IMetadataProvider Metadata { get { return _metadata; } }
         public IMonitorProvider Monitor { get { return _monitor; } }
         public ITableSchemaProvider TableSchema { get { return SqlServerTableSchema.Instance; } }
+        public bool UsesPassword { get { return true; } }
 
         public List<string> Validate(OracleConnectionProfile profile, string label)
         {

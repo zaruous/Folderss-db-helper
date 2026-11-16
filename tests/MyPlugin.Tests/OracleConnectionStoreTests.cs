@@ -221,5 +221,28 @@ namespace MyPlugin.Tests
             var ex = Assert.Throws<InvalidOperationException>(() => OracleConnectionStore.BuildConnectionString(Valid(), password, 10));
             Assert.Contains("비밀번호", ex.Message);
         }
+
+        [Fact]
+        public void BuildConnectionString_Sqlite_NoPasswordNeeded_ReadOnlyMode()
+        {
+            var lite = new OracleConnectionProfile { Name = "로컬", Provider = "sqlite", ServiceName = "C:\\data\\app.db", Port = 0 };
+            var b = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(OracleConnectionStore.BuildConnectionString(lite, null, 7));
+            Assert.Equal("C:\\data\\app.db", b.DataSource);
+            Assert.Equal(Microsoft.Data.Sqlite.SqliteOpenMode.ReadWrite, b.Mode);
+            Assert.False(b.Pooling);
+            Assert.Equal(7, b.DefaultTimeout);
+            lite.ReadOnly = true;
+            b = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(OracleConnectionStore.BuildConnectionString(lite, "", 7));
+            Assert.Equal(Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly, b.Mode);
+        }
+
+        [Fact]
+        public void Deserialize_KeepsSqliteProvider()
+        {
+            var json = "[{\"id\":\"a\",\"name\":\"x\",\"provider\":\"sqlite\",\"serviceName\":\"C:\\\\a.db\",\"port\":0}]";
+            var p = OracleConnectionStore.Deserialize(json)[0];
+            Assert.Equal("sqlite", p.Provider);
+            Assert.Equal("C:\\a.db", p.ServiceName);
+        }
     }
 }

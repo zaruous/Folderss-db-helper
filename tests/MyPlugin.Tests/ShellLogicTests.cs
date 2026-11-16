@@ -27,6 +27,13 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void Address_Sqlite_IsFilePath()
+        {
+            var lite = new OracleConnectionProfile { Provider = "sqlite", ServiceName = @" C:\data\app.db ", Port = 0 };
+            Assert.Equal(@"C:\data\app.db", ShellLogic.Address(lite));
+        }
+
+        [Fact]
         public void SelectedDbText_NameAndAddressOrHint()
         {
             Assert.Equal("개발 · scott@dev-db:1521/ORCLPDB1", ShellLogic.SelectedDbText(Profile()));

@@ -38,6 +38,9 @@ namespace MyPlugin
         /// <summary>성능 모니터 섹션(기본 정보·저장 공간·로그·잠금·세션 …). 지원하지 않으면 <see cref="NoMonitor.Instance"/>.</summary>
         IMonitorProvider Monitor { get; }
 
+        /// <summary>비밀번호로 접속하는지. false(SQLite 파일)면 저장된 비밀번호가 없어도 묻지 않는다.</summary>
+        bool UsesPassword { get; }
+
         /// <summary>공급자별 필수 항목 검사(호스트·포트·서비스/데이터베이스·사용자). 문제가 없으면 빈 목록. label은 "'이름'" 꼴 접두.</summary>
         List<string> Validate(OracleConnectionProfile profile, string label);
 
@@ -151,6 +154,12 @@ namespace MyPlugin
         SqlQuery SearchTables(string pattern, int limit);
         SqlQuery SearchColumns(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit);
         SearchHit ReadColumnHit(IDataRecord record);
+
+        /// <summary>트리에서 스키마 아래 보일 묶음(순서대로). 기본은 네 묶음 모두 — 그런 객체가 없는 DBMS(SQLite)는 줄인다.</summary>
+        IReadOnlyList<string> TreeGroupKinds => TreeGroups.All;
+
+        /// <summary>스키마의 묶음이 모두 비었을 때 트리에 보일 글. null이면 기본 문구("볼 수 있는 객체가 없습니다 (권한 필요)").</summary>
+        string EmptySchemaText => null;
 
         /// <summary>DBMS 제품·버전(정의서 표지). 읽는 쪽은 첫 행만 쓴다.</summary>
         SqlQuery ServerVersion();

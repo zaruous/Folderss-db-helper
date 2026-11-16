@@ -148,8 +148,13 @@ namespace MyPlugin
             {
                 var block = IsBlockHeader(script, tokens, i, rules);
                 var end = i;
-                while (end < tokens.Count && !EndsStatement(script, tokens[end], block))
-                    end++;
+                if (rules.TriggerBlocks && IsTriggerHeader(script, tokens, i))
+                    end = TriggerEnd(script, tokens, i);
+                else
+                {
+                    while (end < tokens.Count && !EndsStatement(script, tokens[end], block))
+                        end++;
+                }
                 var guessedEnd = false;
                 if (block && end >= tokens.Count)
                 {
@@ -698,6 +703,63 @@ namespace MyPlugin
             }
         }
 
+        // SQLite: CREATE [TEMP|TEMPORARY] TRIGGER
+        private static bool IsTriggerHeader(string s, List<Token> tokens, int first)
+        {
+            var k = 0;
+            for (var i = first; i < tokens.Count && k < 3; i++)
+            {
+                var t = tokens[i];
+                if (t.IsComment || t.IsMarker)
+                    continue;
+                if (t.Type != TokenType.Word)
+                    return false;
+                var w = Upper(s, t);
+                if (k == 0 && w != "CREATE")
+                    return false;
+                if (k >= 1 && w == "TRIGGER")
+                    return true;
+                if (k == 1 && w != "TEMP" && w != "TEMPORARY")
+                    return false;
+                k++;
+            }
+            return false;
+        }
+
+        // SQLite 트리거의 끝 ';' 위치(없으면 tokens.Count): 첫 BEGIN 뒤에서 CASE와 짝이 아닌 END를 찾고 그 뒤 첫 ';'. 본문 안의 ';'·빈 줄은 건너뛴다.
+        private static int TriggerEnd(string s, List<Token> tokens, int first)
+        {
+            var i = first;
+            while (i < tokens.Count && !IsWord(s, tokens[i], "BEGIN"))
+            {
+                // BEGIN 전에 ';'가 오면 본문 없는(잘못된) 트리거 — 거기서 끝낸다
+                if (IsSymbol(s, tokens[i], ';'))
+                    return i;
+                i++;
+            }
+            var caseDepth = 0;
+            for (i++; i < tokens.Count; i++)
+            {
+                if (IsWord(s, tokens[i], "CASE"))
+                    caseDepth++;
+                else if (IsWord(s, tokens[i], "END"))
+                {
+                    if (caseDepth > 0)
+                    {
+                        caseDepth--;
+                        continue;
+                    }
+                    for (i++; i < tokens.Count; i++)
+                    {
+                        if (IsSymbol(s, tokens[i], ';'))
+                            return i;
+                    }
+                    return tokens.Count;
+                }
+            }
+            return tokens.Count;
+        }
+
         private static bool EndsStatement(string s, Token t, bool block)
         {
             if (t.Type == TokenType.SlashLine)
@@ -970,6 +1032,11 @@ namespace MyPlugin
                     pos = BracketEnd(s, pos + 1);
                     type = TokenType.QuotedIdentifier;
                 }
+                else if (rules.BacktickIdentifier && c == '`')
+                {
+                    pos = BacktickEnd(s, pos + 1);
+                    type = TokenType.QuotedIdentifier;
+                }
                 else if (rules.DollarQuote && c == '$' && DollarTagEnd(s, pos) > 0)
                 {
                     var tagEnd = DollarTagEnd(s, pos);
@@ -1124,6 +1191,25 @@ namespace MyPlugin
                 if (s[pos] == ']')
                 {
                     if (pos + 1 < s.Length && s[pos + 1] == ']')
+                    {
+                        pos += 2;
+                        continue;
+                    }
+                    return pos + 1;
+                }
+                pos++;
+            }
+            return s.Length;
+        }
+
+        // pos: 여는 ` 다음. `` 는 ` 한 글자다. 닫히지 않으면 끝까지.
+        private static int BacktickEnd(string s, int pos)
+        {
+            while (pos < s.Length)
+            {
+                if (s[pos] == '`')
+                {
+                    if (pos + 1 < s.Length && s[pos + 1] == '`')
                     {
                         pos += 2;
                         continue;

@@ -224,6 +224,9 @@ namespace MyPlugin
             private TextBox _sqlHostName;
             private TextBlock _sqlNote;
             private readonly List<FrameworkElement> _sqlOnly = new List<FrameworkElement>();
+            // 서버 접속 칸(호스트·포트·사용자·비밀번호): SQLite 파일 접속이면 숨긴다
+            private readonly List<FrameworkElement> _serverOnly = new List<FrameworkElement>();
+            private Button _browse;
             private ComboBox _color;
             private TextBlock _liveNote;
             private Button _test;
@@ -448,29 +451,37 @@ namespace MyPlugin
                 Place(grid, _provider, row, 1, 3, Gap);
 
                 row = NewRow(grid);
-                Place(grid, Label("호스트"), row, 0, 1, Gap);
+                var hostLabel = Label("호스트");
+                Place(grid, hostLabel, row, 0, 1, Gap);
                 Place(grid, _host, row, 1, 1, Gap);
                 var portLabel = Label("포트");
                 portLabel.HorizontalAlignment = HorizontalAlignment.Right;
                 portLabel.Margin = new Thickness(0, 0, 8, 0);
                 Place(grid, portLabel, row, 2, 1, Gap);
                 Place(grid, _port, row, 3, 1, Gap);
+                _serverOnly.AddRange(new FrameworkElement[] { hostLabel, _host, portLabel, _port });
 
                 row = NewRow(grid);
                 _serviceLabel = Label("서비스명");
                 Place(grid, _serviceLabel, row, 0, 1, Gap);
-                Place(grid, _service, row, 1, 3, Gap);
+                Place(grid, BuildServiceInput(), row, 1, 3, Gap);
 
                 row = NewRow(grid);
-                Place(grid, Label("사용자"), row, 0, 1, Gap);
+                var userLabel = Label("사용자");
+                Place(grid, userLabel, row, 0, 1, Gap);
                 Place(grid, _user, row, 1, 3, Gap);
+                _serverOnly.AddRange(new FrameworkElement[] { userLabel, _user });
 
                 row = NewRow(grid);
-                Place(grid, Label("비밀번호"), row, 0, 1, Gap);
-                Place(grid, BuildPasswordInput(), row, 1, 3, Gap);
+                var passwordLabel = Label("비밀번호");
+                var passwordInput = BuildPasswordInput();
+                Place(grid, passwordLabel, row, 0, 1, Gap);
+                Place(grid, passwordInput, row, 1, 3, Gap);
 
                 row = NewRow(grid);
-                Place(grid, BuildPasswordNote(), row, 1, 3, NoteGap);
+                var passwordNote = BuildPasswordNote();
+                Place(grid, passwordNote, row, 1, 3, NoteGap);
+                _serverOnly.AddRange(new FrameworkElement[] { passwordLabel, passwordInput, passwordNote });
 
                 BuildSqlSecurity(grid);
 
@@ -570,6 +581,52 @@ namespace MyPlugin
                     _sqlNote.Foreground = Theme.Warning;
                 else
                     _sqlNote.SetResourceReference(TextBlock.ForegroundProperty, Theme.SecondaryText);
+            }
+
+            // 서비스명·데이터베이스·파일 칸. SQLite면 오른쪽에 [찾아보기…](DB 파일 고르기)
+            private FrameworkElement BuildServiceInput()
+            {
+                _browse = new Button { Content = "찾아보기…", Margin = new Thickness(6, 0, 0, 0), Visibility = Visibility.Collapsed };
+                AutomationProperties.SetName(_browse, "DB 파일 찾아보기");
+                _browse.Click += Browse_Click;
+                var panel = new DockPanel();
+                DockPanel.SetDock(_browse, Dock.Right);
+                panel.Children.Add(_browse);
+                panel.Children.Add(_service);
+                return panel;
+            }
+
+            // 파일이 없어도 고를 수 있다(새 DB 파일 경로) — 만들지는 연결할 때 묻는다
+            private void Browse_Click(object sender, RoutedEventArgs e)
+            {
+                try
+                {
+                    var dialog = new Microsoft.Win32.OpenFileDialog
+                    {
+                        Title = "SQLite DB 파일",
+                        Filter = "SQLite DB (*.db;*.sqlite;*.sqlite3;*.db3)|*.db;*.sqlite;*.sqlite3;*.db3|모든 파일 (*.*)|*.*",
+                        CheckFileExists = false
+                    };
+                    var current = _service.Text.Trim();
+                    if (current.Length > 0)
+                    {
+                        try
+                        {
+                            dialog.InitialDirectory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(current));
+                            dialog.FileName = System.IO.Path.GetFileName(current);
+                        }
+                        catch (Exception)
+                        {
+                            // 경로로 읽을 수 없는 글 — 기본 폴더에서 연다
+                        }
+                    }
+                    if (dialog.ShowDialog(_window) == true)
+                        _service.Text = dialog.FileName;
+                }
+                catch (Exception ex)
+                {
+                    _testResult.Text = "파일을 고르지 못했습니다: " + ex.Message;
+                }
             }
 
             private FrameworkElement BuildPasswordInput()
@@ -1113,6 +1170,11 @@ namespace MyPlugin
                 var sql = provider.Kind == SqlServerProvider.KindName;
                 foreach (var element in _sqlOnly)
                     element.Visibility = sql ? Visibility.Visible : Visibility.Collapsed;
+                var file = provider.Kind == SqliteProvider.KindName;
+                foreach (var element in _serverOnly)
+                    element.Visibility = file ? Visibility.Collapsed : Visibility.Visible;
+                if (_browse != null)
+                    _browse.Visibility = file ? Visibility.Visible : Visibility.Collapsed;
                 FitHeight();
             }
 

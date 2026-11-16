@@ -7,6 +7,7 @@ source:
   - src/MyPlugin/Ui/ConnectionManagerLogic.cs
   - src/MyPlugin/Ui/ConnectionRepository.cs
   - src/MyPlugin/Db/Providers/SqlServerSecurity.cs
+  - src/MyPlugin/Db/Providers/SqliteProvider.cs
 used_by: [shell-menu, connection-settings-page]
 summary: >-
   접속을 추가·복제·삭제·편집하고 접속 테스트를 하는 모달 창.
@@ -16,8 +17,12 @@ features:
     description: 왼쪽 접속 목록과 [추가]·[복제]·[삭제]. 연결 중인 접속은 지울 수 없다.
   - name: 입력 칸
     description: >-
-      이름, DBMS(Oracle·PostgreSQL·SQL Server — 서비스명 칸 이름과 기본 포트가 바뀜), 호스트, 포트, 서비스명(또는 데이터베이스),
+      이름, DBMS(Oracle·PostgreSQL·SQL Server·SQLite — 서비스명 칸 이름과 기본 포트가 바뀜), 호스트, 포트, 서비스명(또는 데이터베이스·파일),
       사용자, 비밀번호(DPAPI로 암호화해 저장, 저장 안 하고 연결 때마다 입력도 가능), 읽기 전용(SELECT·WITH만 실행), 색 표시(초록·노랑·빨강).
+  - name: SQLite 파일
+    description: >-
+      DBMS가 SQLite면 호스트·포트·사용자·비밀번호 칸(과 비밀번호 안내)을 숨기고, 파일 칸 오른쪽에 [찾아보기…](DB 파일 고르기, 없는 파일 이름도 고를 수 있음)를 보인다.
+      [접속 테스트]는 비밀번호 없이 파일을 열어 본다(파일이 없으면 만들지 않고 실패). 파일이 없을 때 새로 만들지는 연결할 때 묻는다(읽기 전용 접속은 만들지 않음).
   - name: SQL Server 암호화·인증서
     description: >-
       DBMS가 SQL Server일 때만 보인다. 암호화(필수·엄격(TDS 8.0)·선택), 서버 인증서 신뢰(검증 안 함 — 자체 서명 예외, 엄격이면 꺼짐),
@@ -43,17 +48,20 @@ theme:
     keys: [Theme.ConnectionColor (초록·노랑·빨강 고정)]
 limits:
   - 호스트·포트·서비스명(EZConnect)만 지원한다. TNS 별칭·Wallet은 없다.
+  - SQLite 암호화 DB(SQLCipher 등)는 열 수 없다(번들된 SQLite에 암호화가 없다).
   - 비밀번호는 이 PC의 이 Windows 사용자만 풀 수 있다.
   - 창 크기: 기본 720×560. 입력 칸이 창보다 길면(SQL Server 암호화 칸·안내) 열 때와 DBMS를 바꿀 때 화면 작업 영역의 90%까지 늘린다(줄이지는 않음). 그보다 길면 입력 칸만 스크롤.
 verification:
   - >-
     ConnectionManagerHeadlessTests(헤드리스): 이전 SQL Server 접속은 선택 + 신뢰와 강화 안내(경고색), Oracle 접속엔 SQL Server 칸 없음,
     새 SQL Server 접속은 필수 + 검증, 엄격이면 [서버 인증서 신뢰] 꺼짐, 신뢰면 [인증서 이름] 꺼짐, 입력 칸 전체가 스크롤 없이 보임.
+    SQLite 접속은 서버 칸이 숨고 [찾아보기…]가 보이며 비밀번호 없이 [접속 테스트]가 성공(Sqlite_FileFields_And_ConnectionTestWithoutPassword — Windows CI의 ui-test에서만 돈다).
     FMON_UI_MSSQL이 있으면 자체 서명 인증서 SQL Server(Docker 2022)에 [접속 테스트] — 기본값은 인증서 안내와 함께 실패, 신뢰는 성공(비밀번호가 문구에 없음).
 tests:
   - tests/MyPlugin.Tests/ConnectionManagerLogicTests.cs
   - tests/MyPlugin.Tests/OracleConnectionStoreTests.cs
   - tests/MyPlugin.Tests/DbProvidersTests.cs
+  - tests/MyPlugin.Tests/SqliteProviderTests.cs
   - tests/MyPlugin.Tests/SqlServerEncryptionIT.cs
   - tests/MyPlugin.UiTests/ConnectionManagerHeadlessTests.cs
 related: [connection-settings-page, shell-menu]

@@ -415,6 +415,9 @@ namespace MyPlugin
                     var parameter = command.CreateParameter();
                     parameter.ParameterName = pair.Key;
                     parameter.Value = pair.Value ?? DBNull.Value;
+                    // SQLite: decimal은 글('2.5')로 묶여 형식 없는 열의 숫자와 같지 않다 — 정수·실수로 보낸다
+                    if (pair.Value is decimal number && Provider is SqliteProvider)
+                        parameter.Value = SqliteProvider.NumberValue(number);
                     // SQL Server: DateTime 기본 형식 datetime(1/300초)은 datetime2 열의 초 미만을 깎아 SET·원래 값 비교가 어긋난다 — datetime2로 보낸다
                     if (pair.Value is DateTime && IsSqlServer(Provider.Kind))
                         parameter.DbType = DbType.DateTime2;
@@ -453,10 +456,11 @@ namespace MyPlugin
             return IsSqlServer(providerKind) ? "ROLLBACK TRANSACTION " + name : "ROLLBACK TO SAVEPOINT " + name;
         }
 
-        /// <summary>저장점 풀기: PostgreSQL·SQLite(generic) "RELEASE SAVEPOINT x". Oracle·SQL Server는 없음(null) — 트랜잭션이 끝날 때 사라진다.</summary>
+        /// <summary>저장점 풀기: PostgreSQL·SQLite(sqlite·generic) "RELEASE SAVEPOINT x". Oracle·SQL Server는 없음(null) — 트랜잭션이 끝날 때 사라진다.</summary>
         internal static string ReleaseSavepointSql(string providerKind, string name)
         {
             return string.Equals(providerKind, "postgres", StringComparison.OrdinalIgnoreCase) || string.Equals(providerKind, "generic", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(providerKind, SqliteProvider.KindName, StringComparison.OrdinalIgnoreCase)
                 ? "RELEASE SAVEPOINT " + name
                 : null;
         }
@@ -780,6 +784,10 @@ namespace MyPlugin
                 try
                 {
                     command.Cancel();
+                    // Microsoft.Data.Sqlite의 Cancel은 실행 중인 문장을 멈추지 않는다 — SQLite 공급자 세션은 sqlite3_interrupt로 멈춘다
+                    // (Generic으로 연 시험 세션은 지금까지처럼 둔다)
+                    if (Provider is SqliteProvider)
+                        SqliteProvider.Interrupt(command.Connection);
                 }
                 catch (Exception)
                 {

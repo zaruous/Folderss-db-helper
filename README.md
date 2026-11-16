@@ -1,6 +1,6 @@
 # DB Helper
 
-[Folderss](https://github.com/zaruous/Folderss) 파일 관리자 안에서 Oracle·PostgreSQL·SQL Server DB에 접속해 객체를 찾아보고 SQL을 실행하며(DBMS별 구문 강조 편집기), 성능 모니터(기본 정보·테이블스페이스·로그·잠금·세션)·전체 DB 상태·일일 점검을 보는 플러그인입니다.
+[Folderss](https://github.com/zaruous/Folderss) 파일 관리자 안에서 Oracle·PostgreSQL·SQL Server·SQLite(파일) DB에 접속해 객체를 찾아보고 SQL을 실행하며(DBMS별 구문 강조 편집기), 성능 모니터(기본 정보·테이블스페이스·로그·잠금·세션)·전체 DB 상태·일일 점검을 보는 플러그인입니다.
 `⋯ 메뉴 > 플러그인 > DB Helper`를 누르면 팝업 창으로 열립니다.
 
 ## 설치

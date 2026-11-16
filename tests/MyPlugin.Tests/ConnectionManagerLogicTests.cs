@@ -390,6 +390,15 @@ namespace MyPlugin.Tests
         // ---------- 접속 테스트 ----------
 
         [Fact]
+        public void TestInputError_Sqlite_OnlyFileNoPassword()
+        {
+            var lite = new OracleConnectionProfile { Provider = "sqlite", ServiceName = "C:\\data\\app.db", Port = 0 };
+            Assert.Null(ConnectionManagerLogic.TestInputError(lite, false));
+            lite.ServiceName = " ";
+            Assert.Equal("파일을(를) 입력하세요.", ConnectionManagerLogic.TestInputError(lite, false));
+        }
+
+        [Fact]
         public void TestInputError_ListsMissingFieldsAndPassword()
         {
             Assert.Null(ConnectionManagerLogic.TestInputError(Valid(), true));
