@@ -1,17 +1,13 @@
-# SQLite · PGlite 지원 계획 (초안)
+# SQLite 지원 계획 (초안)
 
 작성일 2026-11-16. 상태: **결정 대기**(9절의 질문에 답이 오기 전에는 구현하지 않는다).
 
+결정(2026-11-16): **SQLite만 진행한다. PGlite는 제외**(3절에 검토 기록만 남김).
+
 ## 0. 요약
 
-| | SQLite | PGlite |
-|---|---|---|
-| .NET에서 직접 열 수 있나 | 예 — `Microsoft.Data.Sqlite 8.0.10`이 이미 의존성에 있다(`MonitorStore`, 시험 세션) | **아니오** — PGlite는 WASM으로 빌드한 Postgres이고 JS(Node·브라우저) 안에서만 돈다. .NET 바인딩이 없다 |
-| 현실적인 연결 경로 | 새 공급자 `SqliteProvider` | Node에서 `@electric-sql/pglite-socket`을 띄워 PG 와이어 프로토콜로 열고, 기존 `PostgresProvider`(Npgsql)로 붙는다 |
-| 새 NuGet 의존성 | 없음 | 없음(대신 **사용자 PC에 Node + npm 패키지**가 필요) |
-| 규모 | 중(공급자 1개 + 접속 화면 분기 + 비밀번호 흐름) | A안이면 소(문서 + 작은 호환 조정), B안이면 대(프로세스 관리) |
-
-권장: **SQLite를 먼저 한다. PGlite는 A안(외부에서 띄운 pglite-socket에 PostgreSQL 접속으로 붙기)을 "실험적 지원"으로 문서화하고, 실제 호환 문제가 확인되면 그때 조정한다.** B안(플러그인이 Node를 띄움)은 Node를 번들하거나 설치를 강제해야 해서 권하지 않는다.
+- SQLite: `Microsoft.Data.Sqlite 8.0.10`이 이미 의존성에 있다(`MonitorStore`, 시험 세션). 새 공급자 `SqliteProvider` 하나를 더한다. 새 NuGet 의존성 없음.
+- PGlite: 제외. .NET 바인딩이 없고, 외부 Node 서버(pglite-socket)를 거쳐야 해서 플러그인 안에서 완결되지 않는다(3절).
 
 ## 1. 현재 구조에서 붙는 자리
 
@@ -68,24 +64,14 @@
 - `For(DbConnection)`은 손대지 않는다. 실제 SQLite 접속은 항상 `DbSession.Create(provider, …)`로 공급자를 명시해서 연다.
 - `SqliteProvider` 전용 시험은 새 파일(`SqliteProviderTests.cs`)에서 공급자를 명시해 만든다.
 
-## 3. PGlite 선택지
+## 3. PGlite — 검토 후 제외
 
-### A안 (권장): 외부 pglite-socket에 PostgreSQL 접속으로 붙기
-사용자가 직접 `npx pglite-server --db=<데이터 폴더> --port=5432`(패키지 `@electric-sql/pglite-socket`)를 띄우고, 접속 관리에서 **PostgreSQL**로 `localhost:5432` 접속.
-- 코드 변경은 거의 없다. 필요하면 `Provider = "pglite"`로 `PostgresProvider`를 상속한 얇은 공급자(표시 이름·모니터 끔·동시 연결 경고)만.
-- 알려진 제약(조사 결과, **Npgsql로는 아직 검증 안 함**):
-  - 기본 동시 연결 수 1. 0.2.x부터 `--max-connections`로 늘릴 수 있지만 쿼리 큐 멀티플렉서라 모든 경우를 다루지 않는다고 스스로 밝힘. 이 플러그인은 SQL 탭 세션 외에 **성능 모니터가 별도 세션**을 연다(`DbHelperView.OpenMonitorSessionAsync`) → 연결 1개 설정이면 모니터를 여는 순간 막히거나 대기.
-  - PGlite는 단일 사용자 Postgres라 `pg_stat_activity`·잠금·세션 섹션이 의미가 없다 → 모니터는 끄는 게 맞다.
-  - 인증·SSL 없음. 비밀번호 없이 접속되므로 2.3의 `UsesPassword`와 같이 처리.
-  - 트랜잭션 중 다른 연결의 쿼리가 끼어들 때의 동작(멀티플렉서) 미검증 → 커밋 대기 상태에서 모니터 조회가 같은 트랜잭션에 섞일 위험이 있다. **동시 연결 1 강제 + 모니터 끔**이 가장 안전.
-- 검증 방법: Node + pglite-socket을 띄운 상태에서 기존 `PostgresIT` 시험을 그대로 돌려 실패 목록을 뽑는다(실패가 곧 할 일 목록).
+PGlite는 WASM으로 빌드한 Postgres라 JS(Node·브라우저) 안에서만 돈다. 붙이려면 사용자가 Node로 `@electric-sql/pglite-socket` 서버를 띄우고 PostgreSQL 접속으로 붙어야 한다. 제외 이유:
+- 사용자 PC에 Node가 필요하다(또는 플러그인이 Node를 번들·실행 — 배포·프로세스 관리 부담).
+- 기본 동시 연결 1개 — 성능 모니터가 별도 세션을 열면 막힌다. 멀티플렉서는 모든 경우를 다루지 않는다고 스스로 밝힘.
+- Npgsql 호환이 검증되지 않았다.
 
-### B안: 플러그인이 Node 프로세스를 직접 띄움
-데이터 폴더를 고르면 플러그인이 `node` + pglite-socket을 자식 프로세스로 실행, 빈 포트 할당, 종료 시 정리.
-- 위험: 사용자 PC에 Node 설치를 강제하거나 Node 런타임(수십 MB)·npm 패키지를 zip에 번들해야 함(라이선스·업데이트·보안 공급망 책임), 프로세스 고아화·포트 충돌·크래시 복구·백신 오탐. 플러그인 성격(DB 클라이언트)에 비해 운영 부담이 크다.
-
-### C안: .NET 안에서 WASM 실행(Wasmtime 등)
-PGlite의 JS 글루(파일시스템 에뮬레이션·와이어 프로토콜)를 다시 구현해야 함. 비현실적 — 제외.
+다시 검토한다면: pglite-socket을 띄우고 기존 `PostgresIT`를 그대로 돌려 실패 목록부터 뽑는다.
 
 ## 4. 단계와 완료 조건
 
@@ -98,17 +84,16 @@ PGlite의 JS 글루(파일시스템 에뮬레이션·와이어 프로토콜)를 
 | S5 | 접속 관리 화면 분기 + 파일 찾아보기 | `ConnectionManagerHeadlessTests`에 SQLite 칸 표시/숨김, `docs/controls/connection-manager.yml` 갱신, `check_controls_docs.py` 통과 |
 | S6 | F4 읽기 전용 / 결과 편집 키 | 혼합 형식 열·WITHOUT ROWID·rowid 테이블 편집 시험 |
 | S7 | 도움말·README·plugin.json 버전 | `HelpTests` 통과 |
-| P1 | PGlite A안 검증 | pglite-socket 대상 `PostgresIT` 실행 결과 표 → 실패 항목만 별도 이슈로 |
 
 S1~S5만으로 "SQLite 파일 열고 조회·실행·트리 보기"가 된다. S6 이후는 선택.
 
 ## 5. 범위 밖(이번에 하지 않음)
 - SQLite 구조 편집(ALTER 재작성 절차), SQLCipher 암호화 DB, SQLite 성능 모니터.
-- PGlite B안·C안.
+- PGlite(3절).
 - Folderss 파일 목록에서 `.db` 더블클릭으로 바로 열기(편하지만 요청에 없음 — 원하면 별도로).
 
 ## 9. 결정이 필요한 질문
-1. PGlite는 A안(사용자가 pglite-server를 직접 띄우고 PostgreSQL로 접속)으로 충분한가, 아니면 플러그인이 Node를 띄우는 B안까지 원하는가?
+1. ~~PGlite 방식~~ → 제외로 결정(2026-11-16).
 2. SQLite 파일이 없을 때: 오류로 막을지, "새 DB 파일을 만들까요?"를 물을지.
 3. SQLite 테이블 정의서(주석이 없어 설명 칸이 빔)를 켤지.
 4. SQLite F4는 읽기 전용으로 충분한가(구조 편집 제외)?
