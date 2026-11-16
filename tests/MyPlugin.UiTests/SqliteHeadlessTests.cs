@@ -88,6 +88,7 @@ namespace MyPlugin.UiTests
                 ui.Run(() =>
                 {
                     Assert.Contains(Ui.Texts(main), t => t.Contains("sample.db"));   // 트리·상태에 파일 경로
+                    Assert.DoesNotContain(Ui.Texts(main), t => t.Contains("@:0/"));   // 서버 주소 형식(user@host:port/)으로 보이지 않는다
                     _out.WriteLine("캡처: " + Ui.Snap(main, HeadlessEnvironment.WorkFolder, "sqlite-run-result"));
                 });
                 using (var c = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sample, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString()))

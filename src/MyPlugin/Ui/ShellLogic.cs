@@ -127,12 +127,12 @@ namespace MyPlugin
             return !saved.SameAs(session, false);
         }
 
-        /// <summary>접속 표시 user@host:port/service.</summary>
+        /// <summary>접속 표시: 공급자의 주소(서버 접속은 user@host:port/service, SQLite는 파일 경로).</summary>
         public static string Address(OracleConnectionProfile profile)
         {
             if (profile == null)
                 return "";
-            return Trim(profile.UserId) + "@" + Trim(profile.Host) + ":" + profile.Port.ToString(CultureInfo.InvariantCulture) + "/" + Trim(profile.ServiceName);
+            return DbProviders.For(profile).Address(profile);
         }
 
         /// <summary>툴바의 고른 DB: "이름 · user@host:port/service". 고른 DB가 없으면 "트리에서 DB를 고르세요".</summary>
