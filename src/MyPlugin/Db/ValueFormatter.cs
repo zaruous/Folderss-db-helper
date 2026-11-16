@@ -29,6 +29,8 @@ namespace MyPlugin
     {
         public const int MaxTextLength = 4000;
         public const int MaxBinaryBytes = 2000;
+        /// <summary>결과 그리드 [팝업으로 보기]의 [전체 보기]가 다시 읽는 상한(글은 글자 수, 이진은 바이트 수).</summary>
+        public const int MaxFullLength = 10_000_000;
 
         private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -53,6 +55,12 @@ namespace MyPlugin
 
         public static string Format(object value)
         {
+            return Format(value, MaxTextLength, MaxBinaryBytes);
+        }
+
+        /// <summary>Format과 같되 글·이진의 상한을 정한다(maxText자, maxBinary바이트).</summary>
+        public static string Format(object value, int maxText, int maxBinary)
+        {
             if (value == null || value is DBNull)
                 return null;
             if (value is INullable oracleNullable && oracleNullable.IsNull)
@@ -63,9 +71,9 @@ namespace MyPlugin
             switch (value)
             {
                 case string text:
-                    return Text(text);
+                    return Text(text, maxText);
                 case byte[] bytes:
-                    return Hex(bytes, bytes.Length, bytes.Length);
+                    return Hex(bytes, bytes.Length, bytes.Length, maxBinary);
                 case DateTime dateTime:
                     return DateTimeText(dateTime);
                 case DateTimeOffset offsetTime:
@@ -73,7 +81,7 @@ namespace MyPlugin
                 case OracleDecimal number:
                     return number.ToString();
                 case OracleString oracleString:
-                    return Text(oracleString.Value);
+                    return Text(oracleString.Value, maxText);
                 case OracleDate date:
                     return DateText(date.Year, date.Month, date.Day, date.Hour, date.Minute, date.Second, 0);
                 case OracleTimeStamp stamp:
@@ -89,13 +97,13 @@ namespace MyPlugin
                     return IntervalText(yearMonth);
                 case OracleBinary binary:
                     var binaryBytes = binary.Value;
-                    return Hex(binaryBytes, binaryBytes.Length, binaryBytes.Length);
+                    return Hex(binaryBytes, binaryBytes.Length, binaryBytes.Length, maxBinary);
                 case OracleBoolean flag:
                     return flag.IsTrue ? "TRUE" : "FALSE";
                 case OracleClob clob:
-                    return ClobText(clob);
+                    return ClobText(clob, maxText);
                 case OracleBlob blob:
-                    return BlobText(blob);
+                    return BlobText(blob, maxBinary);
                 case OracleBFile _:
                     // 파일 내용은 서버의 디렉터리 권한이 있어야 읽을 수 있어 자리만 표시한다
                     return "(BFILE)";
@@ -103,7 +111,7 @@ namespace MyPlugin
                     // CURSOR(…) 식 결과. ToString()은 형식 이름뿐이다
                     return "(CURSOR)";
                 case OracleXmlType xml:
-                    return Text(xml.Value);
+                    return Text(xml.Value, maxText);
                 default:
                     return Convert.ToString(value, Invariant);
             }
@@ -188,11 +196,11 @@ namespace MyPlugin
             }
         }
 
-        private static string Text(string text)
+        private static string Text(string text, int max)
         {
-            if (text.Length <= MaxTextLength)
+            if (text.Length <= max)
                 return text;
-            return Truncate(text, MaxTextLength) + TextSuffix(text.Length);
+            return Truncate(text, max) + TextSuffix(text.Length);
         }
 
         private static string Truncate(string text, int length)
@@ -210,20 +218,20 @@ namespace MyPlugin
             return "…(전체 " + totalChars.ToString(Invariant) + "자)";
         }
 
-        private static string Hex(byte[] bytes, int available, long total)
+        private static string Hex(byte[] bytes, int available, long total, int max)
         {
-            var count = Math.Min(available, MaxBinaryBytes);
+            var count = Math.Min(available, max);
             var text = "0x" + Convert.ToHexString(bytes, 0, count);
-            if (total > MaxBinaryBytes)
+            if (total > max)
                 text += "…(전체 " + total.ToString(Invariant) + "바이트)";
             return text;
         }
 
-        private static string ClobText(OracleClob clob)
+        private static string ClobText(OracleClob clob, int max)
         {
             // Length는 바이트(UCS-2) 단위라 글자 수는 절반이다
             var totalChars = clob.Length / 2;
-            var want = (int)Math.Min(totalChars, MaxTextLength);
+            var want = (int)Math.Min(totalChars, max);
             var buffer = new char[want];
             var read = 0;
             while (read < want)
@@ -234,15 +242,15 @@ namespace MyPlugin
                 read += n;
             }
             var text = new string(buffer, 0, read);
-            if (totalChars <= MaxTextLength)
+            if (totalChars <= max)
                 return text;
             return Truncate(text, read) + TextSuffix(totalChars);
         }
 
-        private static string BlobText(OracleBlob blob)
+        private static string BlobText(OracleBlob blob, int max)
         {
             var total = blob.Length;
-            var want = (int)Math.Min(total, MaxBinaryBytes);
+            var want = (int)Math.Min(total, max);
             var buffer = new byte[want];
             var read = 0;
             while (read < want)
@@ -252,7 +260,7 @@ namespace MyPlugin
                     break;
                 read += n;
             }
-            return Hex(buffer, read, total);
+            return Hex(buffer, read, total, max);
         }
 
         private static string DateTimeText(DateTime value)

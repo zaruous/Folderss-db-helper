@@ -157,6 +157,54 @@ namespace MyPlugin.Tests
             Assert.Null(RowEditLogic.DeleteStatement(RowEditLogic.Unavailable("HR", "EMP", "x"), new[] { "1" }));
         }
 
+        // 팝업 [전체 보기]: 잘린 칸 하나를 키로 다시 읽는 SELECT
+        [Fact]
+        public void SelectValueStatement_ReadsOneColumnByKey()
+        {
+            var table = RowEditLogic.Describe("HR", "EMP HIST", Columns("A:NUMBER", "B:VARCHAR2(3)", "NOTE:CLOB"), Meta("A", true, "B", true), ":");
+
+            var query = RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "long…(전체 9000자)" }, null, 2);
+            // 동시성 비교는 붙이지 않는다(지금 DB 값을 읽는다)
+            Assert.Equal("SELECT NOTE FROM HR.\"EMP HIST\" WHERE A = :k0 AND B = :k1", query.Sql);
+            Assert.Equal(1m, query.Parameters[0].Value);
+            Assert.Equal("x", query.Parameters[1].Value);
+
+            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "v" }, null, 3));
+            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "v" }, null, -1));
+            Assert.Null(RowEditLogic.SelectValueStatement(RowEditLogic.Unavailable("HR", "EMP", "x"), new[] { "1" }, null, 0));
+            Assert.Null(RowEditLogic.SelectValueStatement(null, new[] { "1" }, null, 0));
+        }
+
+        [Fact]
+        public void SelectValueStatement_RowIdKey()
+        {
+            var columns = Columns("NAME:VARCHAR2(10)", "DOC:CLOB");
+            var meta = new List<ColumnInfo> { Col("NAME", true, "VARCHAR2(10)"), Col("DOC", true, "CLOB") };
+            var table = RowEditLogic.Describe("HR", "LOG", columns, meta, ":", RowEditLogic.ChooseKey(meta, null, "oracle", true));
+
+            var query = RowEditLogic.SelectValueStatement(table, new[] { "a", "b" }, "AAAR3sAAEAAAACXAAA", 1);
+            Assert.Equal("SELECT DOC FROM HR.LOG WHERE ROWID = :rid", query.Sql);
+            Assert.Equal("AAAR3sAAEAAAACXAAA", Assert.Single(query.Parameters).Value);
+            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "a", "b" }, null, 1));
+        }
+
+        [Fact]
+        public void FullValueBlockReason_ExplainsWhenRowCannotBeFound()
+        {
+            var table = RowEditLogic.Describe("HR", "EMP", Columns("A:NUMBER", "NOTE:CLOB"), Meta("A", true), ":");
+            Assert.Null(RowEditLogic.FullValueBlockReason(table, RowEditState.Unchanged, null));
+            Assert.Null(RowEditLogic.FullValueBlockReason(table, RowEditState.Modified, null));
+            Assert.Null(RowEditLogic.FullValueBlockReason(table, RowEditState.Deleted, null));
+            Assert.Contains("새 행", RowEditLogic.FullValueBlockReason(table, RowEditState.Inserted, null));
+            Assert.Contains("빠른 조회", RowEditLogic.FullValueBlockReason(null, RowEditState.Unchanged, null));
+            Assert.Equal("키 없음", RowEditLogic.FullValueBlockReason(RowEditLogic.Unavailable("HR", "EMP", "키 없음"), RowEditState.Unchanged, null));
+
+            var meta = new List<ColumnInfo> { Col("NAME", true, "VARCHAR2(10)") };
+            var rowIdTable = RowEditLogic.Describe("HR", "LOG", Columns("NAME:VARCHAR2(10)"), meta, ":", RowEditLogic.ChooseKey(meta, null, "oracle", true));
+            Assert.Contains("ROWID", RowEditLogic.FullValueBlockReason(rowIdTable, RowEditState.Unchanged, null));
+            Assert.Null(RowEditLogic.FullValueBlockReason(rowIdTable, RowEditState.Unchanged, "AAAR3sAAEAAAACXAAA"));
+        }
+
         // DBMS마다 이름이 다른 큰 데이터·이진 형식: 모두 편집할 수 없는 형식이다
         [Theory]
         [InlineData("CLOB")]

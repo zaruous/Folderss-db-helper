@@ -34,6 +34,7 @@ controls:
   - {id: row-edit-dialog, name: RowEditDialog, kind: dialog, title: 행 편집 창}
   - {id: date-time-box, name: DateTimeBox, kind: control, title: 날짜·시각 입력}
   - {id: code-popup, name: CodePopup, kind: control, title: 코드 보기 팝업}
+  - {id: cell-value-window, name: CellValueWindow, kind: window, title: 칸 값 팝업}
   - {id: result-message-list, name: ResultMessageList, kind: control, title: 메시지 탭}
   - {id: result-history-list, name: ResultHistoryList, kind: control, title: 기록 탭}
   - {id: dialogs, name: Dialogs, kind: dialog, title: 확인·안내 대화상자}

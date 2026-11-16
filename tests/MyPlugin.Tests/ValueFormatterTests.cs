@@ -233,6 +233,32 @@ namespace MyPlugin.Tests
             Assert.Equal("0x" + Repeat("5C", ValueFormatter.MaxBinaryBytes) + "…(전체 2001바이트)", ValueFormatter.Format(bytes));
         }
 
+        // 팝업 [전체 보기]: 그리드 상한(4,000자·2,000바이트)을 넘는 값을 정한 상한까지 보인다
+        [Fact]
+        public void Format_WithLimit_TextKeepsUpToLimit()
+        {
+            var text = new string('a', ValueFormatter.MaxTextLength + 1000);
+            Assert.Equal(text, ValueFormatter.Format(text, ValueFormatter.MaxFullLength, ValueFormatter.MaxFullLength));
+            Assert.Equal(new string('a', 10) + "…(전체 5000자)", ValueFormatter.Format(text, 10, 10));
+            Assert.Equal(new string('z', 7) + "…(전체 8자)", ValueFormatter.Format(new OracleString("zzzzzzzz"), 7, 7));
+        }
+
+        [Fact]
+        public void Format_WithLimit_BytesKeepUpToLimit()
+        {
+            var bytes = Filled(ValueFormatter.MaxBinaryBytes + 1, 0x5C);
+            Assert.Equal("0x" + Repeat("5C", ValueFormatter.MaxBinaryBytes + 1), ValueFormatter.Format(bytes, ValueFormatter.MaxFullLength, ValueFormatter.MaxFullLength));
+            Assert.Equal("0x5C5C…(전체 2001바이트)", ValueFormatter.Format(bytes, 2, 2));
+        }
+
+        [Fact]
+        public void Format_WithoutLimit_IsGridLimit()
+        {
+            var text = new string('a', ValueFormatter.MaxTextLength + 1);
+            Assert.Equal(ValueFormatter.Format(text), ValueFormatter.Format(text, ValueFormatter.MaxTextLength, ValueFormatter.MaxBinaryBytes));
+            Assert.Equal(10_000_000, ValueFormatter.MaxFullLength);
+        }
+
         [Fact]
         public void DescribeColumn_NumberWithPrecisionAndScale()
         {

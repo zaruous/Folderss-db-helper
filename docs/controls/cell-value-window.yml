@@ -1,0 +1,53 @@
+id: cell-value-window
+name: CellValueWindow
+title: 칸 값 팝업
+kind: window
+source:
+  - src/MyPlugin/Ui/CellValueWindow.cs
+  - src/MyPlugin/Ui/SqlWorkspaceEdit.cs
+  - src/MyPlugin/Ui/RowEditLogic.cs
+  - src/MyPlugin/Db/DbSession.cs
+  - src/MyPlugin/Db/ValueFormatter.cs
+base: System.Windows.Window
+used_by: [result-grid]
+summary: >-
+  결과 그리드 오른쪽 메뉴 [팝업으로 보기]로 여는 칸 값 하나의 창(모달 아님). 잘린 값은 [전체 보기]로 DB에서 다시 읽어
+  최대 1,000만 자(이진은 1,000만 바이트)까지 보인다.
+features:
+  - name: 머리
+    description: 열 이름, 열 형식(고정폭). 창 제목에 행 번호.
+  - name: 값
+    description: >-
+      읽기 전용 고정폭 글(줄 바꿈, 세로 스크롤, 선택·Ctrl+C 됨). 그리드 값 그대로(잘렸으면 "…(전체 n자)" 꼬리 포함).
+      NULL은 빈 글과 안내 "NULL".
+  - name: 전체 보기
+    description: >-
+      값이 잘렸을 때만 보인다. 빠른 조회(F1) 결과면 행을 찾는 키(기본 키 → NOT NULL 고유 키 → ROWID)의 원래 값으로
+      그 열 하나를 SELECT해(RowEditLogic.SelectValueStatement, 동시성 비교 없음) ValueFormatter.MaxFullLength까지 형식화한다(DbSession.ReadFullValue).
+      직접 쓴 SQL 결과·키 없는 테이블·저장 전 새 행·ROWID를 모르는 행은 버튼을 끄고 이유를 툴팁과 안내 줄에 보인다(RowEditLogic.FullValueBlockReason).
+  - name: 닫기
+    description: "[닫기]·Esc. 읽는 중에 닫으면 읽기를 취소한다."
+keyboard:
+  - keys: Esc
+    action: 닫기.
+theme:
+  - part: 창·값
+    keys: [WindowBackground, PanelBackground, PrimaryText, SecondaryText]
+states:
+  - 잘린 값은 안내 줄에 "그리드에 있는 앞부분만 보입니다"와 [전체 보기] 가능 여부.
+  - 읽는 동안 "DB에서 읽는 중…"(버튼 꺼짐). 읽은 뒤 "DB에서 다시 읽은 값입니다", 상한에 걸리면 상한 안내.
+  - 실패(연결 없음·다른 작업 실행 중·행을 찾지 못함·DB 오류)는 안내 줄에 이유를 보이고 버튼을 다시 켠다.
+limits:
+  - 다시 읽은 값은 지금 DB 값이다. 조회한 뒤 다른 세션이 바꿨거나, 그리드에서 키를 고치고 저장하지 않았으면 그리드와 다를 수 있다(키는 원래 값으로 찾는다).
+  - 같은 DB 세션을 다른 실행이 쓰는 중이면 기다리지 않고 실패로 알린다.
+  - Oracle LOB는 상한까지만 읽는다. PostgreSQL·SQL Server·SQLite는 공급자가 값을 통째로 읽은 뒤 자르므로 아주 큰 값은 메모리를 그만큼 쓴다.
+  - PostgreSQL은 리더를 하나만 열 수 있어, 다시 읽으면 그 DB의 열린 결과 커서가 닫힌다([다음 행 가져오기] 꺼짐 — 트리 조회와 같음).
+  - 수 MB의 값(특히 이진 16진수 — 10MB면 2,000만 자)은 WPF TextBox 배치에 시간이 걸려 창이 잠시 멈출 수 있다.
+  - 상한을 넘는 값 전체는 볼 수 없다(파일 저장 없음).
+verification:
+  - 로직(상한 형식화·SELECT 문·막는 이유·SQLite 다시 읽기)은 단위 테스트. 창 자체는 Linux에서 컴파일만 확인했고 화면 확인·Oracle 실서버 확인은 하지 않았다.
+tests:
+  - tests/MyPlugin.Tests/ValueFormatterTests.cs
+  - tests/MyPlugin.Tests/RowEditLogicTests.cs
+  - tests/MyPlugin.Tests/DbSessionTests.cs
+related: [result-grid, sql-workspace, result-edit-bar]

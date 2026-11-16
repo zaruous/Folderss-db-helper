@@ -660,6 +660,34 @@ namespace MyPlugin
             return null;
         }
 
+        /// <summary>
+        /// 결과 그리드 [전체 보기]: 잘려 보이는 칸 하나를 키로 다시 읽는 SELECT(동시성 비교 없음 — 지금 DB 값을 읽는다).
+        /// 키는 원래 값(고친 행이어도 DB에 있는 키)으로 찾는다. 키가 없거나 ROWID 키인데 rowId가 없거나 열 위치가 틀리면 null.
+        /// </summary>
+        public static SqlQuery SelectValueStatement(EditableTable table, string[] original, string rowId, int column)
+        {
+            if (table == null || !table.CanEdit || original == null || (table.UsesRowId && rowId == null) || column < 0 || column >= table.Columns.Count)
+                return null;
+            var query = new SqlQuery();
+            var where = KeyCondition(table, original, rowId, query);
+            query.Sql = "SELECT " + WorkspaceLogic.QuoteIdentifier(table.Columns[column].Name) + " FROM " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " WHERE " + where;
+            return query;
+        }
+
+        /// <summary>[전체 보기]로 이 행을 다시 읽을 수 없는 이유(팝업에 보임). 읽을 수 있으면 null. table이 null이면 빠른 조회 결과가 아니다.</summary>
+        public static string FullValueBlockReason(EditableTable table, RowEditState state, string rowId)
+        {
+            if (table == null)
+                return "직접 쓴 SQL 결과는 행을 다시 찾을 수 없어 전체를 읽지 못합니다. 트리에서 테이블을 빠른 조회(F1)로 열면 읽을 수 있습니다.";
+            if (!table.CanEdit)
+                return table.DisabledReason ?? NoKeyReason;
+            if (state == RowEditState.Inserted)
+                return "저장하지 않은 새 행은 DB에 없어 다시 읽을 수 없습니다.";
+            if (table.UsesRowId && rowId == null)
+                return "새로 넣은 행은 ROWID를 몰라 다시 읽을 수 없습니다. 다시 조회(F1)한 뒤 하세요.";
+            return null;
+        }
+
         // WHERE: ROWID 키면 "ROWID = :rid"(값은 조회한 ROWID 글 — Oracle이 ROWID로 바꿔 비교), 아니면 키 열의 원래 값(NULL은 IS NULL).
         private static string KeyCondition(EditableTable table, string[] original, string rowId, SqlQuery query)
         {

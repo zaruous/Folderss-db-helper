@@ -811,6 +811,37 @@ namespace MyPlugin
                 + "개를 클립보드에 복사했습니다(" + WorkspaceLogic.QualifiedName(result.Edit.Owner, result.Edit.Name) + ").");
         }
 
+        /// <summary>
+        /// 결과 그리드 [팝업으로 보기]의 [전체 보기]: 빠른 조회(F1) 결과면 행을 찾는 키로 그 칸을 다시 읽는다(상한 ValueFormatter.MaxFullLength).
+        /// 직접 쓴 SQL 결과·키 없는 테이블·저장 전 새 행은 Load = null과 이유.
+        /// </summary>
+        private (Func<System.Threading.CancellationToken, Task<string>> Load, string Reason) FullValueOf(ResultSetState result, ResultGridRow row, int column)
+        {
+            var reason = RowEditLogic.FullValueBlockReason(result.Edit, row.State, row.RowId);
+            if (reason != null)
+                return (null, reason);
+            var query = RowEditLogic.SelectValueStatement(result.Edit, row.OriginalValues, row.RowId, column);
+            if (query == null)
+                return (null, "이 칸은 DB에서 다시 읽을 수 없습니다.");
+            var dbId = result.ResultDbId;
+            return (token => ReadFullValueAsync(dbId, query, token), null);
+        }
+
+        private async Task<string> ReadFullValueAsync(string dbId, SqlQuery query, System.Threading.CancellationToken token)
+        {
+            var profile = Profile(dbId);
+            var session = profile != null ? _host.GetSession(profile.Id) : null;
+            if (session == null || session.IsBroken)
+                throw new InvalidOperationException("DB에 연결되어 있지 않습니다. 다시 연결한 뒤 하세요.");
+            // 같은 DB 세션을 다른 실행이 쓰는 중이면 기다리지 않는다(창이 멈춘 것처럼 보이지 않게)
+            if (session.IsBusy)
+                throw new InvalidOperationException("이 DB에서 다른 작업이 실행 중입니다. 끝난 뒤 다시 누르세요.");
+            var values = await session.QueryAsync(query, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength), token);
+            if (values.Count == 0)
+                throw new InvalidOperationException("행을 찾지 못했습니다. 조회한 뒤 지워졌거나 키가 바뀌었을 수 있습니다.");
+            return values[0];
+        }
+
         private static int SaveOrder(RowEditState state)
         {
             return state == RowEditState.Deleted ? 0 : state == RowEditState.Modified ? 1 : 2;

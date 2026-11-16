@@ -1322,6 +1322,34 @@ namespace MyPlugin.Tests
             }
         }
 
+        // 팝업 [전체 보기]: 그리드 상한(4,000자)을 넘는 값을 정한 상한까지 다시 읽는다
+        [Fact]
+        public async Task ReadFullValue_ReadsBeyondGridLimit_UpToGivenLimit()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                var text = new string('q', ValueFormatter.MaxTextLength + 500);
+                await SetupAsync(session,
+                    "CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT, data BLOB)",
+                    "INSERT INTO docs VALUES (1, '" + text + "', zeroblob(3000))",
+                    "INSERT INTO docs VALUES (2, NULL, NULL)");
+
+                var grid = Assert.Single((await session.ExecuteAsync(Query("SELECT body FROM docs WHERE id = 1"), 10)).Rows)[0];
+                Assert.True(RowEditLogic.IsTruncated(grid));
+
+                var query = new SqlQuery { Sql = "SELECT body FROM docs WHERE id = :k0" };
+                query.Parameters.Add(new KeyValuePair<string, object>("k0", 1));
+                Assert.Equal(text, Assert.Single(await session.QueryAsync(query, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength))));
+                Assert.Equal("qqq…(전체 4500자)", Assert.Single(await session.QueryAsync(query, r => DbSession.ReadFullValue(r, 0, 3))));
+
+                var blob = new SqlQuery { Sql = "SELECT data FROM docs WHERE id = 1" };
+                Assert.Equal("0x" + new string('0', 6000), Assert.Single(await session.QueryAsync(blob, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength))));
+
+                var empty = new SqlQuery { Sql = "SELECT body FROM docs WHERE id = 2" };
+                Assert.Null(Assert.Single(await session.QueryAsync(empty, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength))));
+            }
+        }
+
         // ---- 커밋·롤백 실패(ODP.NET은 실패해도 트랜잭션 객체를 끝내 버린다) ----
 
         [Fact]

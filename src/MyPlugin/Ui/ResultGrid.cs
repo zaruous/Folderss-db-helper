@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
@@ -183,6 +184,12 @@ namespace MyPlugin
             public bool RequiresSelection;
         }
 
+        /// <summary>
+        /// 오른쪽 메뉴 [팝업으로 보기]의 [전체 보기]: (행, 결과 열 위치) → DB에서 그 칸을 다시 읽는 작업, 못 읽으면 Load = null과 이유.
+        /// 정하지 않으면 잘린 값에 "다시 읽을 수 없음"만 보인다.
+        /// </summary>
+        public Func<ResultGridRow, int, (Func<CancellationToken, Task<string>> Load, string Reason)> FullValue { get; set; }
+
         /// <param name="copy">복사 요청. true = 전체(머리글 포함), false = 선택한 행.</param>
         /// <param name="copyText">오른쪽 메뉴 [셀 복사]로 칸 값 하나를 복사할 때. null이면 그 메뉴를 두지 않는다.</param>
         public ResultGridView(Action<bool> copy, Action<string> copyText = null)
@@ -226,6 +233,9 @@ namespace MyPlugin
                 };
                 menu.Items.Add(copyCell);
             }
+            var viewCell = new MenuItem { Header = "팝업으로 보기" };
+            viewCell.Click += (s, e) => ShowCellWindow();
+            menu.Items.Add(viewCell);
             var copySelected = new MenuItem { Header = "선택한 행 복사", InputGestureText = "Ctrl+C" };
             copySelected.Click += (s, e) => _copy(false);
             var copyAll = new MenuItem { Header = "모두 복사 (머리글 포함)" };
@@ -255,6 +265,7 @@ namespace MyPlugin
                     _menuRow = cell.DataContext as ResultGridRow;
                     _menuColumn = _menuRow != null ? (int)cell.Tag : -1;
                 }
+                viewCell.IsEnabled = _menuColumn >= 0;
                 if (copyCell != null)
                 {
                     copyCell.IsEnabled = _menuColumn >= 0;
@@ -264,6 +275,18 @@ namespace MyPlugin
                 }
             };
             _list.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(Header_Click));
+        }
+
+        // [팝업으로 보기]: 오른쪽 클릭한 칸의 값을 창으로(잘린 값이면 [전체 보기]로 다시 읽기)
+        private void ShowCellWindow()
+        {
+            var row = _menuRow;
+            var column = _menuColumn;
+            if (row == null || column < 0 || _columns == null || column >= _columns.Count)
+                return;
+            var value = column < row.Values.Length ? row.Values[column] : null;
+            var full = FullValue != null ? FullValue(row, column) : (null, "이 결과는 DB에서 다시 읽을 수 없습니다.");
+            CellValueWindow.Show(Window.GetWindow(_list), _columns[column].Name, _columns[column].TypeLabel, row.Number, value, full.Load, full.Reason);
         }
 
         public ListView View
