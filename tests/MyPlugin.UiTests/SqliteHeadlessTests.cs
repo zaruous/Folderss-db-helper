@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using Microsoft.Data.Sqlite;
 using MyPlugin.UiTests.Headless;
@@ -60,7 +61,22 @@ namespace MyPlugin.UiTests
                 Assert.True(File.Exists(created));
 
                 // 2) 샘플 DB에 연결해 트리거가 든 스크립트 실행(F5) — 트리거 본문의 ';'에서 잘리면 실패한다
-                ui.Run(() => ChooseTarget(main, "샘플 SQLite"));
+                // [연결]은 트리에서 고른 DB를 연결한다 — 트리에서 샘플 DB 행을 고른다
+                ui.Run(() =>
+                {
+                    var tree = Ui.Find<ListBox>(main, l => l.Items.Count >= 2);
+                    for (var i = 0; i < tree.Items.Count; i++)
+                    {
+                        var row = tree.ItemContainerGenerator.ContainerFromIndex(i) as FrameworkElement;
+                        if (row != null && Ui.Texts(row).Any(t => t.Contains("sample.db")))
+                        {
+                            tree.SelectedIndex = i;
+                            break;
+                        }
+                    }
+                    ChooseTarget(main, "샘플 SQLite");
+                });
+                await Idle(ui);
                 ui.Run(() => Ui.Click(Ui.Button(main, "연결")));
                 await ui.WaitUntil(() => Ui.Texts(main).Any(t => t.Contains("연결 2개")), Wait, "샘플 연결");
                 await RunScript(ui, main, editor,
