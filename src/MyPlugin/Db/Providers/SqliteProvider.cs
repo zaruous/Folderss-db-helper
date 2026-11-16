@@ -72,7 +72,8 @@ namespace MyPlugin
 
         public string ServerVersionOf(DbConnection connection)
         {
-            return "SQLite " + connection.ServerVersion;
+            // 화면이 제품 이름(DisplayName)을 앞에 붙인다 → "SQLite 3.46.1"
+            return connection.ServerVersion;
         }
 
         /// <summary>파일 경로.</summary>
@@ -109,6 +110,17 @@ namespace MyPlugin
                 return false;
             var code = lite.SqliteErrorCode & 0xFF;
             return code == SqlitePerm || code == SqliteReadOnly || code == SqliteAuth;
+        }
+
+        /// <summary>
+        /// 실행 중인 문장을 멈춘다(sqlite3_interrupt — 다른 스레드에서 불러도 된다). 멈춘 문장은 SQLITE_INTERRUPT 오류로 끝난다(<see cref="IsCancellation"/>).
+        /// 연결이 SqliteConnection이 아니거나 열려 있지 않으면 아무것도 안 함.
+        /// </summary>
+        public static void Interrupt(DbConnection connection)
+        {
+            var lite = connection as SqliteConnection;
+            if (lite != null && lite.Handle != null)
+                SQLitePCL.raw.sqlite3_interrupt(lite.Handle);
         }
 
         // ---------- 파일 ----------

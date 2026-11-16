@@ -218,6 +218,10 @@ namespace MyPlugin
         /// <summary>접속 테스트를 할 수 없는 이유(빠진 값, 비밀번호 없음). 할 수 있으면 null. 이름은 테스트에 필요 없다.</summary>
         public static string TestInputError(OracleConnectionProfile profile, bool hasPassword)
         {
+            // 비밀번호를 쓰지 않는 공급자(SQLite 파일): 파일만 필요하다(호스트·포트·사용자·비밀번호 없음)
+            var provider = DbProviders.For(profile);
+            if (!provider.UsesPassword)
+                return string.IsNullOrWhiteSpace(profile.ServiceName) ? provider.ServiceLabel + "을(를) 입력하세요." : null;
             var missing = new List<string>();
             if (string.IsNullOrWhiteSpace(profile.Host))
                 missing.Add("호스트");

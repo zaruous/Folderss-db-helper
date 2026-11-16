@@ -149,6 +149,75 @@ namespace MyPlugin.UiTests
             }
         }
 
+        /// <summary>SQLite 접속: 호스트·포트·사용자·비밀번호 칸이 숨고 [찾아보기…]가 보이며, 비밀번호 없이 [접속 테스트]가 성공한다(파일이 있을 때).</summary>
+        [UiFact]
+        public async Task Sqlite_FileFields_And_ConnectionTestWithoutPassword()
+        {
+            var ui = UiThread.Instance;
+            var plugin = PluginUnderTest.Load(ui);
+            var file = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "dbh-ui-" + Guid.NewGuid().ToString("N") + ".db");
+            System.IO.File.WriteAllBytes(file, Array.Empty<byte>());   // 빈 파일도 SQLite가 새 DB로 연다
+            plugin.Manager.SeedConnections(
+                new SeedConnection { Name = "로컬 파일", Provider = "sqlite", Host = "", Port = 0, Service = file, User = "" },
+                new SeedConnection { Name = "오라클", Provider = "oracle", Port = 1521, Service = "xe", User = "scott" });
+            Window window = null;
+            try
+            {
+                ui.Run(() =>
+                {
+                    var show = plugin.Assembly.GetType("MyPlugin.ConnectionManager", true).GetMethod("Show");
+                    ui.Dispatcher.BeginInvoke(new Action(() => show.Invoke(null, new object[] { null, plugin.Manager })));
+                });
+                await ui.WaitUntil(() => Application.Current.Windows.Cast<Window>().Any(w => w.IsVisible && w.Title.StartsWith("접속 관리")), TimeSpan.FromSeconds(10), "접속 관리 창");
+                TextBlock result = null;
+                ui.Run(() =>
+                {
+                    window = Application.Current.Windows.Cast<Window>().First(w => w.IsVisible && w.Title.StartsWith("접속 관리"));
+                    var list = Named<ListBox>(window, "접속 목록");
+                    var host = Named<TextBox>(window, "호스트");
+                    var user = Named<TextBox>(window, "사용자");
+                    var password = Named<PasswordBox>(window, "비밀번호");
+                    var browse = Named<Button>(window, "DB 파일 찾아보기");
+
+                    list.SelectedIndex = 0;
+                    window.UpdateLayout();
+                    Assert.False(host.IsVisible);
+                    Assert.False(user.IsVisible);
+                    Assert.False(password.IsVisible);
+                    Assert.True(browse.IsVisible);
+                    Assert.Equal(file, Named<TextBox>(window, "파일").Text);
+                    Ui.Snap(window, HeadlessEnvironment.WorkFolder, "conn-sqlite");
+
+                    list.SelectedIndex = 1;
+                    window.UpdateLayout();
+                    Assert.True(host.IsVisible);
+                    Assert.True(password.IsVisible);
+                    Assert.False(browse.IsVisible);
+
+                    list.SelectedIndex = 0;
+                    window.UpdateLayout();
+                    var test = Ui.Find<Button>(window, b => (b.Content as string) == "접속 테스트");
+                    result = Ui.FindAll<TextBlock>(window).First(t => VisualParentIs(t, test.Parent));
+                    Click(test);
+                });
+                var theme = plugin.Assembly.GetType("MyPlugin.Theme", true);
+                var success = theme.GetField("Success").GetValue(null);
+                var danger = theme.GetField("Danger").GetValue(null);
+                await ui.WaitUntil(() => result.Foreground == success || result.Foreground == danger, TimeSpan.FromSeconds(20), "SQLite 접속 테스트 결과");
+                ui.Run(() =>
+                {
+                    Assert.True(result.Foreground == success, result.Text);
+                    Assert.Contains("SQLite", result.Text);
+                });
+                Assert.Empty(ui.TakeErrors());
+            }
+            finally
+            {
+                if (window != null) ui.Run(() => { window.Close(); if (window.IsVisible) window.Close(); });
+                try { System.IO.File.Delete(file); } catch (System.IO.IOException) { }
+            }
+        }
+
         static void Click(ButtonBase button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
 
         static bool VisualParentIs(DependencyObject child, DependencyObject parent)

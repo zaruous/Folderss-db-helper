@@ -781,6 +781,10 @@ namespace MyPlugin
                 try
                 {
                     command.Cancel();
+                    // Microsoft.Data.Sqlite의 Cancel은 실행 중인 문장을 멈추지 않는다 — SQLite 공급자 세션은 sqlite3_interrupt로 멈춘다
+                    // (Generic으로 연 시험 세션은 지금까지처럼 둔다)
+                    if (Provider is SqliteProvider)
+                        SqliteProvider.Interrupt(command.Connection);
                 }
                 catch (Exception)
                 {

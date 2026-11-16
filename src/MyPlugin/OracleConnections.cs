@@ -170,7 +170,8 @@ namespace MyPlugin
         public static string BuildConnectionString(OracleConnectionProfile profile, string password, int timeoutSeconds)
         {
             var errors = Validate(new[] { profile });
-            if (string.IsNullOrEmpty(password))
+            // 비밀번호를 쓰지 않는 공급자(SQLite 파일)는 비밀번호 없이 만든다
+            if (string.IsNullOrEmpty(password) && DbProviders.For(profile).UsesPassword)
                 errors.Add("비밀번호를 입력하세요.");
             if (errors.Count > 0)
                 throw new InvalidOperationException(string.Join(Environment.NewLine, errors));

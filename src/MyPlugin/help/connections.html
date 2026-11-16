@@ -17,22 +17,27 @@
 <tr><td>Oracle</td><td>ODP.NET Core</td><td>1521</td><td>서비스명(EZConnect)</td><td>host:port/service</td></tr>
 <tr><td>PostgreSQL</td><td>Npgsql</td><td>5432</td><td>데이터베이스</td><td>host:port/database</td></tr>
 <tr><td>SQL Server</td><td>Microsoft.Data.SqlClient</td><td>1433</td><td>데이터베이스</td><td>host,port · 접속별 암호화·인증서 검증 · MARS</td></tr>
+<tr><td>SQLite</td><td>Microsoft.Data.Sqlite</td><td>—</td><td>파일</td><td>DB 파일 경로(호스트·포트·사용자·비밀번호 없음)</td></tr>
 </table>
 <p>TNS 별칭과 Oracle Wallet(mTLS)은 아직 지원하지 않습니다. 이전 버전에서 저장한 접속은 그대로 Oracle로 읽힙니다.</p>
 <h3>SQL Server 암호화·인증서</h3>
 <p>SQL Server를 고르면 [암호화](필수 · 엄격(TDS 8.0, SQL Server 2022 이상) · 선택), [서버 인증서 신뢰], [인증서 이름] 칸이 보입니다. 새 접속은 <b>암호화 필수 + 서버 인증서 검증</b>이 기본입니다. 사내 자체 서명 인증서라 [접속 테스트]가 "서버 인증서를 신뢰할 수 없습니다"로 실패하면 [서버 인증서 신뢰]를 직접 켜세요(검증을 하지 않으므로 운영 접속에는 신뢰할 수 있는 인증서를 권장). 인증서의 이름이 접속 호스트와 다르면(IP로 접속 등) [인증서 이름]에 인증서의 이름을 넣습니다. 엄격은 신뢰 설정과 관계없이 항상 검증합니다.</p>
 <div class="note">이 설정이 생기기 전에 저장한 SQL Server 접속은 갑자기 붙지 못하지 않도록 이전 동작(암호화 선택 + 서버 인증서 신뢰)으로 읽고, 접속 관리에 강화를 권하는 안내를 노랗게 보입니다. [암호화]를 필수로 바꾸고 인증서를 검증하도록 고친 뒤 [접속 테스트]로 확인하세요. 오류 문장에는 비밀번호를 남기지 않습니다.</div>
 
+<h3>SQLite 파일</h3>
+<p>SQLite를 고르면 호스트·포트·사용자·비밀번호 칸이 숨고 [파일] 칸과 [찾아보기…]가 보입니다. 비밀번호를 묻지 않습니다. 파일이 없으면 연결할 때 <b>"빈 SQLite DB 파일을 새로 만들까요?"</b>를 묻습니다(경로 오타로 빈 DB가 조용히 생기지 않게. 읽기 전용 접속은 만들지 않음). 읽기 전용 접속은 SQLite 자체도 읽기 전용으로 엽니다. 트리의 스키마는 main과 ATTACH한 데이터베이스(임시 객체를 만들면 temp)입니다.</p>
+<div class="note">SQLite는 DDL도 트랜잭션 안에서 실행되어 [롤백]으로 되돌릴 수 있습니다. VACUUM·ATTACH·DETACH·PRAGMA journal_mode/foreign_keys 변경은 트랜잭션 밖에서만 되므로 커밋 대기 변경이 있으면 실행하지 않습니다. 트리거(CREATE TRIGGER … BEGIN … END;)는 본문의 ';'에서 나누지 않고 한 문장으로 실행합니다. 암호화 DB(SQLCipher 등)는 열 수 없습니다.</div>
+
 <h2>DBMS별 지원 범위</h2>
 <table>
-<tr><th>기능</th><th>Oracle</th><th>PostgreSQL</th><th>SQL Server</th></tr>
-<tr><td>접속 · 접속 테스트</td><td>됨</td><td>됨</td><td>됨</td></tr>
-<tr><td>트리(스키마·테이블·뷰·시퀀스·함수/프로시저·열) · 검색</td><td>됨</td><td>됨</td><td>됨</td></tr>
-<tr><td>SQL 실행 · 빠른 조회 · 커밋/롤백 · 취소</td><td>됨</td><td>됨</td><td>됨</td></tr>
-<tr><td>GCM 정의서</td><td>됨</td><td>됨</td><td>됨</td></tr>
-<tr><td>테이블 정보(F4) · 테이블 정의서</td><td>됨</td><td>안내만(예정)</td><td>안내만(예정)</td></tr>
-<tr><td>PL/SQL 컴파일 오류 목록</td><td>됨</td><td>—</td><td>—</td></tr>
-<tr><td><a href="monitor.html">성능 모니터</a>(기본 정보 · 저장 공간 · 로그 · 잠금 · 세션)</td><td>됨(V$·DBA_ 뷰 권한)</td><td>됨(일부는 pg_read_all_stats)</td><td>됨(VIEW SERVER STATE)</td></tr>
+<tr><th>기능</th><th>Oracle</th><th>PostgreSQL</th><th>SQL Server</th><th>SQLite</th></tr>
+<tr><td>접속 · 접속 테스트</td><td>됨</td><td>됨</td><td>됨</td><td>됨(파일)</td></tr>
+<tr><td>트리(스키마·테이블·뷰·시퀀스·함수/프로시저·열) · 검색</td><td>됨</td><td>됨</td><td>됨</td><td>테이블·뷰·열(시퀀스·함수 없음). 검색은 main·temp만</td></tr>
+<tr><td>SQL 실행 · 빠른 조회 · 커밋/롤백 · 취소</td><td>됨</td><td>됨</td><td>됨</td><td>됨</td></tr>
+<tr><td>GCM 정의서</td><td>됨</td><td>됨</td><td>됨</td><td>미확인</td></tr>
+<tr><td>테이블 정보(F4) · 테이블 정의서</td><td>됨</td><td>안내만(예정)</td><td>안내만(예정)</td><td>보기만(구조 편집 없음) · 정의서의 설명 칸은 빈 칸(SQLite에는 주석이 없음) · CHECK 제약은 안 보임</td></tr>
+<tr><td>PL/SQL 컴파일 오류 목록</td><td>됨</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><a href="monitor.html">성능 모니터</a>(기본 정보 · 저장 공간 · 로그 · 잠금 · 세션)</td><td>됨(V$·DBA_ 뷰 권한)</td><td>됨(일부는 pg_read_all_stats)</td><td>됨(VIEW SERVER STATE)</td><td>—</td></tr>
 </table>
 <div class="note"><b>PostgreSQL</b>은 연결당 결과 커서가 하나입니다. 조회 결과를 열어 둔 채 다른 문장이나 조회(GCM 정의서 포함)를 실행하면 이전 결과의 [다음 행 가져오기]가 꺼집니다(가져온 행은 그대로).</div>
 
@@ -41,11 +46,12 @@
 <tr><th>DBMS</th><th>지원 범위</th><th>비고</th></tr>
 <tr><td>Oracle</td><td>11gR2 이상</td><td>11g의 ORACLE_MAINTAINED 열 부재는 자동으로 다른 조회로 대신합니다. 행 제한은 ROWNUM.</td></tr>
 <tr><td>PostgreSQL</td><td>11 이상</td><td>함수 종류 조회가 pg_proc.prokind를 씁니다.</td></tr>
+<tr><td>SQLite</td><td>플러그인에 들어 있는 SQLite(3.x)</td><td>파일만 있으면 됩니다. 결과 편집은 기본 키·고유 키가 있는 테이블만(rowid는 VACUUM 때 바뀔 수 있어 쓰지 않음).</td></tr>
 <tr><td>SQL Server</td><td>2012 이상</td><td>시퀀스(sys.sequences)는 2012부터. 그 전 버전은 접속은 되고 시퀀스 묶음만 비어 보입니다.</td></tr>
 </table>
 
 <h2>취소</h2>
-<p>[취소]는 실행 중인 명령에 취소를 보냅니다. Oracle은 in-band break를 씁니다(기본 OOB는 Docker Desktop·일부 방화벽·NAT를 지나지 못합니다). 취소된 실행은 오류로 끝나고 세션은 계속 쓸 수 있습니다.</p>
+<p>[취소]는 실행 중인 명령에 취소를 보냅니다. Oracle은 in-band break를 씁니다(기본 OOB는 Docker Desktop·일부 방화벽·NAT를 지나지 못합니다). SQLite는 sqlite3_interrupt로 멈춥니다. 취소된 실행은 오류로 끝나고 세션은 계속 쓸 수 있습니다.</p>
 
 <h2>세션 규칙</h2>
 <ul>

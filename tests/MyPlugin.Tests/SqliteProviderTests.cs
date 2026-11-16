@@ -381,5 +381,29 @@ namespace MyPlugin.Tests
                 Assert.Null(result.Rows[3][0]);
             }
         }
+
+        // ---------- 취소 ----------
+
+        [Fact]
+        public async Task Cancel_StopsLongRunningQuery()
+        {
+            SqliteProvider.CreateDatabaseFile(Profile().ServiceName);
+            using (var session = await OpenAsync(Profile()))
+            {
+                // 행을 내지 않고 오래 도는 한 문장(집계)
+                var run = session.ExecuteAsync(One("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000000) SELECT count(*) FROM c"), 10);
+                await Task.Delay(300);
+                var started = DateTime.UtcNow;
+                session.Cancel();
+                var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(10)));
+                Assert.Same(run, finished);
+                var ex = await Assert.ThrowsAnyAsync<Exception>(() => run);
+                Assert.True(DbSession.IsCancellation(ex), ex.ToString());
+                Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(5));
+                // 세션은 계속 쓸 수 있다
+                var after = await session.ExecuteAsync(One("SELECT 1"), 10);
+                Assert.Equal("1", after.Rows[0][0]);
+            }
+        }
     }
 }
