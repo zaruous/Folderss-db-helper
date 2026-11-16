@@ -94,7 +94,7 @@ PGlite는 WASM으로 빌드한 Postgres라 JS(Node·브라우저) 안에서만 �
 | 단계 | 내용 | 완료 조건(검증 가능) |
 |---|---|---|
 | S1 | `SqlLexRules.Sqlite` | 트리거 `BEGIN…END;`·`[ident]`·`` `ident` `` 분할/강조 시험 통과, 기존 Lex 시험 무변경 통과 |
-| S2 | `SqliteProvider`(접속·검증·연결 문자열·오류 판정·DDL 규칙) + `DbProviders.All` 등록 | `SqliteProviderTests`: 파일 없음 검증 오류, ReadOnly에서 INSERT가 DB 오류로 실패, DDL 롤백 시 테이블이 사라짐, VACUUM이 커밋 대기 중 거부됨 |
+| S2 | `SqliteProvider`(접속·검증·연결 문자열·오류 판정·DDL 규칙) + `DbProviders.All` 등록 | `SqliteProviderTests`: 빈 경로 검증 오류, 파일 없음+ReadOnly는 오류(생성 안 함), 생성 확인 시에만 파일 생김, ReadOnly에서 INSERT가 DB 오류로 실패, DDL 롤백 시 테이블이 사라짐, VACUUM이 커밋 대기 중 거부됨 |
 | S3 | `IMetadataProvider` 구현 | 임시 파일 DB(테이블·뷰·인덱스·트리거·ATTACH)로 트리 그룹 개수·열·고유 키·소스 시험 |
 | S4 | 비밀번호 흐름 `UsesPassword` | 비밀번호 없는 SQLite 프로필 연결 시 프롬프트가 안 뜸(헤드리스 UI 시험) |
 | S5 | 접속 관리 화면 분기 + 파일 찾아보기 | `ConnectionManagerHeadlessTests`에 SQLite 칸 표시/숨김, `docs/controls/connection-manager.yml` 갱신, `check_controls_docs.py` 통과 |
