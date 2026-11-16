@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -55,6 +56,56 @@ namespace MyPlugin.Tests
             var session = DbSession.Create(provider, cs);
             await session.OpenAsync();
             return session;
+        }
+
+        // 결과 그리드 [전체 보기]: 쿼리에서 앞부분만 잘라 오고 전체 길이를 받는다(값 전체를 받지 않음)
+        [PgFact]
+        public async Task FullValue_TrimsOnServer_TextJsonBytea()
+        {
+            using (var session = await OpenAsync())
+            {
+                var body = new string('가', ValueFormatter.MaxTextLength + 500) + "😀끝";
+                await session.QueryAsync(new SqlQuery { Sql = "DROP TABLE IF EXISTS dbh_full_it" }, r => 0);
+                await session.QueryAsync(new SqlQuery { Sql = "CREATE TABLE dbh_full_it (id integer PRIMARY KEY, body text, doc jsonb, data bytea)" }, r => 0);
+                try
+                {
+                    var insert = new SqlQuery { Sql = "INSERT INTO dbh_full_it VALUES (1, :b, CAST(:j AS jsonb), decode(repeat('ab', 3000), 'hex'))" };
+                    insert.Parameters.Add(new KeyValuePair<string, object>("b", body));
+                    insert.Parameters.Add(new KeyValuePair<string, object>("j", "{\"k\": \"" + new string('x', 5000) + "\"}"));
+                    await session.ExecuteDmlAsync(insert);
+
+                    var columns = new List<ResultColumn>
+                    {
+                        new ResultColumn { Name = "id", TypeLabel = "integer" },
+                        new ResultColumn { Name = "body", TypeLabel = "text" },
+                        new ResultColumn { Name = "doc", TypeLabel = "jsonb" },
+                        new ResultColumn { Name = "data", TypeLabel = "bytea" }
+                    };
+                    var meta = new List<ColumnInfo> { new ColumnInfo { Name = "id", TypeLabel = "integer", PrimaryKey = true } };
+                    var table = RowEditLogic.Describe("", "dbh_full_it", columns, meta, ":");
+                    table.ProviderKind = "postgres";
+
+                    async Task<string> Read(int column, int max)
+                    {
+                        var query = RowEditLogic.SelectValueStatement(table, new[] { "1", null, null, null }, null, column, max);
+                        _output.WriteLine(query.Sql);
+                        return Assert.Single(await session.QueryAsync(query, r => DbSession.ReadValuePrefix(r, max)));
+                    }
+
+                    // 글자 수는 코드 포인트(😀 = 1)
+                    Assert.Equal(body, await Read(1, ValueFormatter.MaxFullLength));
+                    Assert.Equal("가가…(전체 4502자)", await Read(1, 2));
+                    var json = await Read(2, 10);
+                    Assert.Equal("{\"k\": \"xxx…(전체 5009자)", json);
+                    Assert.Equal("0x" + string.Concat(Enumerable.Repeat("AB", 3000)), await Read(3, ValueFormatter.MaxFullLength));
+                    Assert.Equal("0xABAB…(전체 3000바이트)", await Read(3, 2));
+                }
+                finally
+                {
+                    await session.RollbackAsync();
+                    await session.QueryAsync(new SqlQuery { Sql = "DROP TABLE IF EXISTS dbh_full_it" }, r => 0);
+                }
+            }
         }
 
         [PgFact]

@@ -117,6 +117,25 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>
+        /// 쿼리에서 잘라 온 앞부분(part, 최대 max)과 전체 길이(total, 글자·바이트)로 Format(value, max, max)와 같은 글을 만든다. part가 NULL이면 null.
+        /// 글은 서로게이트 쌍의 앞 절반으로 끝나면 그 절반을 뗀다(SQL Server SUBSTRING은 UTF-16 단위로 자른다).
+        /// </summary>
+        public static string FormatPrefix(object part, long total, int max)
+        {
+            if (part == null || part is DBNull)
+                return null;
+            switch (part)
+            {
+                case string text:
+                    return total > max ? Truncate(text, text.Length) + TextSuffix(total) : text;
+                case byte[] bytes:
+                    return Hex(bytes, bytes.Length, total, max);
+                default:
+                    return Format(part, max, max);
+            }
+        }
+
         /// <summary>NUMBER, FLOAT, BINARY_FLOAT, BINARY_DOUBLE, INTEGER, DECIMAL 등(대소문자 무시)과 .NET 숫자 형식 이름(INT32, DECIMAL …)이면 true.</summary>
         public static bool IsNumericTypeName(string dataTypeName)
         {

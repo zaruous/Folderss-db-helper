@@ -820,14 +820,15 @@ namespace MyPlugin
             var reason = RowEditLogic.FullValueBlockReason(result.Edit, row.State, row.RowId);
             if (reason != null)
                 return (null, reason);
-            var query = RowEditLogic.SelectValueStatement(result.Edit, row.OriginalValues, row.RowId, column);
+            var query = RowEditLogic.SelectValueStatement(result.Edit, row.OriginalValues, row.RowId, column, ValueFormatter.MaxFullLength);
             if (query == null)
                 return (null, "이 칸은 DB에서 다시 읽을 수 없습니다.");
             var dbId = result.ResultDbId;
-            return (token => ReadFullValueAsync(dbId, query, token), null);
+            var trimmed = RowEditLogic.TrimsOnServer(result.Edit.ProviderKind);
+            return (token => ReadFullValueAsync(dbId, query, trimmed, token), null);
         }
 
-        private async Task<string> ReadFullValueAsync(string dbId, SqlQuery query, System.Threading.CancellationToken token)
+        private async Task<string> ReadFullValueAsync(string dbId, SqlQuery query, bool trimmed, System.Threading.CancellationToken token)
         {
             var profile = Profile(dbId);
             var session = profile != null ? _host.GetSession(profile.Id) : null;
@@ -836,7 +837,9 @@ namespace MyPlugin
             // 같은 DB 세션을 다른 실행이 쓰는 중이면 기다리지 않는다(창이 멈춘 것처럼 보이지 않게)
             if (session.IsBusy)
                 throw new InvalidOperationException("이 DB에서 다른 작업이 실행 중입니다. 끝난 뒤 다시 누르세요.");
-            var values = await session.QueryAsync(query, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength), token);
+            // Oracle은 LOB를 상한까지만 읽고, 그 밖의 DB는 쿼리에서 잘라 온 앞부분과 전체 길이를 읽는다 — 어느 쪽도 값 전체를 받지 않는다
+            var values = await session.QueryAsync(query, r => trimmed ? DbSession.ReadValuePrefix(r, ValueFormatter.MaxFullLength)
+                : DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength), token);
             if (values.Count == 0)
                 throw new InvalidOperationException("행을 찾지 못했습니다. 조회한 뒤 지워졌거나 키가 바뀌었을 수 있습니다.");
             return values[0];

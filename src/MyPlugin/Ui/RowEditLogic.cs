@@ -660,18 +660,58 @@ namespace MyPlugin
             return null;
         }
 
+        // [전체 보기]에서 이진으로 잘라 올 형식(그 밖은 글로 바꿔 자른다)
+        private static readonly HashSet<string> BinaryTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "BYTEA", "VARBINARY", "BINARY", "IMAGE"
+        };
+
         /// <summary>
-        /// 결과 그리드 [전체 보기]: 잘려 보이는 칸 하나를 키로 다시 읽는 SELECT(동시성 비교 없음 — 지금 DB 값을 읽는다).
+        /// 결과 그리드 [전체 보기]: 잘려 보이는 칸 하나를 키로 다시 읽는 SELECT(동시성 비교 없음 — 지금 DB 값을 읽는다). 값 전체를 받지 않는다:
+        /// - Oracle: 열 그대로(LOB는 ValueFormatter가 maxLength까지만 읽는다 — <see cref="DbSession.ReadFullValue"/>).
+        /// - PostgreSQL·SQL Server·SQLite: 쿼리에서 앞 maxLength(글자·바이트)만 잘라 오고 전체 길이를 둘째 열로(<see cref="DbSession.ReadValuePrefix"/>).
+        ///   PostgreSQL bytea·SQL Server varbinary·binary·image는 이진 그대로, 그 밖(text·xml·json 등)은 글로 바꿔 자른다. SQLite substr은 값 형식(글·BLOB)을 따른다.
+        /// - 그 밖의 DB: null(잘라 올 방법을 몰라 전체를 읽게 되므로).
         /// 키는 원래 값(고친 행이어도 DB에 있는 키)으로 찾는다. 키가 없거나 ROWID 키인데 rowId가 없거나 열 위치가 틀리면 null.
         /// </summary>
-        public static SqlQuery SelectValueStatement(EditableTable table, string[] original, string rowId, int column)
+        public static SqlQuery SelectValueStatement(EditableTable table, string[] original, string rowId, int column, int maxLength)
         {
             if (table == null || !table.CanEdit || original == null || (table.UsesRowId && rowId == null) || column < 0 || column >= table.Columns.Count)
                 return null;
+            var name = WorkspaceLogic.QuoteIdentifier(table.Columns[column].Name);
+            var typeName = Regex.Replace(table.Columns[column].TypeLabel ?? "", @"\s*\(.*$", "").Trim();
+            var binary = BinaryTypeNames.Contains(typeName);
+            var max = maxLength.ToString(Inv);
+            string select;
+            switch (table.ProviderKind)
+            {
+                case "oracle":
+                    select = name;
+                    break;
+                case "postgres":
+                    select = binary ? "substring(" + name + " FROM 1 FOR " + max + "), octet_length(" + name + ")"
+                        : "substring(CAST(" + name + " AS TEXT) FROM 1 FOR " + max + "), char_length(CAST(" + name + " AS TEXT))";
+                    break;
+                case "mssql":
+                    select = binary ? "SUBSTRING(" + name + ", 1, " + max + "), DATALENGTH(" + name + ")"
+                        : "SUBSTRING(CAST(" + name + " AS NVARCHAR(MAX)), 1, " + max + "), DATALENGTH(CAST(" + name + " AS NVARCHAR(MAX))) / 2";
+                    break;
+                case "sqlite":
+                    select = "substr(" + name + ", 1, " + max + "), length(" + name + ")";
+                    break;
+                default:
+                    return null;
+            }
             var query = new SqlQuery();
             var where = KeyCondition(table, original, rowId, query);
-            query.Sql = "SELECT " + WorkspaceLogic.QuoteIdentifier(table.Columns[column].Name) + " FROM " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " WHERE " + where;
+            query.Sql = "SELECT " + select + " FROM " + WorkspaceLogic.QualifiedName(table.Owner, table.Name) + " WHERE " + where;
             return query;
+        }
+
+        /// <summary>[전체 보기]가 둘째 열(전체 길이)과 함께 잘라 온 앞부분을 읽는지(Oracle이 아닌 DB). Oracle이면 false.</summary>
+        public static bool TrimsOnServer(string providerKind)
+        {
+            return providerKind == "postgres" || providerKind == "mssql" || providerKind == "sqlite";
         }
 
         /// <summary>[전체 보기]로 이 행을 다시 읽을 수 없는 이유(팝업에 보임). 읽을 수 있으면 null. table이 null이면 빠른 조회 결과가 아니다.</summary>
@@ -681,6 +721,8 @@ namespace MyPlugin
                 return "직접 쓴 SQL 결과는 행을 다시 찾을 수 없어 전체를 읽지 못합니다. 트리에서 테이블을 빠른 조회(F1)로 열면 읽을 수 있습니다.";
             if (!table.CanEdit)
                 return table.DisabledReason ?? NoKeyReason;
+            if (table.ProviderKind != "oracle" && !TrimsOnServer(table.ProviderKind))
+                return "이 DB는 [전체 보기]를 지원하지 않습니다(값을 잘라 읽을 방법이 없어 전체를 받게 됩니다).";
             if (state == RowEditState.Inserted)
                 return "저장하지 않은 새 행은 DB에 없어 다시 읽을 수 없습니다.";
             if (table.UsesRowId && rowId == null)

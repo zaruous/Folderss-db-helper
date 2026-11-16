@@ -1546,6 +1546,17 @@ namespace MyPlugin
             }
         }
 
+        /// <summary>
+        /// 결과 그리드 [전체 보기], Oracle이 아닌 DB: (쿼리에서 잘라 온 앞부분, 전체 길이) 두 열을 읽어 형식화한다(<see cref="RowEditLogic.SelectValueStatement"/>).
+        /// </summary>
+        internal static string ReadValuePrefix(IDataRecord record, int maxLength)
+        {
+            if (record.IsDBNull(0))
+                return null;
+            var total = record.IsDBNull(1) ? 0 : Convert.ToInt64(record.GetValue(1), CultureInfo.InvariantCulture);
+            return ValueFormatter.FormatPrefix(record.GetValue(0), total, maxLength);
+        }
+
         internal static object ReadValue(DbDataReader reader, int ordinal, ColumnRead mode)
         {
             switch (mode)

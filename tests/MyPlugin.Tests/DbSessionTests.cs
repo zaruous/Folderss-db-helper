@@ -1350,6 +1350,42 @@ namespace MyPlugin.Tests
             }
         }
 
+        // 팝업 [전체 보기], Oracle이 아닌 DB: 쿼리에서 잘라 온 앞부분 + 전체 길이로 형식화(값 전체를 받지 않음)
+        [Fact]
+        public async Task ReadValuePrefix_SqliteTrimsOnServer()
+        {
+            using (var session = await OpenAsync(new SqliteConnection(Memory)))
+            {
+                var text = new string('q', ValueFormatter.MaxTextLength + 500);
+                await SetupAsync(session,
+                    "CREATE TABLE docs (ID INTEGER PRIMARY KEY, BODY TEXT, DATA BLOB)",
+                    "INSERT INTO docs VALUES (1, '" + text + "', zeroblob(3000))",
+                    "INSERT INTO docs VALUES (2, NULL, NULL)");
+                var columns = new List<ResultColumn>
+                {
+                    new ResultColumn { Name = "ID", TypeLabel = "INTEGER" },
+                    new ResultColumn { Name = "BODY", TypeLabel = "TEXT" },
+                    new ResultColumn { Name = "DATA", TypeLabel = "BLOB" }
+                };
+                var meta = new List<ColumnInfo> { new ColumnInfo { Name = "ID", TypeLabel = "INTEGER", PrimaryKey = true } };
+                var table = RowEditLogic.Describe("", "docs", columns, meta, ":");
+                table.ProviderKind = "sqlite";
+
+                async Task<string> Read(string id, int column, int max)
+                {
+                    var query = RowEditLogic.SelectValueStatement(table, new[] { id, null, null }, null, column, max);
+                    return Assert.Single(await session.QueryAsync(query, r => DbSession.ReadValuePrefix(r, max)));
+                }
+
+                Assert.Equal(text, await Read("1", 1, ValueFormatter.MaxFullLength));
+                Assert.Equal("qqq…(전체 4500자)", await Read("1", 1, 3));
+                Assert.Equal("0x" + new string('0', 6000), await Read("1", 2, ValueFormatter.MaxFullLength));
+                Assert.Equal("0x0000…(전체 3000바이트)", await Read("1", 2, 2));
+                Assert.Null(await Read("2", 1, 10));
+                Assert.Null(await Read("2", 2, 10));
+            }
+        }
+
         // ---- 커밋·롤백 실패(ODP.NET은 실패해도 트랜잭션 객체를 끝내 버린다) ----
 
         [Fact]

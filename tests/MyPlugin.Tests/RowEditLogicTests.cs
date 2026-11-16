@@ -162,17 +162,49 @@ namespace MyPlugin.Tests
         public void SelectValueStatement_ReadsOneColumnByKey()
         {
             var table = RowEditLogic.Describe("HR", "EMP HIST", Columns("A:NUMBER", "B:VARCHAR2(3)", "NOTE:CLOB"), Meta("A", true, "B", true), ":");
+            table.ProviderKind = "oracle";
 
-            var query = RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "long…(전체 9000자)" }, null, 2);
+            // Oracle은 LOB를 상한까지만 읽으므로(ValueFormatter) 열을 그대로 고른다
+            var query = RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "long…(전체 9000자)" }, null, 2, 100);
             // 동시성 비교는 붙이지 않는다(지금 DB 값을 읽는다)
             Assert.Equal("SELECT NOTE FROM HR.\"EMP HIST\" WHERE A = :k0 AND B = :k1", query.Sql);
             Assert.Equal(1m, query.Parameters[0].Value);
             Assert.Equal("x", query.Parameters[1].Value);
 
-            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "v" }, null, 3));
-            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "v" }, null, -1));
-            Assert.Null(RowEditLogic.SelectValueStatement(RowEditLogic.Unavailable("HR", "EMP", "x"), new[] { "1" }, null, 0));
-            Assert.Null(RowEditLogic.SelectValueStatement(null, new[] { "1" }, null, 0));
+            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "v" }, null, 3, 100));
+            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "1", "x", "v" }, null, -1, 100));
+            Assert.Null(RowEditLogic.SelectValueStatement(RowEditLogic.Unavailable("HR", "EMP", "x"), new[] { "1" }, null, 0, 100));
+            Assert.Null(RowEditLogic.SelectValueStatement(null, new[] { "1" }, null, 0, 100));
+        }
+
+        // Oracle이 아닌 DB: 값 전체를 받지 않게 쿼리에서 앞부분만 잘라 오고 전체 길이를 함께 받는다
+        [Fact]
+        public void SelectValueStatement_NonOracle_TrimsOnServer()
+        {
+            var pg = RowEditLogic.Describe("public", "docs", Columns("ID:INTEGER", "BODY:TEXT", "DATA:BYTEA"), Meta("ID", true), ":");
+            pg.ProviderKind = "postgres";
+            Assert.Equal("SELECT substring(CAST(BODY AS TEXT) FROM 1 FOR 100), char_length(CAST(BODY AS TEXT)) FROM \"public\".\"docs\" WHERE ID = :k0",
+                RowEditLogic.SelectValueStatement(pg, new[] { "1", "x", "y" }, null, 1, 100).Sql);
+            Assert.Equal("SELECT substring(DATA FROM 1 FOR 100), octet_length(DATA) FROM \"public\".\"docs\" WHERE ID = :k0",
+                RowEditLogic.SelectValueStatement(pg, new[] { "1", "x", "y" }, null, 2, 100).Sql);
+
+            var ms = RowEditLogic.Describe("dbo", "DOCS", Columns("ID:INT", "BODY:NVARCHAR(MAX)", "DATA:VARBINARY(MAX)"), Meta("ID", true), "@");
+            ms.ProviderKind = "mssql";
+            Assert.Equal("SELECT SUBSTRING(CAST(BODY AS NVARCHAR(MAX)), 1, 100), DATALENGTH(CAST(BODY AS NVARCHAR(MAX))) / 2 FROM \"dbo\".DOCS WHERE ID = @k0",
+                RowEditLogic.SelectValueStatement(ms, new[] { "1", "x", "y" }, null, 1, 100).Sql);
+            Assert.Equal("SELECT SUBSTRING(DATA, 1, 100), DATALENGTH(DATA) FROM \"dbo\".DOCS WHERE ID = @k0",
+                RowEditLogic.SelectValueStatement(ms, new[] { "1", "x", "y" }, null, 2, 100).Sql);
+
+            var lite = RowEditLogic.Describe("", "docs", Columns("ID:INTEGER", "BODY:TEXT"), Meta("ID", true), ":");
+            lite.ProviderKind = "sqlite";
+            Assert.Equal("SELECT substr(BODY, 1, 100), length(BODY) FROM \"docs\" WHERE ID = :k0",
+                RowEditLogic.SelectValueStatement(lite, new[] { "1", "x" }, null, 1, 100).Sql);
+
+            // 잘라 올 방법을 모르는 DB는 전체를 읽지 않도록 문장을 만들지 않는다
+            var unknown = RowEditLogic.Describe("", "docs", Columns("ID:INTEGER", "BODY:TEXT"), Meta("ID", true), ":");
+            unknown.ProviderKind = "generic";
+            Assert.Null(RowEditLogic.SelectValueStatement(unknown, new[] { "1", "x" }, null, 1, 100));
+            Assert.Contains("지원하지 않", RowEditLogic.FullValueBlockReason(unknown, RowEditState.Unchanged, null));
         }
 
         [Fact]
@@ -181,17 +213,19 @@ namespace MyPlugin.Tests
             var columns = Columns("NAME:VARCHAR2(10)", "DOC:CLOB");
             var meta = new List<ColumnInfo> { Col("NAME", true, "VARCHAR2(10)"), Col("DOC", true, "CLOB") };
             var table = RowEditLogic.Describe("HR", "LOG", columns, meta, ":", RowEditLogic.ChooseKey(meta, null, "oracle", true));
+            table.ProviderKind = "oracle";
 
-            var query = RowEditLogic.SelectValueStatement(table, new[] { "a", "b" }, "AAAR3sAAEAAAACXAAA", 1);
+            var query = RowEditLogic.SelectValueStatement(table, new[] { "a", "b" }, "AAAR3sAAEAAAACXAAA", 1, 100);
             Assert.Equal("SELECT DOC FROM HR.LOG WHERE ROWID = :rid", query.Sql);
             Assert.Equal("AAAR3sAAEAAAACXAAA", Assert.Single(query.Parameters).Value);
-            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "a", "b" }, null, 1));
+            Assert.Null(RowEditLogic.SelectValueStatement(table, new[] { "a", "b" }, null, 1, 100));
         }
 
         [Fact]
         public void FullValueBlockReason_ExplainsWhenRowCannotBeFound()
         {
             var table = RowEditLogic.Describe("HR", "EMP", Columns("A:NUMBER", "NOTE:CLOB"), Meta("A", true), ":");
+            table.ProviderKind = "oracle";
             Assert.Null(RowEditLogic.FullValueBlockReason(table, RowEditState.Unchanged, null));
             Assert.Null(RowEditLogic.FullValueBlockReason(table, RowEditState.Modified, null));
             Assert.Null(RowEditLogic.FullValueBlockReason(table, RowEditState.Deleted, null));
@@ -201,6 +235,7 @@ namespace MyPlugin.Tests
 
             var meta = new List<ColumnInfo> { Col("NAME", true, "VARCHAR2(10)") };
             var rowIdTable = RowEditLogic.Describe("HR", "LOG", Columns("NAME:VARCHAR2(10)"), meta, ":", RowEditLogic.ChooseKey(meta, null, "oracle", true));
+            rowIdTable.ProviderKind = "oracle";
             Assert.Contains("ROWID", RowEditLogic.FullValueBlockReason(rowIdTable, RowEditState.Unchanged, null));
             Assert.Null(RowEditLogic.FullValueBlockReason(rowIdTable, RowEditState.Unchanged, "AAAR3sAAEAAAACXAAA"));
         }
