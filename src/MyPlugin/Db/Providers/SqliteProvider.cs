@@ -123,6 +123,17 @@ namespace MyPlugin
                 SQLitePCL.raw.sqlite3_interrupt(lite.Handle);
         }
 
+        /// <summary>
+        /// 바인드할 숫자: 소수 부분이 없고 long 범위면 long(INTEGER), 아니면 double(REAL). Microsoft.Data.Sqlite는 decimal을 글('2.5')로 묶어
+        /// 형식(친화성) 없는 열에 든 숫자와 비교하면 같지 않다(결과 편집의 원래 값 비교가 거짓 충돌이 됨).
+        /// </summary>
+        public static object NumberValue(decimal value)
+        {
+            if (value == decimal.Truncate(value) && value >= long.MinValue && value <= long.MaxValue)
+                return (long)value;
+            return (double)value;
+        }
+
         // ---------- 파일 ----------
 
         public static string PathOf(OracleConnectionProfile profile)

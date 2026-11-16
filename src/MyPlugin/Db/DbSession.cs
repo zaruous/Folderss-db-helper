@@ -415,6 +415,9 @@ namespace MyPlugin
                     var parameter = command.CreateParameter();
                     parameter.ParameterName = pair.Key;
                     parameter.Value = pair.Value ?? DBNull.Value;
+                    // SQLite: decimal은 글('2.5')로 묶여 형식 없는 열의 숫자와 같지 않다 — 정수·실수로 보낸다
+                    if (pair.Value is decimal number && Provider is SqliteProvider)
+                        parameter.Value = SqliteProvider.NumberValue(number);
                     // SQL Server: DateTime 기본 형식 datetime(1/300초)은 datetime2 열의 초 미만을 깎아 SET·원래 값 비교가 어긋난다 — datetime2로 보낸다
                     if (pair.Value is DateTime && IsSqlServer(Provider.Kind))
                         parameter.DbType = DbType.DateTime2;

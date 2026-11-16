@@ -114,3 +114,21 @@ S1~S5만으로 "SQLite 파일 열고 조회·실행·트리 보기"가 된다. S
 2. ~~파일이 없을 때~~ → 만들지 묻기로 결정(2026-11-16, 2.1).
 3. ~~테이블 정의서~~ → 켜되 설명 칸은 비워 둔다(2026-11-16, 2.8). `--` 주석 파싱은 하지 않는다.
 4. ~~F4 범위~~ → 정보 보기만, 구조 편집 비활성으로 결정(2026-11-16, 2.7).
+
+## 10. 구현 기록 (2026-11-16)
+
+| 단계 | 결과 | 시험 |
+|---|---|---|
+| S1 문장 규칙 | `SqlLexRules.Sqlite`: 트리거 `BEGIN…END`(CASE…END는 건너뜀)를 한 문장으로, `[ident]`·`` `ident` ``, BEGIN은 트랜잭션 문장 | `SqliteLexTests` 8건 |
+| S2 공급자 | `SqliteProvider`(파일 경로 = ServiceName, ReadOnly → `Mode=ReadOnly`, 파일 자동 생성 안 함), `DdlAutoCommits=false`, VACUUM·ATTACH·DETACH·PRAGMA journal_mode/foreign_keys는 트랜잭션 밖 | `SqliteProviderTests` |
+| S3 데이터 사전 | `SqliteMetadata`(sqlite_master·pragma 함수). 트리는 테이블·뷰만, 검색은 main·temp만, rowid 편집 안 함 | 같은 파일 |
+| S4 비밀번호 | `IDbProvider.UsesPassword` — 연결·모니터 세션·점검/전체 상태·접속 테스트·`BuildConnectionString`이 SQLite에서 비밀번호를 묻거나 요구하지 않음. 파일이 없으면 연결할 때 만들지 물음 | `OracleConnectionStoreTests`, `ConnectionManagerLogicTests` |
+| S5 접속 관리 | SQLite면 호스트·포트·사용자·비밀번호 칸 숨김, [찾아보기…] | `ConnectionManagerHeadlessTests.Sqlite_*`(Windows CI에서만 실행) |
+| S6 F4·결과 편집 | `SqliteTableSchema`(Ddl = null → 읽기 전용). 결과 편집 거짓 충돌 수정(아래) | `SqliteProviderTests.TableInfo_*`, `RowEdit_*` |
+| S6b 정의서 | 후보·일괄 조회, 설명 칸 빈 값 | `TableSpec_*` |
+| S7 문서 | 도움말 connections.html, README 첫 줄, `docs/controls/connection-manager.yml`. plugin.json 버전은 올리지 않음 | `check_controls_docs.py` |
+
+구현 중 발견해 고친 것:
+- `OracleConnectionStore.BuildConnectionString`이 비밀번호가 비면 무조건 실패 → SQLite는 통과.
+- [취소]: Microsoft.Data.Sqlite의 `Cancel()`은 실행 중인 문장을 멈추지 않음(재현 시험이 끝까지 돎) → SQLite 공급자 세션은 `sqlite3_interrupt`.
+- 결과 편집: Microsoft.Data.Sqlite가 `decimal`을 글('2.5')로 묶어 형식 없는 열의 숫자와 비교가 거짓 → SQLite 세션은 long·double로 바인드.

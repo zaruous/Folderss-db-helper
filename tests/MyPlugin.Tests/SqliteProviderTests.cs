@@ -405,5 +405,52 @@ namespace MyPlugin.Tests
                 Assert.Equal("1", after.Rows[0][0]);
             }
         }
+
+        // ---------- 결과 편집 ----------
+
+        /// <summary>
+        /// 결과 편집(기본 키 + 낙관적 동시성)을 SQLite에서: 바뀌지 않은 행은 고쳐지고 지워지며(거짓 충돌 없음), 조회 뒤 바뀐 행은 0행(충돌)으로 멈춘다.
+        /// 형식 없는 열(v)·NUMERIC·REAL 열에 정수·실수·글이 섞여 있어도 비교가 맞아야 한다.
+        /// </summary>
+        [Fact]
+        public async Task RowEdit_UpdateDeleteAndConflict()
+        {
+            SqliteProvider.CreateDatabaseFile(Profile().ServiceName);
+            using (var session = await OpenAsync(Profile()))
+            {
+                await RunAsync(session, "CREATE TABLE r (id INTEGER PRIMARY KEY, name TEXT, qty NUMERIC, rate REAL, v, ts TEXT);\n"
+                    + "INSERT INTO r VALUES (1, 'a', 1.5, 0.1, 5, '2024-01-02 03:04:05'), (2, 'b', 2, 0.2, 'x', NULL), (3, 'c', 3, 0.3, 2.5, NULL);\nCOMMIT;");
+                var read = await session.ExecuteAsync(One("SELECT * FROM r ORDER BY id"), 100);
+                var columns = new List<ResultColumn>(read.Cursor.Columns);
+                var rows = read.Rows;
+                await session.CloseCursorAsync(read.Cursor);
+                var meta = await session.QueryAsync(Lite.Metadata.Columns("main", "r"), Lite.Metadata.ReadColumn);
+                var keys = await session.QueryAsync(Lite.Metadata.UniqueKeys("main", "r"), Lite.Metadata.ReadUniqueKey);
+                var key = RowEditLogic.ChooseKey(meta, keys, Lite.Kind, false);
+                var edit = RowEditLogic.Describe("main", "r", columns, meta, RowEditLogic.ParameterPrefix(Lite.Kind), key);
+                edit.ProviderKind = Lite.Kind;
+                Assert.True(edit.CanEdit, edit.DisabledReason);
+
+                string[] With(string[] values, int index, string value) { var c = (string[])values.Clone(); c[index] = value; return c; }
+
+                // 바뀌지 않은 행: 고쳐진다(형식 없는 열 v = 5, NUMERIC 1.5, REAL 0.1 비교가 맞음)
+                var update1 = await session.ExecuteDmlBatchAsync(new[] { RowEditLogic.UpdateStatement(edit, rows[0], With(rows[0], 1, "a2")) }, 1);
+                Assert.True(update1.Succeeded, update1.Error?.Message);
+                Assert.Equal(new[] { 1 }, update1.Affected);
+                // 3행: 형식 없는 열 v에 실수 2.5(조회 형식 표시는 첫 행 값 기준 INTEGER) — 원래 값 비교가 맞아야 지워진다
+                var delete3 = await session.ExecuteDmlBatchAsync(new[] { RowEditLogic.DeleteStatement(edit, rows[2]) }, 1);
+                Assert.Equal(new[] { 1 }, delete3.Affected);
+
+                // 조회 뒤 바뀐 행(2행 name): 0행 → 충돌, 되돌림
+                await session.ExecuteAsync(One("UPDATE r SET name = 'other' WHERE id = 2"), 10);
+                var conflict = await session.ExecuteDmlBatchAsync(new[] { RowEditLogic.UpdateStatement(edit, rows[1], With(rows[1], 1, "mine")) }, 1);
+                Assert.Equal(0, conflict.FailedIndex);
+                Assert.Equal(new[] { 0 }, conflict.Affected);
+                await session.CommitAsync();
+
+                var final = await session.QueryAsync(new SqlQuery { Sql = "SELECT id, name FROM r ORDER BY id" }, r => r.GetInt64(0) + ":" + r.GetString(1));
+                Assert.Equal(new[] { "1:a2", "2:other" }, final);
+            }
+        }
     }
 }
