@@ -1527,36 +1527,6 @@ namespace MyPlugin
             return row;
         }
 
-        /// <summary>
-        /// 결과 그리드 [전체 보기]: QueryAsync의 read에서 칸 하나를 조회와 같은 방법으로 읽되, 글·이진은 maxLength(글자·바이트)까지 형식화한다.
-        /// Oracle LOB는 maxLength까지만 읽는다. 다른 DBMS는 공급자가 값을 통째로 읽은 뒤 자른다(메모리 상한이 아님).
-        /// </summary>
-        internal static string ReadFullValue(IDataRecord record, int ordinal, int maxLength)
-        {
-            var reader = (DbDataReader)record;
-            var mode = reader is OracleDataReader ? OracleReadMode(reader.GetDataTypeName(ordinal)) : ColumnRead.Value;
-            var value = ReadValue(reader, ordinal, mode);
-            try
-            {
-                return ValueFormatter.Format(value, maxLength, maxLength);
-            }
-            finally
-            {
-                DisposeValue(value);
-            }
-        }
-
-        /// <summary>
-        /// 결과 그리드 [전체 보기], Oracle이 아닌 DB: (쿼리에서 잘라 온 앞부분, 전체 길이) 두 열을 읽어 형식화한다(<see cref="RowEditLogic.SelectValueStatement"/>).
-        /// </summary>
-        internal static string ReadValuePrefix(IDataRecord record, int maxLength)
-        {
-            if (record.IsDBNull(0))
-                return null;
-            var total = record.IsDBNull(1) ? 0 : Convert.ToInt64(record.GetValue(1), CultureInfo.InvariantCulture);
-            return ValueFormatter.FormatPrefix(record.GetValue(0), total, maxLength);
-        }
-
         internal static object ReadValue(DbDataReader reader, int ordinal, ColumnRead mode)
         {
             switch (mode)

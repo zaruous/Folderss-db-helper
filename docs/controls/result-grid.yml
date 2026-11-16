@@ -27,8 +27,8 @@ features:
       칸 밖이나 키보드(Shift+F10)로 연 메뉴에서는 꺼진다.
   - name: 팝업으로 보기
     description: >-
-      오른쪽 메뉴 [팝업으로 보기]는 오른쪽 클릭한 칸 하나의 값을 칸 값 팝업(cell-value-window)으로 연다. 칸 밖·키보드로 연 메뉴에서는 꺼진다.
-      잘린 값의 [전체 보기]는 쓰는 쪽이 FullValue로 연결한다(SQL 작업 영역은 빠른 조회 결과만). 연결하지 않으면 이유만 보인다.
+      오른쪽 메뉴 [팝업으로 보기]는 오른쪽 클릭한 칸 하나의 값(그리드가 가진 값 그대로)을 칸 값 팝업(cell-value-window)으로 연다.
+      칸 밖·키보드로 연 메뉴에서는 꺼진다.
   - name: 메뉴 확장(AddMenuAction)
     description: >-
       쓰는 쪽이 오른쪽 메뉴 끝(구분선 뒤)에 고른 행으로 하는 동작을 붙인다. 조건이 거짓이면 숨기고 고른 행이 없으면 꺼진다.
@@ -70,7 +70,7 @@ states:
   - 고른 행은 선택색이 바탕색보다 앞서지만 번호 열 표시(✎·✖)는 남는다.
 limits:
   - 정렬은 가져온 행 안에서만 한다(전체 순서는 ORDER BY로).
-  - 긴 값은 ValueFormatter가 잘라 보인다(글 4,000자, 이진 2,000바이트). 셀 복사·행 복사도 이 잘린 값을 복사한다(전체는 [팝업으로 보기]의 [전체 보기]).
+  - 긴 값은 ValueFormatter가 잘라 보인다(글 4,000자, 이진 2,000바이트). 셀 복사·행 복사·[팝업으로 보기]도 이 잘린 값이다.
 tests:
   - tests/MyPlugin.Tests/WorkspaceLogicTests.cs
   - tests/MyPlugin.Tests/ValueFormatterTests.cs
