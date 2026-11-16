@@ -25,6 +25,8 @@ features:
     description: >-
       끊기는 실행 중이면 막고, 커밋 대기 변경이 있으면 커밋·롤백을 묻는다.
       다시 연결은 끊은 뒤 저장된 접속 정보로 연결한다.
+      비밀번호를 쓰지 않는 접속(SQLite 파일)은 비밀번호를 묻지 않는다. SQLite 파일이 없으면 연결 전에 "새 SQLite DB" 확인([만들기]·[취소])을 묻고,
+      읽기 전용 접속이면 만들지 않고 오류 메시지를 남긴다.
   - name: 커밋·롤백
     description: 지금 SQL 탭 대상 DB의 세션 전체(같은 DB의 모든 탭)에 적용한다.
   - name: 창 닫기
@@ -66,4 +68,5 @@ limits:
   - 테이블 정보(F4)·테이블 정의서는 Oracle 데이터 사전 기반이라 PostgreSQL·SQL Server에서는 안내만 한다.
 tests:
   - tests/MyPlugin.Tests/ShellLogicTests.cs
+  - tests/MyPlugin.UiTests/SqliteHeadlessTests.cs
 related: [shell-menu, db-tree-panel, sql-workspace, monitor-window, overview-window, check-window]
