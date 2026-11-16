@@ -493,6 +493,9 @@ namespace MyPlugin
                 }
                 db.Name = profile.Name;
                 db.Detail = ShellLogic.Address(profile);
+                var metadata = DbProviders.For(profile).Metadata;
+                db.Groups = metadata.TreeGroupKinds;
+                db.EmptySchemaText = metadata.EmptySchemaText;
                 db.Connected = _host.GetSession(profile.Id) != null;
                 db.Connecting = _host.IsConnecting(profile.Id);
                 db.MySchema = _host.MySchemaOf(profile.Id);

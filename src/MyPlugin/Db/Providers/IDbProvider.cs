@@ -155,6 +155,12 @@ namespace MyPlugin
         SqlQuery SearchColumns(string pattern, bool includeSystem, bool hasMaintainedFlag, int limit);
         SearchHit ReadColumnHit(IDataRecord record);
 
+        /// <summary>트리에서 스키마 아래 보일 묶음(순서대로). 기본은 네 묶음 모두 — 그런 객체가 없는 DBMS(SQLite)는 줄인다.</summary>
+        IReadOnlyList<string> TreeGroupKinds => TreeGroups.All;
+
+        /// <summary>스키마의 묶음이 모두 비었을 때 트리에 보일 글. null이면 기본 문구("볼 수 있는 객체가 없습니다 (권한 필요)").</summary>
+        string EmptySchemaText => null;
+
         /// <summary>DBMS 제품·버전(정의서 표지). 읽는 쪽은 첫 행만 쓴다.</summary>
         SqlQuery ServerVersion();
         string ReadServerVersion(IDataRecord record);

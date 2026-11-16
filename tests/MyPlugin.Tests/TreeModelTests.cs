@@ -478,6 +478,34 @@ namespace MyPlugin.Tests
         }
 
         [Fact]
+        public void Build_DbGroupsAndEmptyText_OnlyThoseGroups_OwnNote()
+        {
+            // SQLite처럼 공급자가 묶음을 줄이면 그 묶음만, 다 비면 공급자 문구(권한 이야기 없음)
+            var db = DbWithScott();
+            db.Groups = new[] { TreeGroups.Table, TreeGroups.View };
+            db.EmptySchemaText = "테이블·뷰가 없습니다";
+            db.GroupCounts[ScottKey] = Counts(2, 1, 0, 0);
+            var rows = Build(db, Open());
+            Assert.Equal(new[] { TreeGroups.Table, TreeGroups.View }, rows.Where(r => r.Kind == TreeRowKind.Group).Select(r => r.ObjectType));
+
+            db.GroupCounts[ScottKey] = Counts(0, 0, 0, 0);
+            rows = Build(db, Open());
+            Assert.Equal("테이블·뷰가 없습니다", rows[2].Text);
+            Assert.DoesNotContain(rows, r => r.Kind == TreeRowKind.Group);
+        }
+
+        [Fact]
+        public void SqliteMetadata_TreeGroupsAndEmptyText()
+        {
+            IMetadataProvider lite = DbProviders.Sqlite.Metadata;
+            Assert.Equal(new[] { TreeGroups.Table, TreeGroups.View }, lite.TreeGroupKinds);
+            Assert.DoesNotContain("권한", lite.EmptySchemaText);
+            IMetadataProvider oracle = DbProviders.Oracle.Metadata;
+            Assert.Equal(TreeGroups.All, oracle.TreeGroupKinds);
+            Assert.Null(oracle.EmptySchemaText);
+        }
+
+        [Fact]
         public void Build_ErrorOnSchemaKey_ErrorNoteInsteadOfChildren()
         {
             var db = DbWithScott();

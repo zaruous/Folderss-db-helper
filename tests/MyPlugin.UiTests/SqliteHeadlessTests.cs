@@ -88,7 +88,11 @@ namespace MyPlugin.UiTests
                 ui.Run(() =>
                 {
                     Assert.Contains(Ui.Texts(main), t => t.Contains("sample.db"));   // 트리·상태에 파일 경로
-                    Assert.DoesNotContain(Ui.Texts(main), t => t.Contains("@:0/"));   // 서버 주소 형식(user@host:port/)으로 보이지 않는다
+                    Assert.DoesNotContain(Ui.Texts(main), t => t.Contains("@:0/"));
+                    // SQLite 트리: 테이블·뷰 묶음만(시퀀스·프로시저 묶음 없음), 빈 DB는 권한 이야기 없이 "테이블·뷰가 없습니다"
+                    Assert.Contains(Ui.Texts(main), t => t.Contains("테이블·뷰가 없습니다"));
+                    Assert.DoesNotContain(Ui.Texts(main), t => t == "시퀀스" || t.StartsWith("프로시저", StringComparison.Ordinal));
+                    Assert.DoesNotContain(Ui.Texts(main), t => t.Contains("권한 필요"));   // 서버 주소 형식(user@host:port/)으로 보이지 않는다
                     _out.WriteLine("캡처: " + Ui.Snap(main, HeadlessEnvironment.WorkFolder, "sqlite-run-result"));
                 });
                 using (var c = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sample, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString()))

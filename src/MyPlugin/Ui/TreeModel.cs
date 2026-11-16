@@ -241,6 +241,12 @@ namespace MyPlugin
         /// <summary>접속 사용자의 스키마(대문자). 스키마 목록 맨 위에 두고 "내 스키마"로 표시.</summary>
         public string MySchema { get; set; }
 
+        /// <summary>스키마 아래 보일 묶음(순서대로). null이면 <see cref="TreeGroups.All"/>(SQLite는 테이블·뷰만).</summary>
+        public IReadOnlyList<string> Groups { get; set; }
+
+        /// <summary>스키마의 묶음이 모두 비었을 때 보일 글. null이면 "볼 수 있는 객체가 없습니다 (권한 필요)".</summary>
+        public string EmptySchemaText { get; set; }
+
         /// <summary>null = 아직 안 불러옴.</summary>
         public List<SchemaInfo> Schemas { get; set; }
 
@@ -298,7 +304,7 @@ namespace MyPlugin
     /// 일반 모드(Build):
     /// - DB(프로필 순서). 연결 안 됨이면 펼칠 수 있지만(Expandable) 하위 없음 — 화면이 펼칠 때 연결한다. 연결 중이면 Detail 뒤에 표시는 화면 몫.
     /// - 펼친 DB: Schemas가 null이면 "불러오는 중…" Note(Load=Schemas). 있으면 스키마 행: 내 스키마 먼저, 나머지 이름 순. showSystem=false면 OracleMaintained 제외(내 스키마는 항상 보임).
-    /// - 펼친 스키마: GroupCounts가 없으면 Load=GroupCounts Note. 있으면 묶음 4개(개수 0인 묶음은 Expandable=false). 모든 개수가 0이면 묶음 대신 "볼 수 있는 객체가 없습니다 (권한 필요)" Note.
+    /// - 펼친 스키마: GroupCounts가 없으면 Load=GroupCounts Note. 있으면 묶음(DbTreeData.Groups, 없으면 4개 — 개수 0인 묶음은 Expandable=false). 모든 개수가 0이면 묶음 대신 DbTreeData.EmptySchemaText(없으면 "볼 수 있는 객체가 없습니다 (권한 필요)") Note.
     /// - 펼친 묶음: Objects가 없으면 Load=Objects(Limit=ObjectPageSize) Note. 있으면 객체 행(이름 순, TABLE·VIEW만 Expandable), HasMore면 "더 보기" Note(IsLoadMore, Load=Objects, Limit=NextLimit).
     /// - 펼친 테이블·뷰: Columns가 없으면 Load=Columns Note. 있으면 열 행(Position 순).
     /// - 어떤 노드든 Errors에 키가 있으면 그 노드의 하위 대신 오류 Note(IsError, Load 없음).
@@ -450,13 +456,14 @@ namespace MyPlugin
                 rows.Add(LoadNote(schemaRow, new TreeLoadRequest { Kind = TreeLoadKind.GroupCounts, Key = schemaRow.Key, DbId = ctx.Db.DbId, Owner = schemaRow.Owner }));
                 return;
             }
-            // ALL_USERS에는 나오지만 이 계정이 볼 수 있는 객체가 하나도 없는 스키마: 빈 묶음 4개 대신 이유를 보인다.
-            if (!TreeGroups.All.Any(g => CountOf(counts, g) > 0))
+            // ALL_USERS에는 나오지만 이 계정이 볼 수 있는 객체가 하나도 없는 스키마: 빈 묶음 대신 이유를 보인다.
+            var groups = ctx.Db.Groups ?? TreeGroups.All;
+            if (!groups.Any(g => CountOf(counts, g) > 0))
             {
-                rows.Add(Note(schemaRow, TreeKeys.NoteSuffix, NoAccessText));
+                rows.Add(Note(schemaRow, TreeKeys.NoteSuffix, ctx.Db.EmptySchemaText ?? NoAccessText));
                 return;
             }
-            foreach (var group in TreeGroups.All)
+            foreach (var group in groups)
             {
                 var row = GroupRow(ctx.Db, schemaRow.Owner, group);
                 row.Count = CountOf(counts, group);

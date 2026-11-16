@@ -20,6 +20,12 @@ namespace MyPlugin
         private const string ObjectType = "CASE m.type WHEN 'table' THEN 'TABLE' ELSE 'VIEW' END";
 
         public bool HasMaintainedFlagFallback { get { return false; } }
+
+        /// <summary>시퀀스·프로시저·함수가 없어 테이블·뷰 묶음만 보인다.</summary>
+        public IReadOnlyList<string> TreeGroupKinds { get; } = new[] { TreeGroups.Table, TreeGroups.View };
+
+        /// <summary>SQLite에는 권한이 없다 — 빈 DB는 그냥 비었다고 알린다.</summary>
+        public string EmptySchemaText { get { return "테이블·뷰가 없습니다"; } }
         public bool SupportsTableInfo { get { return true; } }
 
         /// <summary>"main" → "\"main\".sqlite_master". 이름 안의 "는 두 번.</summary>
