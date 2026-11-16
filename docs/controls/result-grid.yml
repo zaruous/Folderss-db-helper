@@ -70,7 +70,7 @@ states:
   - 고른 행은 선택색이 바탕색보다 앞서지만 번호 열 표시(✎·✖)는 남는다.
 limits:
   - 정렬은 가져온 행 안에서만 한다(전체 순서는 ORDER BY로).
-  - 긴 값은 ValueFormatter가 잘라 보인다(글 4,000자, 이진 2,000바이트). 셀 복사·행 복사도 이 잘린 값을 복사한다(전체는 [팝업으로 보기]의 [전체 보기]).
+  - 긴 값은 ValueFormatter가 잘라 보인다(글 4,000자, 이진 2,000바이트). 셀 복사·행 복사도 이 잘린 값을 복사한다(전체는 [팝업으로 보기]의 [전체 보기] — 쪽 단위).
 tests:
   - tests/MyPlugin.Tests/WorkspaceLogicTests.cs
   - tests/MyPlugin.Tests/ValueFormatterTests.cs

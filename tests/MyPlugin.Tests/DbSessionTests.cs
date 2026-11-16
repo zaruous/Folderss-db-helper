@@ -1322,13 +1322,13 @@ namespace MyPlugin.Tests
             }
         }
 
-        // 팝업 [전체 보기]: 그리드 상한(4,000자)을 넘는 값을 정한 상한까지 다시 읽는다
+        // 팝업 [전체 보기]: 그리드 상한(4,000자)을 넘는 값을 쪽 단위로 다시 읽는다
         [Fact]
-        public async Task ReadFullValue_ReadsBeyondGridLimit_UpToGivenLimit()
+        public async Task ReadValuePage_ReadsBeyondGridLimit_PageByPage()
         {
             using (var session = await OpenAsync(new SqliteConnection(Memory)))
             {
-                var text = new string('q', ValueFormatter.MaxTextLength + 500);
+                var text = new string('q', 2000) + new string('r', 2000) + new string('s', 500);
                 await SetupAsync(session,
                     "CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT, data BLOB)",
                     "INSERT INTO docs VALUES (1, '" + text + "', zeroblob(3000))",
@@ -1339,14 +1339,28 @@ namespace MyPlugin.Tests
 
                 var query = new SqlQuery { Sql = "SELECT body FROM docs WHERE id = :k0" };
                 query.Parameters.Add(new KeyValuePair<string, object>("k0", 1));
-                Assert.Equal(text, Assert.Single(await session.QueryAsync(query, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength))));
-                Assert.Equal("qqq…(전체 4500자)", Assert.Single(await session.QueryAsync(query, r => DbSession.ReadFullValue(r, 0, 3))));
+                var whole = Assert.Single(await session.QueryAsync(query, r => DbSession.ReadValuePage(r, 0, 0, ValueFormatter.PageLength)));
+                Assert.Equal(text, whole.Text);
+                Assert.Equal(4500, whole.Total);
+
+                var pages = new List<string>();
+                long offset = 0;
+                while (offset < 4500)
+                {
+                    var start = offset;
+                    var page = Assert.Single(await session.QueryAsync(query, r => DbSession.ReadValuePage(r, 0, start, 2000)));
+                    pages.Add(page.Text);
+                    offset = page.Next;
+                }
+                Assert.Equal(new[] { new string('q', 2000), new string('r', 2000), new string('s', 500) }, pages);
 
                 var blob = new SqlQuery { Sql = "SELECT data FROM docs WHERE id = 1" };
-                Assert.Equal("0x" + new string('0', 6000), Assert.Single(await session.QueryAsync(blob, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength))));
+                var bytes = Assert.Single(await session.QueryAsync(blob, r => DbSession.ReadValuePage(r, 0, 2500, 1000)));
+                Assert.Equal(new string('0', 1000), bytes.Text);
+                Assert.Equal(3000, bytes.Next);
 
                 var empty = new SqlQuery { Sql = "SELECT body FROM docs WHERE id = 2" };
-                Assert.Null(Assert.Single(await session.QueryAsync(empty, r => DbSession.ReadFullValue(r, 0, ValueFormatter.MaxFullLength))));
+                Assert.Null(Assert.Single(await session.QueryAsync(empty, r => DbSession.ReadValuePage(r, 0, 0, 10))));
             }
         }
 
