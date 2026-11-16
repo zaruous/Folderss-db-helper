@@ -1,0 +1,33 @@
+id: cell-value-window
+name: CellValueWindow
+title: 칸 값 팝업
+kind: window
+source:
+  - src/MyPlugin/Ui/CellValueWindow.cs
+base: System.Windows.Window
+used_by: [result-grid]
+summary: >-
+  결과 그리드 오른쪽 메뉴 [팝업으로 보기]로 여는 칸 값 하나의 창(모달 아님). 그리드가 가진 값을 줄 바꿈·스크롤로 보인다(DB에 다시 가지 않음).
+features:
+  - name: 머리
+    description: 열 이름, 열 형식(고정폭). 창 제목에 행 번호.
+  - name: 값
+    description: >-
+      읽기 전용 고정폭 글(줄 바꿈, 세로 스크롤, 선택·Ctrl+C 됨). 그리드 값 그대로(잘렸으면 "…(전체 n자)" 꼬리 포함).
+  - name: 닫기
+    description: "[닫기]·Esc."
+keyboard:
+  - keys: Esc
+    action: 닫기.
+theme:
+  - part: 창·값
+    keys: [WindowBackground, PanelBackground, PrimaryText, SecondaryText]
+states:
+  - NULL은 빈 글과 안내 "NULL".
+  - 조회할 때 잘린 값은 안내 줄에 잘린 값이라는 것과 끝의 "…(전체 n자)"가 전체 길이임을 보인다.
+limits:
+  - 조회할 때 잘린 값(글 4,000자·이진 2,000바이트 넘음)의 나머지는 볼 수 없다(DB에서 다시 읽지 않음).
+  - 값이 고쳐지거나 다시 조회돼도 열린 창은 연 때의 값 그대로다.
+verification:
+  - 창 자체는 Linux에서 컴파일만 확인했고 화면 확인은 하지 않았다.
+related: [result-grid, sql-workspace]

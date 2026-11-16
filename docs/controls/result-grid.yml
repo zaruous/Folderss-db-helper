@@ -25,6 +25,10 @@ features:
       Ctrl+C·오른쪽 메뉴로 선택한 행, 오른쪽 메뉴로 전체(머리글 포함)를 TSV로 복사한다. 화면 순서를 따른다.
       오른쪽 메뉴 [셀 복사 (열 이름)]는 오른쪽 클릭한 칸 하나의 원래 값을 복사한다(줄바꿈·탭 유지, NULL은 빈 글).
       칸 밖이나 키보드(Shift+F10)로 연 메뉴에서는 꺼진다.
+  - name: 팝업으로 보기
+    description: >-
+      오른쪽 메뉴 [팝업으로 보기]는 오른쪽 클릭한 칸 하나의 값(그리드가 가진 값 그대로)을 칸 값 팝업(cell-value-window)으로 연다.
+      칸 밖·키보드로 연 메뉴에서는 꺼진다.
   - name: 메뉴 확장(AddMenuAction)
     description: >-
       쓰는 쪽이 오른쪽 메뉴 끝(구분선 뒤)에 고른 행으로 하는 동작을 붙인다. 조건이 거짓이면 숨기고 고른 행이 없으면 꺼진다.
@@ -66,8 +70,8 @@ states:
   - 고른 행은 선택색이 바탕색보다 앞서지만 번호 열 표시(✎·✖)는 남는다.
 limits:
   - 정렬은 가져온 행 안에서만 한다(전체 순서는 ORDER BY로).
-  - 긴 값은 ValueFormatter가 잘라 보인다(글 4,000자, 이진 2,000바이트). 셀 복사·행 복사도 이 잘린 값을 복사한다.
+  - 긴 값은 ValueFormatter가 잘라 보인다(글 4,000자, 이진 2,000바이트). 셀 복사·행 복사·[팝업으로 보기]도 이 잘린 값이다.
 tests:
   - tests/MyPlugin.Tests/WorkspaceLogicTests.cs
   - tests/MyPlugin.Tests/ValueFormatterTests.cs
-related: [sql-workspace, result-edit-bar, find-bar]
+related: [sql-workspace, result-edit-bar, find-bar, cell-value-window]

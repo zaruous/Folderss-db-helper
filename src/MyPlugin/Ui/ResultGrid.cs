@@ -226,6 +226,9 @@ namespace MyPlugin
                 };
                 menu.Items.Add(copyCell);
             }
+            var viewCell = new MenuItem { Header = "팝업으로 보기" };
+            viewCell.Click += (s, e) => ShowCellWindow();
+            menu.Items.Add(viewCell);
             var copySelected = new MenuItem { Header = "선택한 행 복사", InputGestureText = "Ctrl+C" };
             copySelected.Click += (s, e) => _copy(false);
             var copyAll = new MenuItem { Header = "모두 복사 (머리글 포함)" };
@@ -255,6 +258,7 @@ namespace MyPlugin
                     _menuRow = cell.DataContext as ResultGridRow;
                     _menuColumn = _menuRow != null ? (int)cell.Tag : -1;
                 }
+                viewCell.IsEnabled = _menuColumn >= 0;
                 if (copyCell != null)
                 {
                     copyCell.IsEnabled = _menuColumn >= 0;
@@ -264,6 +268,17 @@ namespace MyPlugin
                 }
             };
             _list.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(Header_Click));
+        }
+
+        // [팝업으로 보기]: 오른쪽 클릭한 칸의 값(그리드가 가진 값 그대로)을 창으로
+        private void ShowCellWindow()
+        {
+            var row = _menuRow;
+            var column = _menuColumn;
+            if (row == null || column < 0 || _columns == null || column >= _columns.Count)
+                return;
+            var value = column < row.Values.Length ? row.Values[column] : null;
+            CellValueWindow.Show(Window.GetWindow(_list), _columns[column].Name, _columns[column].TypeLabel, row.Number, value);
         }
 
         public ListView View
