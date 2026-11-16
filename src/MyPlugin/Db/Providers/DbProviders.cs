@@ -14,11 +14,12 @@ namespace MyPlugin
         public static readonly IDbProvider Oracle = new OracleProvider();
         public static readonly IDbProvider Postgres = new PostgresProvider();
         public static readonly IDbProvider SqlServer = new SqlServerProvider();
+        public static readonly IDbProvider Sqlite = new SqliteProvider();
         /// <summary>시험(SQLite 등)·모르는 연결용: 방언 Generic, 데이터 사전 없음.</summary>
         public static readonly IDbProvider Generic = new GenericProvider();
 
         /// <summary>접속 관리 화면의 공급자 목록 순서(맨 앞이 기본).</summary>
-        public static readonly IReadOnlyList<IDbProvider> All = new[] { Oracle, Postgres, SqlServer };
+        public static readonly IReadOnlyList<IDbProvider> All = new[] { Oracle, Postgres, SqlServer, Sqlite };
 
         public static IDbProvider Default
         {
@@ -37,7 +38,10 @@ namespace MyPlugin
             return For(profile == null ? null : profile.Provider);
         }
 
-        /// <summary>연결 객체 형식으로 찾는다(세션이 공급자 없이 만들어졌을 때): OracleConnection → Oracle, NpgsqlConnection → PostgreSQL, 그 밖 → Generic.</summary>
+        /// <summary>
+        /// 연결 객체 형식으로 찾는다(세션이 공급자 없이 만들어졌을 때): OracleConnection → Oracle, NpgsqlConnection → PostgreSQL, 그 밖 → Generic.
+        /// SqliteConnection도 Generic이다(시험 세션이 Generic 규칙을 전제로 한다) — 실제 SQLite 접속은 <see cref="Sqlite"/>를 명시해 연다.
+        /// </summary>
         public static IDbProvider For(DbConnection connection)
         {
             if (connection == null)

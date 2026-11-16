@@ -453,10 +453,11 @@ namespace MyPlugin
             return IsSqlServer(providerKind) ? "ROLLBACK TRANSACTION " + name : "ROLLBACK TO SAVEPOINT " + name;
         }
 
-        /// <summary>저장점 풀기: PostgreSQL·SQLite(generic) "RELEASE SAVEPOINT x". Oracle·SQL Server는 없음(null) — 트랜잭션이 끝날 때 사라진다.</summary>
+        /// <summary>저장점 풀기: PostgreSQL·SQLite(sqlite·generic) "RELEASE SAVEPOINT x". Oracle·SQL Server는 없음(null) — 트랜잭션이 끝날 때 사라진다.</summary>
         internal static string ReleaseSavepointSql(string providerKind, string name)
         {
             return string.Equals(providerKind, "postgres", StringComparison.OrdinalIgnoreCase) || string.Equals(providerKind, "generic", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(providerKind, SqliteProvider.KindName, StringComparison.OrdinalIgnoreCase)
                 ? "RELEASE SAVEPOINT " + name
                 : null;
         }

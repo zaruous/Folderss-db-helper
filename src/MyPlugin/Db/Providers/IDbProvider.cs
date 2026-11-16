@@ -38,6 +38,9 @@ namespace MyPlugin
         /// <summary>성능 모니터 섹션(기본 정보·저장 공간·로그·잠금·세션 …). 지원하지 않으면 <see cref="NoMonitor.Instance"/>.</summary>
         IMonitorProvider Monitor { get; }
 
+        /// <summary>비밀번호로 접속하는지. false(SQLite 파일)면 저장된 비밀번호가 없어도 묻지 않는다.</summary>
+        bool UsesPassword { get; }
+
         /// <summary>공급자별 필수 항목 검사(호스트·포트·서비스/데이터베이스·사용자). 문제가 없으면 빈 목록. label은 "'이름'" 꼴 접두.</summary>
         List<string> Validate(OracleConnectionProfile profile, string label);
 
