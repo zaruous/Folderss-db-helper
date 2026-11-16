@@ -23,7 +23,8 @@
 - `Provider = "sqlite"`. 파일 경로는 **`ServiceName`에 저장**(JSON 이름 `serviceName` 유지 — 새 필드를 만들지 않아 `Copy`/`SameAs`/저장 호환을 건드리지 않는다). 라벨 `ServiceLabel = "파일"`.
 - Host·Port·UserId·비밀번호는 쓰지 않는다. `DefaultPort = 0`.
 - `ReadOnly = true`면 연결 문자열 `Mode=ReadOnly`로 **DB 단에서도** 막는다(다른 공급자는 플러그인 차단만 됨 — SQLite는 더 강하게 할 수 있음).
-- `Validate`: 경로 비어 있음, 파일 없음(새로 만들지 여부는 9절 질문). 호스트·포트·사용자 검사는 하지 않는다.
+- `Validate`: 경로 비어 있음이면 오류. 호스트·포트·사용자 검사는 하지 않는다.
+- 파일이 없으면(결정 2026-11-16) 연결 직전에 "새 DB 파일을 만들까요?"를 묻고, 예일 때만 그 한 번 `Mode=ReadWriteCreate`로 연다. `ReadOnly` 접속이면 묻지 않고 오류.
 - 연결 문자열: `Data Source=<경로>; Mode=ReadWrite|ReadOnly; Pooling=False; Default Timeout=<초>`. **`Mode=ReadWriteCreate`는 기본으로 쓰지 않는다** — 경로 오타가 빈 DB 파일을 조용히 만든다.
 
 ### 2.2 화면(접속 관리)
@@ -46,7 +47,7 @@
 | `IsBroken` | 거의 false(파일 삭제·이동 정도) | |
 | `IsPermissionDenied` | SQLITE_READONLY(8)·SQLITE_PERM(3) | |
 | `Monitor` | `NoMonitor.Instance` | 성능 모니터·전체 상태·일일 점검 메뉴는 비활성 |
-| `TableSchema` | 1차: **읽기 전용 F4**(열·인덱스·FK 보기). 구조 편집은 안 함 | SQLite `ALTER TABLE`은 열 변경·제약 변경이 없어 "새 테이블 만들고 복사" 12단계 절차가 필요 — 데이터 손실 위험이 커서 1차 범위 밖 |
+| `TableSchema` | **F4 정보 보기만**. 구조 편집 방언(`ITableSchemaProvider`의 편집 DDL 방언)은 **null** → 정보 창이 기존 seam대로 읽기 전용 | 결정 2026-11-16. 근거는 2.7 |
 
 ### 2.5 데이터 사전(IMetadataProvider)
 - 스키마 = `PRAGMA database_list`(main, temp, ATTACH한 DB). `CurrentSchema()` = `'main'`.
@@ -63,6 +64,20 @@
 **`For(DbConnection)`에서 `SqliteConnection` → `SqliteProvider` 매핑을 추가하면 이 시험들의 의미가 바뀐다.** 그래서:
 - `For(DbConnection)`은 손대지 않는다. 실제 SQLite 접속은 항상 `DbSession.Create(provider, …)`로 공급자를 명시해서 연다.
 - `SqliteProvider` 전용 시험은 새 파일(`SqliteProviderTests.cs`)에서 공급자를 명시해 만든다.
+
+### 2.7 구조 편집을 막는 근거 — SQLite 제약과 DBeaver 사례
+- SQLite `ALTER TABLE`은 이름 바꾸기·열 추가·열 삭제(3.35+)만 된다. 열 형식·NOT NULL·기본값·제약 변경은 **새 테이블을 만들어 데이터를 옮기는** 재작성 절차가 필요하다(SQLite 문서의 12단계).
+- DBeaver(`plugins/org.jkiss.dbeaver.ext.sqlite`, devel 브랜치 소스 확인):
+  - 열 삭제·FK 생성/변경/삭제는 재작성으로 처리: `CREATE TEMPORARY TABLE temp AS SELECT … ` → `DROP TABLE` → 새 DDL → `INSERT … SELECT` → `DROP TABLE temp` (`SQLiteTableManager.addTableRecreateActions`).
+  - 그 경로에서 `PRAGMA foreign_keys` 처리, 인덱스·트리거·뷰 재생성을 하는 코드는 읽은 파일에서 찾지 못함(미확정). FK가 켜진 DB에서 부모 테이블 `DROP`은 자식 행의 `ON DELETE CASCADE`를 일으킬 수 있다 — **데이터 손실 경로**.
+  - 열 형식 변경 SQL은 상위 클래스에 있어 확인 못 함. SQLite 포럼에 "DBeaver로 열 형식·순서 변경이 여러 번 실패해 수동 SQL로 했다"는 사용자 보고가 있다.
+  - 관련 이슈: dbeaver/dbeaver#9176(열 삭제 시 SQL 구문 오류), #18650(SQLite alter table 오류), #14351(기존 테이블에 FK 추가 불가).
+- 결론: 성숙한 도구도 이 절차에서 오류가 반복된다. 이 플러그인은 1차에서 구조 편집을 넣지 않는다. 열 추가·이름 바꾸기처럼 SQLite가 직접 지원하는 것만 나중에 따로 검토할 수 있다.
+
+### 2.8 주석(테이블 정의서 설명 칸)
+- SQLite에는 `COMMENT ON`도, 열 정의 안의 `COMMENT '…'`도 없다. 주석을 저장하는 메타데이터 자체가 없다.
+- 남는 것은 `CREATE TABLE` 안에 적은 `-- 설명` 주석뿐이다. SQLite는 이 글을 `sqlite_schema.sql`에 그대로 보존하므로 **파싱하면 읽을 수는 있다**. 다만 표준이 아니고(도구마다 다르게 씀), `ALTER TABLE ADD/DROP COLUMN`이 이 글을 고쳐 쓰며 주석이 바뀌거나 사라질 수 있다.
+- DBeaver도 SQLite 주석 저장·편집을 하는 코드를 찾지 못함(일반 `COMMENT ON` 경로만 있음, 미확정).
 
 ## 3. PGlite — 검토 후 제외
 
@@ -82,18 +97,18 @@ PGlite는 WASM으로 빌드한 Postgres라 JS(Node·브라우저) 안에서만 �
 | S3 | `IMetadataProvider` 구현 | 임시 파일 DB(테이블·뷰·인덱스·트리거·ATTACH)로 트리 그룹 개수·열·고유 키·소스 시험 |
 | S4 | 비밀번호 흐름 `UsesPassword` | 비밀번호 없는 SQLite 프로필 연결 시 프롬프트가 안 뜸(헤드리스 UI 시험) |
 | S5 | 접속 관리 화면 분기 + 파일 찾아보기 | `ConnectionManagerHeadlessTests`에 SQLite 칸 표시/숨김, `docs/controls/connection-manager.yml` 갱신, `check_controls_docs.py` 통과 |
-| S6 | F4 읽기 전용 / 결과 편집 키 | 혼합 형식 열·WITHOUT ROWID·rowid 테이블 편집 시험 |
+| S6 | F4 정보 보기(편집 방언 null) / 결과 편집 키 | F4 창에 열·인덱스·제약이 보이고 편집 버튼이 비활성(헤드리스 시험), 혼합 형식 열·WITHOUT ROWID·rowid 테이블 편집 시험 |
 | S7 | 도움말·README·plugin.json 버전 | `HelpTests` 통과 |
 
 S1~S5만으로 "SQLite 파일 열고 조회·실행·트리 보기"가 된다. S6 이후는 선택.
 
 ## 5. 범위 밖(이번에 하지 않음)
-- SQLite 구조 편집(ALTER 재작성 절차), SQLCipher 암호화 DB, SQLite 성능 모니터.
+- SQLite 구조 편집(ALTER 재작성 절차, 2.7), SQLCipher 암호화 DB, SQLite 성능 모니터.
 - PGlite(3절).
 - Folderss 파일 목록에서 `.db` 더블클릭으로 바로 열기(편하지만 요청에 없음 — 원하면 별도로).
 
 ## 9. 결정이 필요한 질문
 1. ~~PGlite 방식~~ → 제외로 결정(2026-11-16).
-2. SQLite 파일이 없을 때: 오류로 막을지, "새 DB 파일을 만들까요?"를 물을지.
-3. SQLite 테이블 정의서(주석이 없어 설명 칸이 빔)를 켤지.
-4. SQLite F4는 읽기 전용으로 충분한가(구조 편집 제외)?
+2. ~~파일이 없을 때~~ → 만들지 묻기로 결정(2026-11-16, 2.1).
+3. SQLite 테이블 정의서(2.8): 설명 칸을 비워 둘지 / `CREATE TABLE`의 `--` 주석을 파싱해 채울지 / 이번엔 끌지.
+4. ~~F4 범위~~ → 정보 보기만, 구조 편집 비활성으로 결정(2026-11-16, 2.7).
